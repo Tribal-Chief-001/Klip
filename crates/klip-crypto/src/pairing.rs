@@ -50,6 +50,17 @@ pub fn compute_sas(psk: &PairingPsk, node_a: &NodeId, node_b: &NodeId) -> u32 {
     num % 1_000_000
 }
 
+/// Compute SAS from invitation PSK and host node ID (displayed immediately on pairing cards).
+pub fn compute_sas_invitation(psk: &PairingPsk, host_node: &NodeId) -> u32 {
+    let mut mac = HmacSha256::new_from_slice(psk.as_bytes())
+        .expect("HMAC can accept key of any size");
+    mac.update(b"KLIP-PAIRING-INVITATION-SAS-V1");
+    mac.update(host_node.as_bytes());
+    let result = mac.finalize().into_bytes();
+    let num = u32::from_be_bytes([result[0], result[1], result[2], result[3]]);
+    num % 1_000_000
+}
+
 /// Format SAS into aesthetic Charm / Raycast grade 6-digit pill: "742 • 109"
 pub fn format_sas_pin(sas: u32) -> String {
     let part1 = (sas / 1000) % 1000;

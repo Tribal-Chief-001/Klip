@@ -1,6 +1,5 @@
 use klip_proto::wire::ClipContentType;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,37 +58,61 @@ impl fmt::Display for PlatformError {
 impl std::error::Error for PlatformError {}
 
 /// Echo Shield: Caches the fingerprint of the last clip injected by Klip
-/// to prevent local clipboard echo feedback loops.
+/// and the last clip read from the host clipboard to prevent:
+/// 1. Polling storms (reading identical unmodified clipboard content every 100ms)
+/// 2. Local clipboard echo feedback loops (re-broadcasting clips injected by Klip).
 pub struct EchoShield {
     last_injected_fingerprint: Mutex<Option<[u8; 32]>>,
-    ignore_next_read: AtomicBool,
+    last_read_fingerprint: Mutex<Option<[u8; 32]>>,
 }
 
 impl EchoShield {
     pub fn new() -> Self {
         Self {
             last_injected_fingerprint: Mutex::new(None),
-            ignore_next_read: AtomicBool::new(false),
+            last_read_fingerprint: Mutex::new(None),
         }
+    }
+
+    /// Record baseline content on driver initialization to avoid blasting pre-existing clipboard.
+    pub fn init_baseline(&self, fingerprint: [u8; 32]) {
+        let mut read = self.last_read_fingerprint.lock().unwrap();
+        *read = Some(fingerprint);
     }
 
     /// Record a fingerprint that is about to be written to host clipboard.
     pub fn record_injection(&self, fingerprint: [u8; 32]) {
-        let mut lock = self.last_injected_fingerprint.lock().unwrap();
-        *lock = Some(fingerprint);
-        self.ignore_next_read.store(true, Ordering::SeqCst);
+        let mut inj = self.last_injected_fingerprint.lock().unwrap();
+        *inj = Some(fingerprint);
+        let mut read = self.last_read_fingerprint.lock().unwrap();
+        *read = Some(fingerprint);
     }
 
-    /// Check if a captured clip should be suppressed because it matches the last injection.
+    /// Check if a captured clip should be suppressed.
+    /// Returns true if content has not changed or was injected by Klip.
+    /// Returns false if it is a genuinely new user copy that should be broadcast.
     pub fn should_suppress(&self, fingerprint: &[u8; 32]) -> bool {
-        if self.ignore_next_read.swap(false, Ordering::SeqCst) {
-            let lock = self.last_injected_fingerprint.lock().unwrap();
-            if let Some(injected) = *lock {
-                if &injected == fingerprint {
-                    return true;
-                }
+        let mut read_guard = self.last_read_fingerprint.lock().unwrap();
+        let mut inj_guard = self.last_injected_fingerprint.lock().unwrap();
+
+        // 1. If identical to last read clip, suppress (eliminates 100ms poll storm)
+        if let Some(last_read) = *read_guard {
+            if &last_read == fingerprint {
+                return true;
             }
         }
+
+        // 2. If identical to last injected clip, suppress (eliminates echo loop)
+        if let Some(last_inj) = *inj_guard {
+            if &last_inj == fingerprint {
+                *read_guard = Some(*fingerprint);
+                return true;
+            }
+        }
+
+        // 3. New local user copy: update last read and clear injection cache
+        *read_guard = Some(*fingerprint);
+        *inj_guard = None;
         false
     }
 }
@@ -106,4 +129,40 @@ pub trait ClipboardDriver: Send + Sync {
     fn read_clip(&self) -> Result<Option<CapturedClip>, PlatformError>;
     fn write_clip(&self, content_type: &ClipContentType, data: &[u8]) -> Result<(), PlatformError>;
     fn echo_shield(&self) -> &EchoShield;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_echo_shield_lifecycle_and_poll_suppression() {
+        let shield = EchoShield::new();
+        let clip_a = [1u8; 32];
+        let clip_b = [2u8; 32];
+        let clip_c = [3u8; 32];
+
+        // 1. Initial baseline: content present before start is suppressed
+        shield.init_baseline(clip_a);
+        assert!(shield.should_suppress(&clip_a));
+        assert!(shield.should_suppress(&clip_a)); // subsequent polls suppressed
+
+        // 2. User copies new content clip_b: should NOT be suppressed
+        assert!(!shield.should_suppress(&clip_b));
+        // Next 50 polling ticks with clip_b still in clipboard: ALL suppressed (no poll storm!)
+        for _ in 0..50 {
+            assert!(shield.should_suppress(&clip_b));
+        }
+
+        // 3. Remote peer injects clip_c:
+        shield.record_injection(clip_c);
+        // Polling ticks reading injected clip_c: ALL suppressed (no echo loop!)
+        for _ in 0..50 {
+            assert!(shield.should_suppress(&clip_c));
+        }
+
+        // 4. User now copies clip_a: should NOT be suppressed
+        assert!(!shield.should_suppress(&clip_a));
+        assert!(shield.should_suppress(&clip_a));
+    }
 }

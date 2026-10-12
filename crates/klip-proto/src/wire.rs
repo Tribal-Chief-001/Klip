@@ -99,6 +99,23 @@ pub struct WireHeader {
     pub payload_len: u32,
 }
 
+impl WireHeader {
+    pub fn to_bytes(&self) -> [u8; HEADER_LEN] {
+        let mut buf = [0u8; HEADER_LEN];
+        buf[0..4].copy_from_slice(&self.magic);
+        buf[4] = self.version;
+        buf[5] = self.msg_type as u8;
+        buf[6..8].copy_from_slice(&self.flags.to_be_bytes());
+        buf[8..40].copy_from_slice(self.sender.as_bytes());
+        buf[40..52].copy_from_slice(self.nonce.as_bytes());
+        buf[52..60].copy_from_slice(&self.hlc_physical.to_be_bytes());
+        buf[60..64].copy_from_slice(&self.hlc_logical.to_be_bytes());
+        buf[64..68].copy_from_slice(&self.hlc_node_seed.to_be_bytes());
+        buf[68..72].copy_from_slice(&self.payload_len.to_be_bytes());
+        buf
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WirePacket {
     pub header: WireHeader,
@@ -180,16 +197,7 @@ impl WirePacket {
         let mut buf = Vec::with_capacity(total_size);
 
         // Header: 72 bytes
-        buf.extend_from_slice(&self.header.magic);
-        buf.push(self.header.version);
-        buf.push(self.header.msg_type as u8);
-        buf.extend_from_slice(&self.header.flags.to_be_bytes());
-        buf.extend_from_slice(self.header.sender.as_bytes());
-        buf.extend_from_slice(self.header.nonce.as_bytes());
-        buf.extend_from_slice(&self.header.hlc_physical.to_be_bytes());
-        buf.extend_from_slice(&self.header.hlc_logical.to_be_bytes());
-        buf.extend_from_slice(&self.header.hlc_node_seed.to_be_bytes());
-        buf.extend_from_slice(&(self.payload.len() as u32).to_be_bytes());
+        buf.extend_from_slice(&self.header.to_bytes());
 
         // Payload
         buf.extend_from_slice(&self.payload);

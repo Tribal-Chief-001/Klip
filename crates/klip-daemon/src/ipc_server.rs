@@ -1,9 +1,13 @@
 use crate::config::get_ipc_socket_path;
 use crate::sync::SyncCoordinator;
+use klip_crypto::aead::encrypt_payload_in_place_with_aad;
 use klip_crypto::identity::PairedPeer;
-use klip_crypto::pairing::{compute_sas, format_sas_pin, PairingInvitation, PairingPsk};
+use klip_crypto::pairing::{compute_sas_invitation, format_sas_pin, PairingInvitation, PairingPsk};
 use klip_proto::ipc::{
     deserialize_ipc_msg, serialize_ipc_msg, DaemonStatusInfo, IpcRequest, IpcResponse,
+};
+use klip_proto::wire::{
+    MessageType, WireHeader, WirePacket, CURRENT_VERSION, FLAG_ENCRYPTED, MAGIC_BYTES,
 };
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -115,8 +119,14 @@ impl IpcServer {
                 let invitation = PairingInvitation::create(sync.identity.node_id, &psk);
                 let token = invitation.to_token();
 
-                // Compute self-auth SAS
-                let sas_pin = format_sas_pin(compute_sas(&psk, &sync.identity.node_id, &sync.identity.node_id));
+                // Store pending pairing PSK so incoming handshakes can authenticate
+                {
+                    let mut lock = sync.pending_pairing.lock().await;
+                    *lock = Some((psk.clone(), std::time::Instant::now()));
+                }
+
+                // Compute SAS code derived from PSK and host node
+                let sas_pin = format_sas_pin(compute_sas_invitation(&psk, &sync.identity.node_id));
 
                 IpcResponse::PairCode {
                     qr_ascii: format!("[ Pairing Token: {} ]", &token[..token.len().min(32)]),
@@ -140,7 +150,37 @@ impl IpcServer {
                             }
 
                             // Add to active mesh
-                            sync.mesh.add_peer(peer_node, peer_name.clone(), peer_key, None).await;
+                            sync.mesh.add_peer(peer_node, peer_name.clone(), peer_key.clone(), None).await;
+
+                            // Send Handshake packet to host node across mesh
+                            let mut handshake_payload = sync.config.device_name.clone().into_bytes();
+                            let nonce = sync.nonce_gen.next_nonce();
+                            let header = WireHeader {
+                                magic: MAGIC_BYTES,
+                                version: CURRENT_VERSION,
+                                msg_type: MessageType::Handshake,
+                                flags: FLAG_ENCRYPTED,
+                                sender: sync.identity.node_id,
+                                nonce,
+                                hlc_physical: 0,
+                                hlc_logical: 0,
+                                hlc_node_seed: 0,
+                                payload_len: handshake_payload.len() as u32,
+                            };
+                            let header_bytes = header.to_bytes();
+                            if let Ok(tag) = encrypt_payload_in_place_with_aad(
+                                &peer_key,
+                                &nonce,
+                                &header_bytes,
+                                &mut handshake_payload,
+                            ) {
+                                let packet = WirePacket {
+                                    header,
+                                    payload: handshake_payload,
+                                    tag,
+                                };
+                                let _ = sync.mesh.broadcast_packet(&packet).await;
+                            }
 
                             IpcResponse::PairSuccess { peer_node, peer_name }
                         }

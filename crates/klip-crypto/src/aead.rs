@@ -74,18 +74,28 @@ impl NonceGenerator {
     }
 }
 
-/// In-place zero-allocation AEAD encryption using ChaCha20-Poly1305.
-/// Encrypts `buffer` in-place and returns detached 16-byte Poly1305 tag.
+/// In-place zero-allocation AEAD encryption using ChaCha20-Poly1305 with empty AAD.
 pub fn encrypt_payload_in_place(
     key: &SymmetricKey,
     nonce: &WireNonce,
+    buffer: &mut [u8],
+) -> Result<[u8; 16], CryptoError> {
+    encrypt_payload_in_place_with_aad(key, nonce, b"", buffer)
+}
+
+/// In-place zero-allocation AEAD encryption using ChaCha20-Poly1305 with Associated Authenticated Data (AAD).
+/// Encrypts `buffer` in-place and returns detached 16-byte Poly1305 tag.
+pub fn encrypt_payload_in_place_with_aad(
+    key: &SymmetricKey,
+    nonce: &WireNonce,
+    aad: &[u8],
     buffer: &mut [u8],
 ) -> Result<[u8; 16], CryptoError> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key.as_bytes()));
     let chacha_nonce = Nonce::from_slice(nonce.as_bytes());
 
     let tag = cipher
-        .encrypt_in_place_detached(chacha_nonce, b"", buffer)
+        .encrypt_in_place_detached(chacha_nonce, aad, buffer)
         .map_err(|_| CryptoError::EncryptionFailure)?;
 
     let mut tag_bytes = [0u8; 16];
@@ -93,11 +103,22 @@ pub fn encrypt_payload_in_place(
     Ok(tag_bytes)
 }
 
-/// In-place zero-allocation AEAD decryption using ChaCha20-Poly1305.
-/// Authenticates and decrypts `buffer` in-place. If authentication fails, buffer is unchanged/zeroed.
+/// In-place zero-allocation AEAD decryption using ChaCha20-Poly1305 with empty AAD.
 pub fn decrypt_payload_in_place(
     key: &SymmetricKey,
     nonce: &WireNonce,
+    buffer: &mut [u8],
+    tag: &[u8; 16],
+) -> Result<(), CryptoError> {
+    decrypt_payload_in_place_with_aad(key, nonce, b"", buffer, tag)
+}
+
+/// In-place zero-allocation AEAD decryption using ChaCha20-Poly1305 with Associated Authenticated Data (AAD).
+/// Authenticates both `aad` and `buffer` in-place. If authentication fails, returns CryptoError::DecryptionFailure.
+pub fn decrypt_payload_in_place_with_aad(
+    key: &SymmetricKey,
+    nonce: &WireNonce,
+    aad: &[u8],
     buffer: &mut [u8],
     tag: &[u8; 16],
 ) -> Result<(), CryptoError> {
@@ -106,7 +127,7 @@ pub fn decrypt_payload_in_place(
     let poly_tag = Tag::from_slice(tag);
 
     cipher
-        .decrypt_in_place_detached(chacha_nonce, b"", buffer, poly_tag)
+        .decrypt_in_place_detached(chacha_nonce, aad, buffer, poly_tag)
         .map_err(|_| CryptoError::DecryptionFailure)
 }
 

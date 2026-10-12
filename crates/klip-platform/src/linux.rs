@@ -28,10 +28,22 @@ impl LinuxClipboardDriver {
             }
         };
 
+        let echo_shield = EchoShield::new();
+        if let Ok(mut guard) = clipboard.lock() {
+            if let Some(cb) = guard.as_mut() {
+                if let Ok(text) = cb.get_text() {
+                    if !text.is_empty() {
+                        let fp = compute_fingerprint(text.as_bytes(), &local_node);
+                        echo_shield.init_baseline(fp);
+                    }
+                }
+            }
+        }
+
         Self {
             clipboard,
             env,
-            echo_shield: EchoShield::new(),
+            echo_shield,
             local_node,
         }
     }

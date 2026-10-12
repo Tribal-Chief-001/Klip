@@ -78,10 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let engine = DaemonEngine::init(config).await?;
                 engine.run().await?;
             } else {
-                // Spawn detached daemon process
                 let current_exe = std::env::current_exe()?;
                 let mut cmd = Command::new(current_exe);
-                cmd.arg("start").arg("--foreground");
+                cmd.arg("start")
+                    .arg("--foreground")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
 
                 match cmd.spawn() {
                     Ok(child) => {

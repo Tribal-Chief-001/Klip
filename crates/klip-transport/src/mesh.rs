@@ -150,7 +150,13 @@ impl MeshNode {
                         }
 
                         // Forward packet to daemon inbound channel
-                        let _ = self.inbound_tx.send(packet).await;
+                        let _ = self.inbound_tx.send(packet.clone()).await;
+
+                        // Drain pending mailbox items for this peer now that we have their address
+                        let pending_items = self.mailbox.fetch_and_drain(&packet.header.sender);
+                        for item in pending_items {
+                            let _ = self.socket.send_to(&item.encrypted_blob, remote_addr).await;
+                        }
                     }
                 }
                 Err(_) => {

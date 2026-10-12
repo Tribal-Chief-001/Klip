@@ -19,7 +19,9 @@ pub fn cf_html_to_utf8(cf_html: &str) -> String {
     ) {
         let content_start = start_idx + FRAGMENT_START_MARKER.len();
         if content_start <= end_idx {
-            return cf_html[content_start..end_idx].to_string();
+            if let Some(slice) = cf_html.get(content_start..end_idx) {
+                return slice.to_string();
+            }
         }
     }
 
@@ -27,16 +29,17 @@ pub fn cf_html_to_utf8(cf_html: &str) -> String {
     for line in cf_html.lines() {
         if line.starts_with("StartFragment:") {
             if let Ok(offset) = line["StartFragment:".len()..].trim().parse::<usize>() {
-                if offset < cf_html.len() {
-                    let fragment_slice = &cf_html[offset..];
-                    if let Some(end_offset_line) = cf_html.lines().find(|l| l.starts_with("EndFragment:")) {
-                        if let Ok(end) = end_offset_line["EndFragment:".len()..].trim().parse::<usize>() {
-                            if end <= cf_html.len() && offset <= end {
-                                return cf_html[offset..end].to_string();
+                if let Some(end_offset_line) = cf_html.lines().find(|l| l.starts_with("EndFragment:")) {
+                    if let Ok(end) = end_offset_line["EndFragment:".len()..].trim().parse::<usize>() {
+                        if offset <= end {
+                            if let Some(slice) = cf_html.get(offset..end) {
+                                return slice.to_string();
                             }
                         }
                     }
-                    return fragment_slice.to_string();
+                }
+                if let Some(slice) = cf_html.get(offset..) {
+                    return slice.to_string();
                 }
             }
         }
