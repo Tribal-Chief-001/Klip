@@ -234,7 +234,8 @@ class KlipSyncService : Service() {
         logWatcher?.stop()
         runCatching { multicastLock?.takeIf { it.isHeld }?.release() }
         scope.cancel()
-        KlipRuntime.stop()
+        // Stopping the engine waits for the network to shut down; never block the main thread.
+        Thread({ KlipRuntime.stop() }, "klip-stop").start()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

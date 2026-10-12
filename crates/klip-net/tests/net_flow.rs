@@ -346,3 +346,23 @@ async fn large_clip_and_unpair() {
         .await;
     assert!(expect_clip(&mut host, 2).await.is_none());
 }
+
+#[tokio::test]
+async fn paired_devices_stay_connected_without_traffic_and_reconnect() {
+    let host = spawn_node("Laptop", true, None).await;
+    let phone = spawn_node("Phone", true, None).await;
+    pair(&host, &phone).await;
+
+    // No clip is ever sent: both sides must still report the other as connected.
+    let connected = |h: &Harness| h.node.peer_statuses().iter().all(|p| p.connected);
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && !(connected(&host) && connected(&phone)) {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(connected(&host), "host should see the phone as connected");
+    assert!(connected(&phone), "phone should see the host as connected");
+
+    // Unpairing removes the peer from status entirely.
+    assert!(host.node.unpair(&phone.node.id()));
+    assert!(host.node.peer_statuses().is_empty());
+}

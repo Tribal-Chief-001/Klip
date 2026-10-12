@@ -16,6 +16,9 @@ use tokio::time::timeout;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(20);
+const MAINTAIN_TICK: Duration = Duration::from_secs(5);
+const RECONNECT_MIN: Duration = Duration::from_secs(5);
+const RECONNECT_MAX: Duration = Duration::from_secs(60);
 const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(60);
 const PAIR_CLIENT_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_PAIR_FAILURES: u8 = 5;
@@ -193,6 +196,7 @@ impl KlipNode {
         });
         let node = Self { endpoint, inner };
         node.spawn_accept_loop();
+        node.spawn_connection_maintainer();
         Ok((node, rx))
     }
 
@@ -484,6 +488,51 @@ impl KlipNode {
                 tokio::spawn(async move {
                     node.handle_incoming(incoming).await;
                 });
+            }
+        });
+    }
+
+    /// Keep a connection open to every paired peer (reconnecting with exponential backoff), so
+    /// "connected" in status screens is true and the first clip does not pay connection setup.
+    fn spawn_connection_maintainer(&self) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            let mut retry: HashMap<EndpointId, (Instant, Duration)> = HashMap::new();
+            let mut tick = tokio::time::interval(MAINTAIN_TICK);
+            loop {
+                tokio::select! {
+                    _ = node.endpoint.closed() => return,
+                    _ = tick.tick() => {}
+                }
+                let live: Vec<EndpointId> = node
+                    .peer_statuses()
+                    .into_iter()
+                    .filter(|p| p.connected)
+                    .map(|p| p.id)
+                    .collect();
+                let paired: Vec<EndpointId> = node.peers().into_iter().map(|p| p.id).collect();
+                retry.retain(|id, _| paired.contains(id));
+                for id in paired {
+                    if live.contains(&id) {
+                        retry.remove(&id);
+                        continue;
+                    }
+                    if matches!(retry.get(&id), Some((next, _)) if Instant::now() < *next) {
+                        continue;
+                    }
+                    match node.connection_to(id, true).await {
+                        Ok(_) => {
+                            retry.remove(&id);
+                        }
+                        Err(_) => {
+                            let delay = retry
+                                .get(&id)
+                                .map(|(_, d)| (*d * 2).min(RECONNECT_MAX))
+                                .unwrap_or(RECONNECT_MIN);
+                            retry.insert(id, (Instant::now() + delay, delay));
+                        }
+                    }
+                }
             }
         });
     }
