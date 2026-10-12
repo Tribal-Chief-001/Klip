@@ -72,6 +72,21 @@
             </intent-filter>
         </activity>
 
+        <!-- "Klip" in the Share sheet (links/text from any app). -->
+        <activity
+            android:name=".ShareTextActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="@string/share_label"
+            android:theme="@style/Theme.Klip.Transparent">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
         <!-- Quick Settings tile: tap to send the current clipboard. -->
         <service
             android:name=".KlipTileService"

@@ -113,7 +113,7 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 | I want to… | Do this |
 |---|---|
 | Copy on the computer, paste on the phone | Just copy. It arrives on the phone's clipboard by itself. |
-| Copy on the phone, paste on the computer | See [Phone → computer](#phone--computer-android-limits) below. |
+| Copy on the phone, paste on the computer | Share → Klip, or tile / notification button (Android can't notice a copy by itself — see [why](#phone--computer-android-limits)). |
 | See what happened | `klip status`, `klip history` |
 | Send text without copying | `klip send "text"` |
 | Stop syncing for a while | `klip pause 600` … `klip resume` |
@@ -121,28 +121,37 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 
 ### Phone → computer (Android limits)
 
-Android only lets the app **in front** read the clipboard, so a copy made in another app can't be noticed in the background. This is an Android rule, not a Klip bug. Options, easiest first:
+**Why isn't it automatic?** Android 10+ only lets the app *in front* read the clipboard, and — verified on Android 14 — it does not even tell Klip that something was copied while another app is in front. So Klip cannot notice a copy by itself. (Computer → phone is instant because *writing* the clipboard is allowed.) Ways around it, easiest first, none needs special permissions:
 
-1. **Quick Settings tile** “Klip” (swipe down, edit tiles, add Klip): tap it after copying.
-2. **“Send clipboard”** button inside Klip's notification.
-3. **“Send to Klip”** in the text-selection menu of any app.
-4. **Automatic mode** (what KDE Connect does): needs a computer once — details in the app under *Automatic copy from this phone (setup)*:
-   ```bash
-   adb shell pm grant com.klip.app android.permission.READ_LOGS
-   ```
-   plus allowing “Display over other apps” for Klip. Klip then reads only its own “clipboard access denied” line from the system log. Undo with `adb shell pm revoke com.klip.app android.permission.READ_LOGS`.
+1. **Share → Klip** — in any app (browser, chat…) use the normal Share button and pick **Klip**. Best for links.
+2. **Select text → ⋮ → “Send to Klip”** in the text-selection menu.
+3. **Quick Settings tile** “Klip” (swipe down, edit tiles, add Klip): copy, then tap the tile.
+4. **“Send clipboard”** button in Klip's notification.
 
-Writing *to* the phone's clipboard from the background works without any special permission (tested on Android 14: the clip was there after Klip was in the background). If some phone brand blocks it, Klip shows a “tap to copy” notification instead of dropping the clip.
+Both 1 and 2 were tested to reach the computer without opening Klip.
+
+**Experimental automatic mode (not verified).** KDE Connect watches Android's system log for the “clipboard access denied” line and then briefly shows a transparent window to read the clip. Klip has the same mechanism, off by default. It needs a computer once (`adb shell pm grant com.klip.app android.permission.READ_LOGS`) plus “Display over other apps”; the in-app *Automatic copy from this phone (setup)* screen explains it. **I could not verify it**: on the Android 14 emulator the app was not given other apps' log lines even with the permission granted; people report it working on real phones. Treat it as a try-it-yourself option; undo with `adb shell pm revoke com.klip.app android.permission.READ_LOGS`.
+
+Writing *to* the phone's clipboard from the background works without any special permission (tested on Android 14). If some phone brand blocks it, Klip shows a “tap to copy” notification instead of dropping the clip.
+
+### Banking / UPI apps
+
+Out of the box Klip uses **no Accessibility service** (the earlier prototype did, which is what made UPI apps complain) and none of the special permissions; “Display over other apps” and log access are *off* unless you turn them on yourself. I could not test real UPI apps (no Play Store on my test device), so this is unverified. If a payment app complains: make sure “Display over other apps” and (if you did the adb step) `READ_LOGS` are off for Klip, and stop Klip's notification service while paying if needed. Tell me which app and message it shows and I will build a lean variant without the optional permissions.
 
 ## Start automatically
+
+| Platform | Status |
+|---|---|
+| **Linux** | `klip install-service` + `systemctl --user enable --now klip.service` starts it at every login (systemd user unit, enabled on the author's machine; a full reboot cycle has not been exercised yet). |
+| **Android** | The background service is set up to restart after a reboot and to reconnect by itself; **boot restart is not tested yet**. Some phone brands (Xiaomi, Oppo, Vivo, Samsung…) additionally kill background apps: allow background activity / auto-start for Klip in the phone's battery settings. If you force-stop Klip, open it once to start it again. |
+| **macOS** | `klip install-service` writes a launchd agent — never run, untested. |
+| **Windows** | `klip install-service` writes a Task Scheduler script — never run; the Windows CLI also cannot control the daemon yet. |
 
 ```bash
 klip install-service
 systemctl --user enable --now klip.service
 systemctl --user status klip.service
 ```
-
-On Android the background service is set up to restart after a reboot (this part is not tested yet).
 
 ## Settings
 
@@ -210,7 +219,7 @@ On Android the background service is set up to restart after a reboot (this part
 | Pairing: “invalid or expired pairing code” | tickets work once and expire; run `klip pair` again |
 | `klip start` says it did not come up | read `~/.config/klip/daemon.log` |
 | Nothing syncs on Wayland | Klip currently uses the X11 clipboard (XWayland); GNOME/Wayland needs an extension that is not finished |
-| Banking/UPI app complains about Klip | Klip no longer uses an Accessibility service; if you enabled the old one, remove it in Android settings |
+| Banking/UPI app complains about Klip | see [Banking / UPI apps](#banking--upi-apps); also remove the old prototype's Accessibility service if it is still enabled |
 
 ## Build & test from source
 

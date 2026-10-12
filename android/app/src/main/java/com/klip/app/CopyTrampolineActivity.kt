@@ -74,6 +74,8 @@ class CopyTrampolineActivity : Activity() {
             if (!quiet) toast(app, "Klip: the clipboard is empty")
             return
         }
+        // Automatic (quiet) mode must never bounce back what Klip itself just wrote.
+        if (quiet && text == KlipRuntime.lastWrittenText) return
         val engine = KlipRuntime.engine
         if (engine == null) {
             KlipSyncService.start(app)

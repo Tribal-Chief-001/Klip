@@ -16,6 +16,13 @@ object KlipRuntime {
 
     private val lock = Any()
 
+    /** What Klip itself last put on the clipboard (and when): used to tell its own writes apart from user copies. */
+    @Volatile var lastWrittenText: String? = null
+    @Volatile var lastWrittenAtMs: Long = 0
+
+    fun recentlyWroteClipboard(withinMs: Long = 3000): Boolean =
+        System.currentTimeMillis() - lastWrittenAtMs < withinMs
+
     fun deviceName(): String {
         val maker = Build.MANUFACTURER.replaceFirstChar { it.uppercase() }
         val model = Build.MODEL

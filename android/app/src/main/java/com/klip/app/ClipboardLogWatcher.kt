@@ -32,12 +32,14 @@ class ClipboardLogWatcher(
                     arrayOf("logcat", "-T", "1", "-v", "brief", "ClipboardService:V", "*:S")
                 )
                 process = p
+                Log.i(TAG, "watching the system log for refused clipboard reads")
                 p.inputStream.bufferedReader().forEachLine { line ->
                     if (!running) return@forEachLine
                     if (line.contains(ctx.packageName) && line.contains("Denying clipboard access")) {
                         val now = System.currentTimeMillis()
                         if (now - lastTrigger > 800) {
                             lastTrigger = now
+                            Log.i(TAG, "background copy was refused by Android: opening the reader window")
                             onDenied()
                         }
                     }

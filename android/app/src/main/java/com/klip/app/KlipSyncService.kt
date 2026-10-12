@@ -117,12 +117,22 @@ class KlipSyncService : Service() {
         if (watcher.isPermitted()) {
             watcher.start()
             logWatcher = watcher
+        } else {
+            Log.i(TAG, "automatic copy mode off (READ_LOGS not granted)")
         }
     }
 
     /** A background copy was refused by Android: bring up the transparent reader window. */
     private fun launchClipboardReader() {
-        if (!Settings.canDrawOverlays(this)) return
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "automatic mode needs the 'display over other apps' permission")
+            return
+        }
+        // Our own write (a clip that just arrived) also triggers a refused read: nothing to send.
+        if (KlipRuntime.recentlyWroteClipboard()) {
+            Log.i(TAG, "ignoring refused read caused by Klip's own clipboard write")
+            return
+        }
         main.post {
             try {
                 startActivity(

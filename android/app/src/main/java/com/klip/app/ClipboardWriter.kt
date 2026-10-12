@@ -37,6 +37,8 @@ class ClipboardWriter(
                 }
             }
             lastWritten = text
+            KlipRuntime.lastWrittenText = text
+            KlipRuntime.lastWrittenAtMs = System.currentTimeMillis()
             cm.setPrimaryClip(clip)
             onApplied(if (sensitive) "secret (hidden)" else text.take(60))
             true
