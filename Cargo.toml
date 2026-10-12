@@ -6,6 +6,7 @@ members = [
     "crates/klip-diff",
     "crates/klip-platform",
     "crates/klip-transport",
+    "crates/klip-net",
     "crates/klip-daemon",
     "crates/klip-cli",
 ]
@@ -52,6 +53,10 @@ qr2term = "0.3"
 arboard = "3.4"
 
 # Networking
+iroh = { version = "1", default-features = false, features = ["tls-ring", "portmapper"] }
+postcard = { version = "1", features = ["use-std"] }
+data-encoding = "2"
+subtle = "2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
@@ -61,6 +66,7 @@ klip-crypto = { path = "crates/klip-crypto" }
 klip-diff = { path = "crates/klip-diff" }
 klip-platform = { path = "crates/klip-platform" }
 klip-transport = { path = "crates/klip-transport" }
+klip-net = { path = "crates/klip-net" }
 klip-daemon = { path = "crates/klip-daemon" }
 
 [profile.release]

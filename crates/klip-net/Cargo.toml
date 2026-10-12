@@ -1,0 +1,17 @@
+[package]
+name = "klip-net"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Klip networking: iroh QUIC endpoint, pairing and authenticated clipboard sync"
+
+[dependencies]
+klip-proto = { workspace = true }
+iroh = { workspace = true }
+postcard = { workspace = true }
+data-encoding = { workspace = true }
+subtle = { workspace = true }
+serde = { workspace = true }
+rand = { workspace = true }
+tokio = { workspace = true }
