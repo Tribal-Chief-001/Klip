@@ -19,7 +19,7 @@ impl DaemonClient {
         {
             let mut stream = UnixStream::connect(&sock_path)
                 .await
-                .map_err(|e| format!("Failed to connect to Klip daemon: {}", e))?;
+                .map_err(|_| "Klip daemon is not running or not responding. Launch it with `klip start`.".to_string())?;
 
             let serialized = serialize_ipc_msg(req)?;
             let len_bytes = (serialized.len() as u32).to_be_bytes();
