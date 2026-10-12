@@ -1,8 +1,30 @@
+# Rust Build Artifacts
 /target
 **/*.rs.bk
 Cargo.lock
+
+# Klip Runtime & Local Daemons
 .klip/
 .cache/
 *.sock
 *.log
+
+# Android & Gradle Build Artifacts
+.gradle/
+**/build/
+android/.gradle/
+android/app/build/
+android-build/
+*.apk
+*.aab
+*.ap_
+
+# Local Reference & Transcripts
 Klip_Full_Chat_Transcript.txt
+*.bak
+*.tmp
+
+# Operating System Metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
