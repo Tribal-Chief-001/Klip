@@ -35,8 +35,13 @@ class KlipSyncService : Service() {
         const val ACTION_STOP = "com.klip.app.ACTION_STOP"
         const val ACTION_INJECT_CLIP = "com.klip.app.ACTION_INJECT_CLIP"
         const val ACTION_PAIR = "com.klip.app.ACTION_PAIR"
+        const val ACTION_BROADCAST_CLIP = "com.klip.app.ACTION_BROADCAST_CLIP"
+
+        const val CLIP_NOTIFICATION_CHANNEL_ID = "klip_clip_channel"
+        const val CLIP_NOTIFICATION_ID = 40402
 
         const val EXTRA_CLIP_TEXT = "extra_clip_text"
+        const val EXTRA_IS_SENSITIVE = "extra_is_sensitive"
         const val EXTRA_PAIR_TOKEN = "extra_pair_token"
 
         const val PREFS_NAME = "klip_prefs"
@@ -113,9 +118,17 @@ class KlipSyncService : Service() {
             }
             ACTION_INJECT_CLIP -> {
                 val text = intent.getStringExtra(EXTRA_CLIP_TEXT) ?: ""
+                val isSensitive = intent.getBooleanExtra(EXTRA_IS_SENSITIVE, false)
                 if (text.isNotEmpty()) {
-                    KlipAccessibilityService.injectRemoteClip(this, text)
-                    updateNotification("Synced remote clip (${text.length} chars)")
+                    handleIncomingClip(text, isSensitive)
+                }
+            }
+            ACTION_BROADCAST_CLIP -> {
+                val text = intent.getStringExtra(EXTRA_CLIP_TEXT) ?: ""
+                if (text.isNotEmpty()) {
+                    lastLocalFingerprint = text
+                    broadcastLocalClip(text)
+                    updateNotification("Broadcasting clip (${text.length} chars)")
                 }
             }
             else -> {
@@ -243,11 +256,8 @@ class KlipSyncService : Service() {
                     if (clipText.isNotEmpty() && clipText != lastRemoteFingerprint) {
                         lastRemoteFingerprint = clipText
                         lastLocalFingerprint = clipText
-                        Log.i(TAG, "Remote clip received (${clipText.length} chars). Injecting...")
                         val isSensitive = (header.flags.toInt() and KlipProtocol.FLAG_SENSITIVE.toInt()) != 0
-                        KlipAccessibilityService.injectRemoteClip(this, clipText, isSensitive)
-                        val preview = if (clipText.length > 25) clipText.take(25) + "..." else clipText
-                        updateNotification("Synced: \"$preview\"")
+                        handleIncomingClip(clipText, isSensitive)
                     }
                 }
                 else -> {
@@ -440,18 +450,86 @@ class KlipSyncService : Service() {
         }
     }
 
+    private fun handleIncomingClip(clipText: String, isSensitive: Boolean) {
+        val preview = if (clipText.length > 30) clipText.take(30) + "…" else clipText
+        val accessibilityActive = KlipAccessibilityService.isServiceRunning()
+
+        if (accessibilityActive) {
+            Log.i(TAG, "Silent auto-sync: injecting via scoped AccessibilityService (${clipText.length} chars)")
+            KlipAccessibilityService.injectRemoteClip(this, clipText, isSensitive)
+            updateNotification("Auto-synced: \"$preview\"")
+        } else {
+            Log.i(TAG, "Bank-Safe mode: showing interactive notification with Copy action (${clipText.length} chars)")
+            updateNotification("Incoming clip: \"$preview\"")
+        }
+
+        // Show interactive heads-up notification with Copy Trampoline action button
+        showIncomingClipNotification(clipText, isSensitive, accessibilityActive)
+    }
+
+    private fun showIncomingClipNotification(clipText: String, isSensitive: Boolean, accessibilityAlreadyInjected: Boolean) {
+        val trampolineIntent = Intent(this, CopyTrampolineActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(CopyTrampolineActivity.EXTRA_CLIP_TEXT, clipText)
+            putExtra(CopyTrampolineActivity.EXTRA_IS_SENSITIVE, isSensitive)
+        }
+
+        val pendingCopyIntent = PendingIntent.getActivity(
+            this,
+            System.currentTimeMillis().toInt(),
+            trampolineIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val displayText = if (isSensitive) "•••••••• (Sensitive Content)" else clipText
+        val snippet = if (displayText.length > 80) displayText.take(80) + "…" else displayText
+
+        val title = if (accessibilityAlreadyInjected) "📋 Klip Synced to Clipboard" else "📎 Klip Received from PC"
+
+        val notification = NotificationCompat.Builder(this, CLIP_NOTIFICATION_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_agenda)
+            .setContentTitle(title)
+            .setContentText(snippet)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(displayText))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setContentIntent(pendingCopyIntent)
+            .addAction(
+                android.R.drawable.ic_menu_save,
+                "📋 Copy to Clipboard",
+                pendingCopyIntent
+            )
+            .build()
+
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(CLIP_NOTIFICATION_ID, notification)
+    }
+
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
+            val manager = getSystemService(NotificationManager::class.java)
+
+            val persistentChannel = NotificationChannel(
                 CHANNEL_ID,
-                "Klip Universal Clipboard",
+                "Klip Engine Service",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Maintains persistent E2EE clipboard synchronization"
+                description = "Maintains persistent E2EE mesh clipboard synchronization"
                 setShowBadge(false)
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            manager.createNotificationChannel(persistentChannel)
+
+            val clipChannel = NotificationChannel(
+                CLIP_NOTIFICATION_CHANNEL_ID,
+                "Incoming Clip Notifications",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Heads-up notification for incoming clips with 1-tap Copy action (UPI safe)"
+                enableVibration(true)
+                setShowBadge(true)
+            }
+            manager.createNotificationChannel(clipChannel)
         }
     }
 

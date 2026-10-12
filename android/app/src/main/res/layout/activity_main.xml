@@ -23,7 +23,7 @@
         android:textSize="14sp"
         android:layout_marginBottom="24dp" />
 
-    <!-- Status Card -->
+    <!-- Dual Sync Mode Info Card -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -41,6 +41,21 @@
             android:textSize="14sp"
             android:textStyle="bold" />
 
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1E293B"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⚡ Mode 1: Silent Auto-Sync"
+            android:textColor="#F59E0B"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
         <TextView
             android:id="@+id/tvAccessibilityNotice"
             android:layout_width="wrap_content"
@@ -48,14 +63,37 @@
             android:text="Checking Accessibility Service..."
             android:textColor="#94A3B8"
             android:textSize="12sp"
-            android:layout_marginTop="8dp" />
+            android:layout_marginTop="4dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#1E293B"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🛡️ Mode 2: UPI &amp; Bank Safe Mode"
+            android:textColor="#38BDF8"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="100% PhonePe / GPay / Paytm compatible. Pull down status bar to use '📎 Klip' Quick Settings tile, tap 'Copy to Clipboard' on incoming notifications, or use 'Send to Klip' text context menu."
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            android:layout_marginTop="4dp" />
     </LinearLayout>
 
     <Button
         android:id="@+id/btnEnableAccessibility"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="⚡ Enable Silent Auto-Sync"
+        android:text="⚡ Toggle Scoped Auto-Sync"
         android:backgroundTint="#F59E0B"
         android:textColor="#000000"
         android:textStyle="bold"

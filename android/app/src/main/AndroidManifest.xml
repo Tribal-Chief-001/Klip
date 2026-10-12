@@ -36,7 +36,40 @@
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Klip" />
 
-        <!-- True Silent Auto-Sync via Accessibility Service (KDE Connect Grade) -->
+        <!-- Lightweight Transparent Trampoline for Direct Foreground Clipboard Injection (Banking & UPI Safe) -->
+        <activity
+            android:name=".CopyTrampolineActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.Klip.Transparent" />
+
+        <!-- Direct Text Selection Action (Context Menu "Send to Klip") -->
+        <activity
+            android:name=".ProcessTextActivity"
+            android:exported="true"
+            android:label="@string/process_text_label"
+            android:theme="@style/Theme.Klip.Transparent">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Android Quick Settings (QS) Tile Service (100% Safe Clipboard Sync) -->
+        <service
+            android:name=".KlipTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_klip_logo"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <!-- True Silent Auto-Sync via Accessibility Service (KDE Connect Grade, Scoped to Klip) -->
         <service
             android:name=".KlipAccessibilityService"
             android:exported="true"

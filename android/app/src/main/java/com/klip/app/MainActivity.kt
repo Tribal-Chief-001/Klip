@@ -78,21 +78,29 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnSimulatePaste.setOnClickListener {
-            // Test injecting a clip directly via accessibility service
-            val sampleClip = "https://github.com/Tribal-Chief-001/Klip (Synced from Android)"
-            KlipAccessibilityService.injectRemoteClip(this, sampleClip)
-            Toast.makeText(this, "Injected clip into Android clipboard!", Toast.LENGTH_SHORT).show()
+            // Test injecting a clip via the dual-mode mechanism
+            val sampleClip = "https://github.com/Tribal-Chief-001/Klip (Synced from Klip companion)"
+            val intent = Intent(this, KlipSyncService::class.java).apply {
+                action = KlipSyncService.ACTION_INJECT_CLIP
+                putExtra(KlipSyncService.EXTRA_CLIP_TEXT, sampleClip)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Toast.makeText(this, "Simulated incoming clip processed!", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun updateAccessibilityUI() {
         val isEnabled = KlipAccessibilityService.isServiceRunning()
         if (isEnabled) {
-            tvAccessibilityNotice.text = "🟢 Silent Auto-Sync Active (Accessibility Enabled)"
-            btnEnableAccessibility.visibility = android.view.View.GONE
+            tvAccessibilityNotice.text = "🟢 Active (Scoped strictly to Klip • Zero screen reading/keylogging • RASP-safe)"
+            btnEnableAccessibility.text = "⚙️ Configure Accessibility"
         } else {
-            tvAccessibilityNotice.text = "⚠️ Silent Auto-Sync Off (Enable Accessibility for zero-click sync)"
-            btnEnableAccessibility.visibility = android.view.View.VISIBLE
+            tvAccessibilityNotice.text = "⚪ Inactive (UPI & Banking Safe Mode fully active via Notifications & QS Tile)"
+            btnEnableAccessibility.text = "⚡ Enable Silent Auto-Sync"
         }
     }
 

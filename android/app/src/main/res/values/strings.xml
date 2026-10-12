@@ -2,4 +2,6 @@
     <string name="app_name">Klip</string>
     <string name="accessibility_service_label">Klip Clipboard Auto-Sync</string>
     <string name="accessibility_service_description">Enables autonomous silent clipboard synchronization between your PC and Android phone (KDE Connect grade zero-click sync).</string>
+    <string name="tile_label">Klip</string>
+    <string name="process_text_label">Send to Klip</string>
 </resources>
