@@ -14,9 +14,9 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/ic_klip_logo"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher"
+        android:roundIcon="@drawable/ic_klip_logo"
         android:supportsRtl="true"
         android:theme="@style/Theme.Klip">
 
