@@ -80,6 +80,11 @@
         android:textColor="#E2E8F0"
         android:layout_marginBottom="16dp" />
 
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -87,6 +92,6 @@
         android:textColor="#475569"
         android:textSize="11sp"
         android:layout_gravity="center_horizontal"
-        android:layout_marginTop="auto" />
+        android:layout_marginBottom="8dp" />
 
 </LinearLayout>
