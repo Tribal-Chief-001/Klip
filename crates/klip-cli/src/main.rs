@@ -64,7 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let sock_path = get_ipc_socket_path();
             if sock_path.exists() {
                 // Check if responding
-                if let Ok(IpcResponse::Status(_)) = DaemonClient::send_request(&IpcRequest::GetStatus).await {
+                if let Ok(IpcResponse::Status(_)) =
+                    DaemonClient::send_request(&IpcRequest::GetStatus).await
+                {
                     println!("{}", "Klip daemon is already running.".yellow());
                     return Ok(());
                 } else {
@@ -95,7 +97,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(child) => {
                         println!(
                             "{} (PID: {})",
-                            "✓ Klip daemon launched successfully in background.".green().bold(),
+                            "✓ Klip daemon launched successfully in background."
+                                .green()
+                                .bold(),
                             child.id()
                         );
                     }
@@ -129,7 +133,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(tok) = token {
                 println!("{}", "Connecting to peer using token...".cyan());
                 match DaemonClient::send_request(&IpcRequest::PairConnect { token: tok }).await {
-                    Ok(IpcResponse::PairSuccess { peer_node, peer_name }) => {
+                    Ok(IpcResponse::PairSuccess {
+                        peer_node,
+                        peer_name,
+                    }) => {
                         println!(
                             "{} Linked with {} ({})",
                             "✓".green().bold(),
@@ -143,7 +150,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 match DaemonClient::send_request(&IpcRequest::PairInit).await {
-                    Ok(IpcResponse::PairCode { qr_ascii, sas_code, token }) => {
+                    Ok(IpcResponse::PairCode {
+                        qr_ascii,
+                        sas_code,
+                        token,
+                    }) => {
                         // Attempt to print terminal QR code
                         if qr2term::print_qr(&token).is_err() {
                             println!("{}", qr_ascii);
@@ -157,7 +168,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::Pause { duration } => {
-            match DaemonClient::send_request(&IpcRequest::Pause { duration_secs: duration }).await {
+            match DaemonClient::send_request(&IpcRequest::Pause {
+                duration_secs: duration,
+            })
+            .await
+            {
                 Ok(IpcResponse::Paused { remaining_secs }) => {
                     println!(
                         "{} Synchronization paused for {} seconds ({}m).",
@@ -208,8 +223,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "linux")]
             {
                 if let Some(home) = std::env::var_os("HOME") {
-                    let dest = std::path::PathBuf::from(home)
-                        .join(".config/systemd/user/klip.service");
+                    let dest =
+                        std::path::PathBuf::from(home).join(".config/systemd/user/klip.service");
                     klip_daemon::generate_systemd_unit_file(&dest)?;
                     println!(
                         "{} Installed systemd unit to {}\nRun: `systemctl --user enable --now klip.service`",

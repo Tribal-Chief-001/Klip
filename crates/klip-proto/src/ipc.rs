@@ -57,11 +57,18 @@ pub enum IpcResponse {
         sas_code: String,
         token: String,
     },
-    PairSuccess { peer_node: NodeId, peer_name: String },
-    Paused { remaining_secs: u64 },
+    PairSuccess {
+        peer_node: NodeId,
+        peer_name: String,
+    },
+    Paused {
+        remaining_secs: u64,
+    },
     Resumed,
     History(Vec<HistoryItem>),
-    Sent { bytes: usize },
+    Sent {
+        bytes: usize,
+    },
     DaemonStopping,
     Error(String),
 }

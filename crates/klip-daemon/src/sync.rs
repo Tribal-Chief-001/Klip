@@ -10,8 +10,8 @@ use klip_diff::entropy::analyze_snippet;
 use klip_platform::driver::ClipboardDriver;
 use klip_proto::hlc::HybridLogicalClock;
 use klip_proto::wire::{
-    ClipContentType, MessageType, WireHeader, WirePacket, CURRENT_VERSION,
-    FLAG_DELTA, FLAG_ENCRYPTED, FLAG_SENSITIVE, MAGIC_BYTES,
+    ClipContentType, MessageType, WireHeader, WirePacket, CURRENT_VERSION, FLAG_DELTA,
+    FLAG_ENCRYPTED, FLAG_SENSITIVE, MAGIC_BYTES,
 };
 use klip_transport::mesh::MeshNode;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -77,7 +77,8 @@ impl SyncCoordinator {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.pause_until_secs.store(now + duration_secs, Ordering::SeqCst);
+        self.pause_until_secs
+            .store(now + duration_secs, Ordering::SeqCst);
         self.is_paused.store(true, Ordering::SeqCst);
     }
 
@@ -226,13 +227,15 @@ impl SyncCoordinator {
 
         let header_bytes = packet.header.to_bytes();
         let mut decrypted_payload = packet.payload;
-        if let Err(_) = decrypt_payload_in_place_with_aad(
+        if decrypt_payload_in_place_with_aad(
             &sym_key,
             &packet.header.nonce,
             &header_bytes,
             &mut decrypted_payload,
             &packet.tag,
-        ) {
+        )
+        .is_err()
+        {
             return; // Corrupted or tampered
         }
 
@@ -263,7 +266,9 @@ impl SyncCoordinator {
 
         // 4. Delta reconstruction if patch
         let final_data = if (packet.header.flags & FLAG_DELTA) != 0 {
-            if let Ok(delta) = bincode::deserialize::<klip_diff::delta::DeltaPatch>(&decrypted_payload) {
+            if let Ok(delta) =
+                bincode::deserialize::<klip_diff::delta::DeltaPatch>(&decrypted_payload)
+            {
                 let mut cache = self.diff_cache.lock().unwrap();
                 match cache.apply_delta(&delta) {
                     Ok(reconstructed) => {
@@ -284,7 +289,9 @@ impl SyncCoordinator {
         let is_sensitive = (packet.header.flags & FLAG_SENSITIVE) != 0;
 
         // 5. Inject into host OS clipboard (Echo Shield suppresses echo loop)
-        let _ = self.driver.write_clip(&ClipContentType::PlainTextUtf8, &final_data);
+        let _ = self
+            .driver
+            .write_clip(&ClipContentType::PlainTextUtf8, &final_data);
 
         // 6. Record in local history buffer
         self.history.push(
@@ -316,11 +323,14 @@ impl SyncCoordinator {
             &header_bytes,
             &mut payload,
             &packet.tag,
-        ).is_err() {
+        )
+        .is_err()
+        {
             return;
         }
 
-        let peer_name = String::from_utf8(payload).unwrap_or_else(|_| format!("Klip-{}", packet.header.sender.short_id()));
+        let peer_name = String::from_utf8(payload)
+            .unwrap_or_else(|_| format!("Klip-{}", packet.header.sender.short_id()));
         let peer_node = packet.header.sender;
 
         // Save to keystore
@@ -331,7 +341,9 @@ impl SyncCoordinator {
         }
 
         // Add to active mesh
-        self.mesh.add_peer(peer_node, peer_name.clone(), sym_key.clone(), None).await;
+        self.mesh
+            .add_peer(peer_node, peer_name.clone(), sym_key.clone(), None)
+            .await;
 
         // Clear pending pairing
         *self.pending_pairing.lock().await = None;
@@ -352,7 +364,9 @@ impl SyncCoordinator {
             payload_len: ack_payload.len() as u32,
         };
         let ack_header_bytes = ack_header.to_bytes();
-        if let Ok(tag) = encrypt_payload_in_place_with_aad(&sym_key, &nonce, &ack_header_bytes, &mut ack_payload) {
+        if let Ok(tag) =
+            encrypt_payload_in_place_with_aad(&sym_key, &nonce, &ack_header_bytes, &mut ack_payload)
+        {
             let ack_packet = WirePacket {
                 header: ack_header,
                 payload: ack_payload,
@@ -372,7 +386,9 @@ impl SyncCoordinator {
                 &header_bytes,
                 &mut payload,
                 &packet.tag,
-            ).is_ok() {
+            )
+            .is_ok()
+            {
                 let mut peers = self.mesh.peers.lock().await;
                 if let Some(peer) = peers.get_mut(&packet.header.sender) {
                     peer.last_seen = tokio::time::Instant::now();

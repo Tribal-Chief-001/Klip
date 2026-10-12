@@ -160,10 +160,7 @@ fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
     }
     (0..hex.len())
         .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .map_err(|e| e.to_string())
-        })
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
         .collect()
 }
 
@@ -192,7 +189,11 @@ mod tests {
         store.add_peer(peer);
         assert!(store.get_peer(&peer_node).is_some());
 
-        let loaded_key = store.get_peer(&peer_node).unwrap().get_symmetric_key().unwrap();
+        let loaded_key = store
+            .get_peer(&peer_node)
+            .unwrap()
+            .get_symmetric_key()
+            .unwrap();
         assert_eq!(loaded_key.as_bytes(), sym_key.as_bytes());
     }
 }

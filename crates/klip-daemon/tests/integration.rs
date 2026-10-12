@@ -1,6 +1,6 @@
 use klip_crypto::aead::{
-    decrypt_payload_in_place, decrypt_payload_in_place_with_aad,
-    encrypt_payload_in_place, encrypt_payload_in_place_with_aad, NonceGenerator, SymmetricKey,
+    decrypt_payload_in_place, decrypt_payload_in_place_with_aad, encrypt_payload_in_place,
+    encrypt_payload_in_place_with_aad, NonceGenerator, SymmetricKey,
 };
 use klip_crypto::identity::DeviceIdentity;
 use klip_crypto::pairing::{compute_sas_invitation, format_sas_pin, PairingInvitation, PairingPsk};
@@ -53,13 +53,9 @@ fn test_end_to_end_e2ee_packet_flow() {
     };
     let header_bytes = header.to_bytes();
 
-    let tag = encrypt_payload_in_place_with_aad(
-        &shared_sym_key,
-        &nonce,
-        &header_bytes,
-        &mut ciphertext,
-    )
-    .expect("Encryption with AAD should succeed");
+    let tag =
+        encrypt_payload_in_place_with_aad(&shared_sym_key, &nonce, &header_bytes, &mut ciphertext)
+            .expect("Encryption with AAD should succeed");
 
     assert_ne!(ciphertext, plaintext);
 
@@ -142,21 +138,38 @@ fn test_header_tampering_aead_aad_failure() {
 
     // 1. Valid decryption succeeds
     let mut valid_buf = payload.clone();
-    assert!(decrypt_payload_in_place_with_aad(&key, &nonce, &header_bytes, &mut valid_buf, &tag).is_ok());
+    assert!(
+        decrypt_payload_in_place_with_aad(&key, &nonce, &header_bytes, &mut valid_buf, &tag)
+            .is_ok()
+    );
 
     // 2. Tampered sender ID in header fails decryption
     let mut tampered_header = header.clone();
     tampered_header.sender = NodeId::new([2u8; 32]);
     let tampered_bytes = tampered_header.to_bytes();
     let mut tampered_buf = payload.clone();
-    assert!(decrypt_payload_in_place_with_aad(&key, &nonce, &tampered_bytes, &mut tampered_buf, &tag).is_err());
+    assert!(decrypt_payload_in_place_with_aad(
+        &key,
+        &nonce,
+        &tampered_bytes,
+        &mut tampered_buf,
+        &tag
+    )
+    .is_err());
 
     // 3. Tampered HLC timestamp in header fails decryption
     let mut tampered_hlc_header = header.clone();
     tampered_hlc_header.hlc_physical = 999999;
     let tampered_hlc_bytes = tampered_hlc_header.to_bytes();
     let mut tampered_hlc_buf = payload.clone();
-    assert!(decrypt_payload_in_place_with_aad(&key, &nonce, &tampered_hlc_bytes, &mut tampered_hlc_buf, &tag).is_err());
+    assert!(decrypt_payload_in_place_with_aad(
+        &key,
+        &nonce,
+        &tampered_hlc_bytes,
+        &mut tampered_hlc_buf,
+        &tag
+    )
+    .is_err());
 }
 
 #[test]
@@ -188,7 +201,8 @@ fn test_edge_case_cf_html_malformed_fallbacks() {
     assert_eq!(output, malformed);
 
     // Malformed non-ASCII UTF-8 offsets: ensure zero panics when offset lands inside multi-byte character
-    let malformed_utf8 = "Version:0.9\r\nStartFragment:20\r\nEndFragment:22\r\nPrefix 🎉 emoji test";
+    let malformed_utf8 =
+        "Version:0.9\r\nStartFragment:20\r\nEndFragment:22\r\nPrefix 🎉 emoji test";
     let output_utf8 = cf_html_to_utf8(malformed_utf8);
     // Should return safely without panicking
     assert!(!output_utf8.is_empty());
@@ -230,7 +244,9 @@ fn test_delta_sequential_modification_chain() {
     // Clip B: modified from A
     let mut clip_b = clip_a.clone();
     clip_b.extend_from_slice(b"\n// Version B addition\n");
-    let delta_b = cache.create_delta_if_beneficial(&clip_b).expect("Delta A->B");
+    let delta_b = cache
+        .create_delta_if_beneficial(&clip_b)
+        .expect("Delta A->B");
     assert_eq!(delta_b.base_hash, hash_a);
 
     // Both sender and receiver insert reconstructed clip B
@@ -241,7 +257,9 @@ fn test_delta_sequential_modification_chain() {
     // Clip C: modified from B
     let mut clip_c = clip_b.clone();
     clip_c.extend_from_slice(b"\n// Version C addition\n");
-    let delta_c = cache.create_delta_if_beneficial(&clip_c).expect("Delta B->C");
+    let delta_c = cache
+        .create_delta_if_beneficial(&clip_c)
+        .expect("Delta B->C");
     assert_eq!(delta_c.base_hash, hash_b);
 
     let reconstructed_c = cache.apply_delta(&delta_c).expect("Apply delta B->C");
@@ -262,7 +280,10 @@ fn test_pairing_invitation_sas_matching() {
     // Joining peer decodes token
     let decoded_invitation = PairingInvitation::from_token(&token).unwrap();
     let decoded_psk = decoded_invitation.parse_psk().unwrap();
-    let peer_sas = format_sas_pin(compute_sas_invitation(&decoded_psk, &decoded_invitation.host_node));
+    let peer_sas = format_sas_pin(compute_sas_invitation(
+        &decoded_psk,
+        &decoded_invitation.host_node,
+    ));
 
     // Both MUST be identical
     assert_eq!(host_sas, peer_sas);

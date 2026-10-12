@@ -83,7 +83,11 @@ impl IpcServer {
             IpcRequest::GetStatus => {
                 let peers = sync.mesh.peer_statuses().await;
                 let last_clip = sync.history.last_item();
-                let last_sync_secs = sync.last_sync_instant.lock().unwrap().map(|t| t.elapsed().as_secs());
+                let last_sync_secs = sync
+                    .last_sync_instant
+                    .lock()
+                    .unwrap()
+                    .map(|t| t.elapsed().as_secs());
 
                 let (last_preview, last_size) = match last_clip {
                     Some(c) => (Some(c.content_preview), c.size_bytes),
@@ -95,7 +99,9 @@ impl IpcServer {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    sync.pause_until_secs.load(Ordering::SeqCst).saturating_sub(now)
+                    sync.pause_until_secs
+                        .load(Ordering::SeqCst)
+                        .saturating_sub(now)
                 } else {
                     0
                 };
@@ -145,15 +151,22 @@ impl IpcServer {
                             // Save to keystore
                             {
                                 let mut ks = sync.keystore.lock().await;
-                                ks.add_peer(PairedPeer::new(peer_node, peer_name.clone(), &peer_key));
+                                ks.add_peer(PairedPeer::new(
+                                    peer_node,
+                                    peer_name.clone(),
+                                    &peer_key,
+                                ));
                                 let _ = ks.save(crate::config::get_keystore_path());
                             }
 
                             // Add to active mesh
-                            sync.mesh.add_peer(peer_node, peer_name.clone(), peer_key.clone(), None).await;
+                            sync.mesh
+                                .add_peer(peer_node, peer_name.clone(), peer_key.clone(), None)
+                                .await;
 
                             // Send Handshake packet to host node across mesh
-                            let mut handshake_payload = sync.config.device_name.clone().into_bytes();
+                            let mut handshake_payload =
+                                sync.config.device_name.clone().into_bytes();
                             let nonce = sync.nonce_gen.next_nonce();
                             let header = WireHeader {
                                 magic: MAGIC_BYTES,
@@ -182,7 +195,10 @@ impl IpcServer {
                                 let _ = sync.mesh.broadcast_packet(&packet).await;
                             }
 
-                            IpcResponse::PairSuccess { peer_node, peer_name }
+                            IpcResponse::PairSuccess {
+                                peer_node,
+                                peer_name,
+                            }
                         }
                         Err(e) => IpcResponse::Error(e),
                     },
@@ -206,7 +222,8 @@ impl IpcServer {
             IpcRequest::SendClip { text } => {
                 let bytes = text.into_bytes();
                 let len = bytes.len();
-                sync.process_local_clip(klip_proto::wire::ClipContentType::PlainTextUtf8, bytes).await;
+                sync.process_local_clip(klip_proto::wire::ClipContentType::PlainTextUtf8, bytes)
+                    .await;
                 IpcResponse::Sent { bytes: len }
             }
             IpcRequest::StopDaemon => {
@@ -219,8 +236,11 @@ impl IpcServer {
     }
 
     #[cfg(unix)]
-    async fn send_response(stream: &mut UnixStream, resp: &IpcResponse) -> Result<(), std::io::Error> {
-        let serialized = serialize_ipc_msg(resp).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    async fn send_response(
+        stream: &mut UnixStream,
+        resp: &IpcResponse,
+    ) -> Result<(), std::io::Error> {
+        let serialized = serialize_ipc_msg(resp).map_err(std::io::Error::other)?;
         let len_bytes = (serialized.len() as u32).to_be_bytes();
         stream.write_all(&len_bytes).await?;
         stream.write_all(&serialized).await?;

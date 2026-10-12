@@ -1,10 +1,10 @@
-/// Bidirectional CF_HTML <-> UTF-8 Translation.
-/// Windows uses CF_HTML with byte offset headers:
-/// Version:0.9
-/// StartHTML:0000000000
-/// EndHTML:0000000000
-/// StartFragment:0000000000
-/// EndFragment:0000000000
+//! Bidirectional CF_HTML <-> UTF-8 Translation.
+//! Windows uses CF_HTML with byte offset headers:
+//! Version:0.9
+//! StartHTML:0000000000
+//! EndHTML:0000000000
+//! StartFragment:0000000000
+//! EndFragment:0000000000
 
 pub const CF_HTML_HEADER_PREFIX: &str = "Version:0.9\r\n";
 pub const FRAGMENT_START_MARKER: &str = "<!--StartFragment-->";
@@ -27,13 +27,17 @@ pub fn cf_html_to_utf8(cf_html: &str) -> String {
 
     // Fallback: parse StartFragment header value
     for line in cf_html.lines() {
-        if line.starts_with("StartFragment:") {
-            if let Ok(offset) = line["StartFragment:".len()..].trim().parse::<usize>() {
-                if let Some(end_offset_line) = cf_html.lines().find(|l| l.starts_with("EndFragment:")) {
-                    if let Ok(end) = end_offset_line["EndFragment:".len()..].trim().parse::<usize>() {
-                        if offset <= end {
-                            if let Some(slice) = cf_html.get(offset..end) {
-                                return slice.to_string();
+        if let Some(start_str) = line.strip_prefix("StartFragment:") {
+            if let Ok(offset) = start_str.trim().parse::<usize>() {
+                if let Some(end_offset_line) =
+                    cf_html.lines().find(|l| l.starts_with("EndFragment:"))
+                {
+                    if let Some(end_str) = end_offset_line.strip_prefix("EndFragment:") {
+                        if let Ok(end) = end_str.trim().parse::<usize>() {
+                            if offset <= end {
+                                if let Some(slice) = cf_html.get(offset..end) {
+                                    return slice.to_string();
+                                }
                             }
                         }
                     }

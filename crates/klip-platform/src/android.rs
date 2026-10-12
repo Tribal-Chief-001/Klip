@@ -1,4 +1,6 @@
-use crate::driver::{CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError};
+use crate::driver::{
+    CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError,
+};
 use klip_proto::hlc::NodeId;
 use klip_proto::wire::{compute_fingerprint, ClipContentType};
 use std::sync::Mutex;

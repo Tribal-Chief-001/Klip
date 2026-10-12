@@ -49,7 +49,10 @@ pub fn generate_systemd_unit_file(dest: &PathBuf) -> std::io::Result<()> {
     let exe_path = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "klip".to_string());
-    let unit = SYSTEMD_SERVICE_TEMPLATE.replace("ExecStart=klip start --foreground", &format!("ExecStart={} start --foreground", exe_path));
+    let unit = SYSTEMD_SERVICE_TEMPLATE.replace(
+        "ExecStart=klip start --foreground",
+        &format!("ExecStart={} start --foreground", exe_path),
+    );
     fs::write(dest, unit)
 }
 
@@ -60,6 +63,9 @@ pub fn generate_launchd_plist_file(dest: &PathBuf) -> std::io::Result<()> {
     let exe_path = std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "klip".to_string());
-    let plist = LAUNCHD_PLIST_TEMPLATE.replace("<string>klip</string>", &format!("<string>{}</string>", exe_path));
+    let plist = LAUNCHD_PLIST_TEMPLATE.replace(
+        "<string>klip</string>",
+        &format!("<string>{}</string>", exe_path),
+    );
     fs::write(dest, plist)
 }

@@ -57,9 +57,7 @@ fn lock_memory(slice: &mut [u8]) -> bool {
     if slice.is_empty() {
         return false;
     }
-    unsafe {
-        libc::mlock(slice.as_ptr() as *const libc::c_void, slice.len()) == 0
-    }
+    unsafe { libc::mlock(slice.as_ptr() as *const libc::c_void, slice.len()) == 0 }
 }
 
 #[cfg(not(unix))]

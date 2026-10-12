@@ -1,3 +1,5 @@
+#![allow(clippy::manual_is_multiple_of)]
+
 pub mod aead;
 pub mod hybrid;
 pub mod identity;

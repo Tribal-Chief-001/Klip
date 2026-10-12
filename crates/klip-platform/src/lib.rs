@@ -5,9 +5,7 @@ pub mod linux;
 pub mod macos;
 pub mod windows;
 
-pub use driver::{
-    CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError,
-};
+pub use driver::{CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError};
 
 use klip_proto::hlc::NodeId;
 

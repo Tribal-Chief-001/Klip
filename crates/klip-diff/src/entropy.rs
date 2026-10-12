@@ -53,7 +53,9 @@ pub fn analyze_snippet(text: &str) -> EntropyAnalysis {
     if trimmed.contains("-----BEGIN") && trimmed.contains("KEY-----") {
         detected_pattern = Some("Asymmetric Private Key (PEM)");
     } else {
-        for word in trimmed.split(|c: char| c.is_whitespace() || c == '=' || c == ':' || c == '"' || c == '\'') {
+        for word in trimmed
+            .split(|c: char| c.is_whitespace() || c == '=' || c == ':' || c == '"' || c == '\'')
+        {
             let w = word.trim();
             if w.starts_with("AKIA") || w.starts_with("ASIA") {
                 detected_pattern = Some("AWS Access Key ID");
@@ -79,7 +81,9 @@ pub fn analyze_snippet(text: &str) -> EntropyAnalysis {
     // Also check token-level entropy
     let mut has_high_entropy_token = false;
     for word in trimmed.split_whitespace() {
-        if word.len() >= MIN_SENSITIVE_LENGTH && calculate_shannon_entropy(word.as_bytes()) >= ENTROPY_THRESHOLD {
+        if word.len() >= MIN_SENSITIVE_LENGTH
+            && calculate_shannon_entropy(word.as_bytes()) >= ENTROPY_THRESHOLD
+        {
             has_high_entropy_token = true;
             break;
         }
@@ -116,11 +120,17 @@ mod tests {
         // Known secrets detection
         let analysis_gh = analyze_snippet("ghp_1234567890abcdefghijklmnopqrstuvwxyz");
         assert!(analysis_gh.is_likely_secret);
-        assert_eq!(analysis_gh.detected_pattern, Some("GitHub Personal Access Token"));
+        assert_eq!(
+            analysis_gh.detected_pattern,
+            Some("GitHub Personal Access Token")
+        );
 
         let analysis_rsa = analyze_snippet("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...");
         assert!(analysis_rsa.is_likely_secret);
-        assert_eq!(analysis_rsa.detected_pattern, Some("Asymmetric Private Key (PEM)"));
+        assert_eq!(
+            analysis_rsa.detected_pattern,
+            Some("Asymmetric Private Key (PEM)")
+        );
     }
 
     #[test]

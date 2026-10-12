@@ -1,4 +1,6 @@
-use crate::driver::{CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError};
+use crate::driver::{
+    CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError,
+};
 use arboard::{Clipboard, ImageData};
 use klip_proto::hlc::NodeId;
 use klip_proto::wire::{compute_fingerprint, ClipContentType};
@@ -23,7 +25,10 @@ impl LinuxClipboardDriver {
         let clipboard = match Clipboard::new() {
             Ok(cb) => Mutex::new(Some(cb)),
             Err(e) => {
-                eprintln!("[klip_platform] Warning: could not initialize native clipboard: {:?}", e);
+                eprintln!(
+                    "[klip_platform] Warning: could not initialize native clipboard: {:?}",
+                    e
+                );
                 Mutex::new(None)
             }
         };
@@ -49,13 +54,19 @@ impl LinuxClipboardDriver {
     }
 
     pub fn bridge_socket_path() -> Option<PathBuf> {
-        env::var("HOME").ok().map(|h| PathBuf::from(h).join(GNOME_BRIDGE_SOCKET_PATH))
+        env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(GNOME_BRIDGE_SOCKET_PATH))
     }
 }
 
 pub fn detect_linux_environment() -> PlatformEnvironment {
-    let session_type = env::var("XDG_SESSION_TYPE").unwrap_or_default().to_lowercase();
-    let current_desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+    let session_type = env::var("XDG_SESSION_TYPE")
+        .unwrap_or_default()
+        .to_lowercase();
+    let current_desktop = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
 
     if session_type == "wayland" {
         if current_desktop.contains("gnome") {

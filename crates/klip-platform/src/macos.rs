@@ -1,4 +1,6 @@
-use crate::driver::{CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError};
+use crate::driver::{
+    CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError,
+};
 use arboard::Clipboard;
 use klip_proto::hlc::NodeId;
 use klip_proto::wire::{compute_fingerprint, ClipContentType};
@@ -66,7 +68,11 @@ impl ClipboardDriver for MacOSClipboardDriver {
         let mut guard = self.clipboard.lock().unwrap();
         let cb = match guard.as_mut() {
             Some(cb) => cb,
-            None => return Err(PlatformError::BackendUnavailable("Clipboard uninitialized".into())),
+            None => {
+                return Err(PlatformError::BackendUnavailable(
+                    "Clipboard uninitialized".into(),
+                ))
+            }
         };
 
         let fp = compute_fingerprint(data, &self.local_node);

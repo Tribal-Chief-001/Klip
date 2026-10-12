@@ -15,7 +15,10 @@ pub enum CryptoError {
 impl std::fmt::Display for CryptoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DecryptionFailure => write!(f, "AEAD authentication tag mismatch or corrupted ciphertext"),
+            Self::DecryptionFailure => write!(
+                f,
+                "AEAD authentication tag mismatch or corrupted ciphertext"
+            ),
             Self::EncryptionFailure => write!(f, "AEAD in-place encryption failed"),
             Self::InvalidKeyLength => write!(f, "Symmetric key length must be 32 bytes"),
             Self::InvalidNonceLength => write!(f, "Nonce length must be 12 bytes"),
@@ -144,13 +147,12 @@ mod tests {
         let original = b"Top Secret Cross-Platform Clipboard Payload 2026";
         let mut buffer = original.to_vec();
 
-        let tag = encrypt_payload_in_place(&key, &nonce, &mut buffer)
-            .expect("Encryption must succeed");
+        let tag =
+            encrypt_payload_in_place(&key, &nonce, &mut buffer).expect("Encryption must succeed");
 
         assert_ne!(buffer.as_slice(), original);
 
-        decrypt_payload_in_place(&key, &nonce, &mut buffer, &tag)
-            .expect("Decryption must succeed");
+        decrypt_payload_in_place(&key, &nonce, &mut buffer, &tag).expect("Decryption must succeed");
 
         assert_eq!(buffer.as_slice(), original);
     }

@@ -1,7 +1,5 @@
 use klip_daemon::config::get_ipc_socket_path;
-use klip_proto::ipc::{
-    deserialize_ipc_msg, serialize_ipc_msg, IpcRequest, IpcResponse,
-};
+use klip_proto::ipc::{deserialize_ipc_msg, serialize_ipc_msg, IpcRequest, IpcResponse};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -17,15 +15,22 @@ impl DaemonClient {
 
         #[cfg(unix)]
         {
-            let mut stream = UnixStream::connect(&sock_path)
-                .await
-                .map_err(|_| "Klip daemon is not running or not responding. Launch it with `klip start`.".to_string())?;
+            let mut stream = UnixStream::connect(&sock_path).await.map_err(|_| {
+                "Klip daemon is not running or not responding. Launch it with `klip start`."
+                    .to_string()
+            })?;
 
             let serialized = serialize_ipc_msg(req)?;
             let len_bytes = (serialized.len() as u32).to_be_bytes();
 
-            stream.write_all(&len_bytes).await.map_err(|e| e.to_string())?;
-            stream.write_all(&serialized).await.map_err(|e| e.to_string())?;
+            stream
+                .write_all(&len_bytes)
+                .await
+                .map_err(|e| e.to_string())?;
+            stream
+                .write_all(&serialized)
+                .await
+                .map_err(|e| e.to_string())?;
             stream.flush().await.map_err(|e| e.to_string())?;
 
             let mut resp_len_buf = [0u8; 4];

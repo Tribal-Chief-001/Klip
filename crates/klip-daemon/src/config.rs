@@ -14,12 +14,14 @@ pub struct DaemonConfig {
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        let hostname = gethostname::gethostname()
-            .to_string_lossy()
-            .to_string();
+        let hostname = gethostname::gethostname().to_string_lossy().to_string();
 
         Self {
-            device_name: if hostname.is_empty() { "KlipNode".to_string() } else { hostname },
+            device_name: if hostname.is_empty() {
+                "KlipNode".to_string()
+            } else {
+                hostname
+            },
             listen_port: 7123,
             auto_clear_secrets: false, // strictly false! Do not wipe CopyQ or system history
             max_history_items: 50,

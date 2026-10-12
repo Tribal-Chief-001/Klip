@@ -33,8 +33,8 @@ impl PairingPsk {
 /// Compute 6-digit Short Authentication String (SAS).
 /// SAS = HMAC-SHA256(PSK, NodeId_A || NodeId_B)[0..3] (mod 1_000_000)
 pub fn compute_sas(psk: &PairingPsk, node_a: &NodeId, node_b: &NodeId) -> u32 {
-    let mut mac = HmacSha256::new_from_slice(psk.as_bytes())
-        .expect("HMAC can accept key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(psk.as_bytes()).expect("HMAC can accept key of any size");
 
     // Canonical order: sort node IDs so both sides compute identical SAS regardless of who initiated
     if node_a <= node_b {
@@ -52,8 +52,8 @@ pub fn compute_sas(psk: &PairingPsk, node_a: &NodeId, node_b: &NodeId) -> u32 {
 
 /// Compute SAS from invitation PSK and host node ID (displayed immediately on pairing cards).
 pub fn compute_sas_invitation(psk: &PairingPsk, host_node: &NodeId) -> u32 {
-    let mut mac = HmacSha256::new_from_slice(psk.as_bytes())
-        .expect("HMAC can accept key of any size");
+    let mut mac =
+        HmacSha256::new_from_slice(psk.as_bytes()).expect("HMAC can accept key of any size");
     mac.update(b"KLIP-PAIRING-INVITATION-SAS-V1");
     mac.update(host_node.as_bytes());
     let result = mac.finalize().into_bytes();
@@ -131,10 +131,7 @@ mod hex {
         }
         (0..hex.len())
             .step_by(2)
-            .map(|i| {
-                u8::from_str_radix(&hex[i..i + 2], 16)
-                    .map_err(|e| e.to_string())
-            })
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
             .collect()
     }
 }

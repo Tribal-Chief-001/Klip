@@ -37,7 +37,8 @@ impl DaemonEngine {
             let ks = keystore.lock().await;
             for peer in ks.peers.values() {
                 if let Ok(sym_key) = peer.get_symmetric_key() {
-                    mesh.add_peer(peer.node_id, peer.name.clone(), sym_key, None).await;
+                    mesh.add_peer(peer.node_id, peer.name.clone(), sym_key, None)
+                        .await;
                 }
             }
         }

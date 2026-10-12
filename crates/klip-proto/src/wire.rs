@@ -281,7 +281,6 @@ impl WirePacket {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

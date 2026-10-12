@@ -17,9 +17,7 @@ pub fn print_status_card(info: &DaemonStatusInfo) {
             .yellow()
             .to_string()
     } else {
-        format!("Active ({})", info.platform)
-            .green()
-            .to_string()
+        format!("Active ({})", info.platform).green().to_string()
     };
 
     let mesh_str = if info.peers.iter().any(|p| p.is_online) {
@@ -68,7 +66,12 @@ pub fn print_status_card(info: &DaemonStatusInfo) {
 
             print_border_line(&format!(
                 "  {} {:<18} {} {} ({})    {}ms",
-                branch, peer.name, state_bullet, status_label, peer.connection_type, peer.latency_ms
+                branch,
+                peer.name,
+                state_bullet,
+                status_label,
+                peer.connection_type,
+                peer.latency_ms
             ));
         }
     }
@@ -135,7 +138,10 @@ pub fn print_history(items: &[HistoryItem]) {
 
         println!(
             "│ #{:<2}  {}  From: {:<12}  ({} B)",
-            i + 1, tag, item.origin_name, item.size_bytes
+            i + 1,
+            tag,
+            item.origin_name,
+            item.size_bytes
         );
         println!("│       {}", item.content_preview);
     }

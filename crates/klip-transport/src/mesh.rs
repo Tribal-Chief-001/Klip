@@ -66,7 +66,13 @@ impl MeshNode {
         Ok(node)
     }
 
-    pub async fn add_peer(&self, node_id: NodeId, name: String, sym_key: SymmetricKey, addr: Option<SocketAddr>) {
+    pub async fn add_peer(
+        &self,
+        node_id: NodeId,
+        name: String,
+        sym_key: SymmetricKey,
+        addr: Option<SocketAddr>,
+    ) {
         let mut lock = self.peers.lock().await;
         lock.insert(
             node_id,
@@ -115,7 +121,7 @@ impl MeshNode {
         let mut sent_count = 0;
         for peer in peers_snapshot {
             if let Some(addr) = peer.addr {
-                if let Ok(_) = self.socket.send_to(&encoded, addr).await {
+                if self.socket.send_to(&encoded, addr).await.is_ok() {
                     sent_count += 1;
                 }
             } else {

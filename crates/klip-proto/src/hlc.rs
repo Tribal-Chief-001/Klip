@@ -80,7 +80,10 @@ impl HybridLogicalClock {
         let max_physical = self.physical_time_ms.max(remote.physical_time_ms).max(now);
 
         if max_physical == self.physical_time_ms && max_physical == remote.physical_time_ms {
-            self.logical_counter = self.logical_counter.max(remote.logical_counter).saturating_add(1);
+            self.logical_counter = self
+                .logical_counter
+                .max(remote.logical_counter)
+                .saturating_add(1);
         } else if max_physical == self.physical_time_ms {
             self.logical_counter = self.logical_counter.saturating_add(1);
         } else if max_physical == remote.physical_time_ms {
