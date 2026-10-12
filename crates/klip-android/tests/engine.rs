@@ -81,7 +81,13 @@ fn pair_and_sync_through_the_android_api() {
     let (laptop, laptop_clip) = engine("l1", "Laptop");
 
     assert_eq!(pair(&laptop, &phone, true).unwrap(), "Laptop");
-    assert_eq!(laptop.pair_poll().paired_device.as_deref(), Some("Phone"));
+    // The host learns about the new device through its asynchronous event pump.
+    let mut paired = None;
+    assert!(wait_until(10, || {
+        paired = laptop.pair_poll().paired_device;
+        paired.is_some()
+    }));
+    assert_eq!(paired.as_deref(), Some("Phone"));
     assert_eq!(phone.status().peers.len(), 1);
     assert_eq!(phone.status().peers[0].name, "Laptop");
 

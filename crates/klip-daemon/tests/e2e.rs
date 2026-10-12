@@ -166,7 +166,16 @@ async fn pair_over_ipc_then_sync_both_ways_without_echo() {
         }
         other => panic!("pairing failed: {other:?}"),
     }
-    assert_eq!(poll_pair(&a).await.paired.as_deref(), Some("Beta"));
+    // The host hears about the new device through its asynchronous event pump.
+    let mut paired = None;
+    for _ in 0..100 {
+        paired = poll_pair(&a).await.paired;
+        if paired.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(paired.as_deref(), Some("Beta"));
 
     // A -> B
     a.clipboard.user_copy("hello from alpha");
