@@ -2,6 +2,12 @@
 
 > **State-of-the-Art, Cross-Platform, Zero-Knowledge End-to-End Encrypted Universal Clipboard Engine written in Rust.**
 
+> ⚠️ **STATUS: ASPIRATIONAL / UNVERIFIED — NOT A DESCRIPTION OF THE CURRENT CODE.**
+> This document was generated in an early brainstorming session. Most numbers (RAM figures of competitors, hole-punch percentages, latency, compression ratios) have **no sources**, and many features described here (iroh/QUIC transport, relays, mailbox, X25519MLKEM768, native Wayland/X11/Win32/objc2 drivers, WAN sync) are **not implemented** in `main` as of 2026-10-12.
+> Read instead:
+> - [`AUDIT_AND_ROADMAP.md`](AUDIT_AND_ROADMAP.md) — what the code really does, ranked security/functional findings.
+> - [`RESEARCH_2026.md`](RESEARCH_2026.md) — sourced research and the decisions taken (e.g. no offline delivery / no mailbox).
+
 ---
 
 ## 📑 Complete Document Index
