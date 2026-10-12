@@ -406,3 +406,147 @@ fn test_nonce_monotonic_counter_invariance() {
         assert_eq!(&nonce.as_bytes()[0..4], &[0u8; 4]);
     }
 }
+
+#[test]
+fn test_pairing_invitation_with_endpoint_hints() {
+    let host_node = NodeId::new([44u8; 32]);
+    let psk = PairingPsk::generate();
+    let endpoints = vec![
+        "192.168.1.100:7123".to_string(),
+        "127.0.0.1:7123".to_string(),
+    ];
+
+    let invitation = PairingInvitation::create_with_endpoints(host_node, &psk, endpoints.clone());
+    let token = invitation.to_token();
+
+    let decoded = PairingInvitation::from_token(&token).expect("Decode invitation with endpoints");
+    assert_eq!(decoded.endpoints, endpoints);
+    assert_eq!(decoded.host_node, host_node);
+}
+
+#[tokio::test]
+async fn test_mesh_heartbeat_and_discovery() {
+    let node_a_id = NodeId::new([11u8; 32]);
+    let node_b_id = NodeId::new([22u8; 32]);
+
+    let (in_tx_a, _in_rx_a) = tokio::sync::mpsc::channel(10);
+    let (in_tx_b, _in_rx_b) = tokio::sync::mpsc::channel(10);
+
+    let mesh_a = klip_transport::mesh::MeshNode::bind(node_a_id, "127.0.0.1:0", in_tx_a)
+        .await
+        .unwrap();
+    let mesh_b = klip_transport::mesh::MeshNode::bind(node_b_id, "127.0.0.1:0", in_tx_b)
+        .await
+        .unwrap();
+
+    let addr_b = mesh_b.socket.local_addr().unwrap();
+    let sym_key = SymmetricKey::random();
+
+    // Node A adds Node B with known address
+    mesh_a
+        .add_peer(
+            node_b_id,
+            "Node-B".to_string(),
+            sym_key.clone(),
+            Some(addr_b),
+        )
+        .await;
+    // Node B adds Node A with None address (initially unknown)
+    mesh_b
+        .add_peer(node_a_id, "Node-A".to_string(), sym_key.clone(), None)
+        .await;
+
+    // Node A sends HeartbeatPing directly to Node B
+    let ping = klip_transport::mesh::MeshNode::create_heartbeat_packet(node_a_id, false);
+    mesh_a.send_packet_direct(&ping, addr_b).await.unwrap();
+
+    // Give time for receive_loop on B to process Ping, record A's address, and reply Pong to A
+    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+    // Both should now have valid peer addresses and be online
+    let peers_b = mesh_b.peer_statuses().await;
+    assert_eq!(peers_b.len(), 1);
+    assert!(peers_b[0].is_online);
+    assert_eq!(peers_b[0].connection_type, "Direct (P2P)");
+
+    let peers_a = mesh_a.peer_statuses().await;
+    assert_eq!(peers_a.len(), 1);
+    assert!(peers_a[0].is_online);
+}
+
+#[test]
+fn test_webp_image_payload_sync_and_transcoding() {
+    let node_a = DeviceIdentity::generate();
+    let sym_key = SymmetricKey::random();
+
+    let width = 16u32;
+    let height = 16u32;
+    let mut rgba_original = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            rgba_original.extend_from_slice(&[(x * 10) as u8, (y * 10) as u8, 150, 255]);
+        }
+    }
+
+    let webp_bytes = klip_diff::rgba_to_webp(width, height, &rgba_original).expect("Encode WebP");
+    assert_eq!(
+        klip_diff::detect_image_format(&webp_bytes),
+        klip_diff::ImageFormat::WebP
+    );
+
+    let content_type = klip_proto::wire::ClipContentType::ImageWebP;
+    let flags = FLAG_ENCRYPTED | content_type.to_flag();
+    let nonce = WireNonce::new(999);
+
+    let mut ciphertext = webp_bytes.clone();
+    let header = WireHeader {
+        magic: MAGIC_BYTES,
+        version: CURRENT_VERSION,
+        msg_type: MessageType::ClipFullPayload,
+        flags,
+        sender: node_a.node_id,
+        nonce,
+        hlc_physical: 1728001000,
+        hlc_logical: 1,
+        hlc_node_seed: 0xAAAA,
+        payload_len: ciphertext.len() as u32,
+    };
+    let header_bytes = header.to_bytes();
+    let tag = encrypt_payload_in_place_with_aad(&sym_key, &nonce, &header_bytes, &mut ciphertext)
+        .expect("Encrypt WebP image");
+
+    let packet = WirePacket {
+        header,
+        payload: ciphertext,
+        tag,
+    };
+    let wire_bytes = packet.encode();
+
+    // Node B decodes
+    let decoded_packet = WirePacket::decode(&wire_bytes).expect("Decode wire packet");
+    let recovered_content_type =
+        klip_proto::wire::ClipContentType::from_flags(decoded_packet.header.flags);
+    assert_eq!(
+        recovered_content_type,
+        klip_proto::wire::ClipContentType::ImageWebP
+    );
+
+    // Decrypt
+    let mut decrypted = decoded_packet.payload;
+    let dec_header_bytes = decoded_packet.header.to_bytes();
+    decrypt_payload_in_place_with_aad(
+        &sym_key,
+        &decoded_packet.header.nonce,
+        &dec_header_bytes,
+        &mut decrypted,
+        &decoded_packet.tag,
+    )
+    .expect("Decrypt WebP");
+
+    assert_eq!(decrypted, webp_bytes);
+
+    let (rec_w, rec_h, rec_rgba) = klip_diff::png_to_rgba(&decrypted).expect("Decode WebP to RGBA");
+    assert_eq!(rec_w, width);
+    assert_eq!(rec_h, height);
+    assert_eq!(rec_rgba, rgba_original);
+}

@@ -122,7 +122,13 @@ impl IpcServer {
             }
             IpcRequest::PairInit => {
                 let psk = PairingPsk::generate();
-                let invitation = PairingInvitation::create(sync.identity.node_id, &psk);
+                let endpoints =
+                    klip_transport::mesh::detect_local_endpoints(sync.config.listen_port);
+                let invitation = PairingInvitation::create_with_endpoints(
+                    sync.identity.node_id,
+                    &psk,
+                    endpoints,
+                );
                 let token = invitation.to_token();
 
                 // Store pending pairing PSK so incoming handshakes can authenticate
@@ -148,6 +154,10 @@ impl IpcServer {
                             let peer_node = invitation.host_node;
                             let peer_name = format!("Klip-{}", peer_node.short_id());
 
+                            // Find candidate endpoint if provided
+                            let target_addr: Option<std::net::SocketAddr> =
+                                invitation.endpoints.iter().find_map(|ep| ep.parse().ok());
+
                             // Save to keystore
                             {
                                 let mut ks = sync.keystore.lock().await;
@@ -159,9 +169,14 @@ impl IpcServer {
                                 let _ = ks.save(crate::config::get_keystore_path());
                             }
 
-                            // Add to active mesh
+                            // Add to active mesh with candidate address if available
                             sync.mesh
-                                .add_peer(peer_node, peer_name.clone(), peer_key.clone(), None)
+                                .add_peer(
+                                    peer_node,
+                                    peer_name.clone(),
+                                    peer_key.clone(),
+                                    target_addr,
+                                )
                                 .await;
 
                             // Send Handshake packet to host node across mesh
@@ -192,6 +207,9 @@ impl IpcServer {
                                     payload: handshake_payload,
                                     tag,
                                 };
+                                if let Some(addr) = target_addr {
+                                    let _ = sync.mesh.send_packet_direct(&packet, addr).await;
+                                }
                                 let _ = sync.mesh.broadcast_packet(&packet).await;
                             }
 

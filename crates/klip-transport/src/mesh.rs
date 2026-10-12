@@ -14,6 +14,20 @@ use tokio::time::{Duration, Instant};
 pub const DEFAULT_KLIP_PORT: u16 = 7123;
 pub const BROADCAST_PORT: u16 = 7124;
 
+/// Detects local network interface candidates and loopback for peer connection hints.
+pub fn detect_local_endpoints(port: u16) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Ok(temp_sock) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if temp_sock.connect("8.8.8.8:80").is_ok() {
+            if let Ok(local) = temp_sock.local_addr() {
+                candidates.push(format!("{}:{}", local.ip(), port));
+            }
+        }
+    }
+    candidates.push(format!("127.0.0.1:{}", port));
+    candidates
+}
+
 #[derive(Debug, Clone)]
 pub struct ActivePeer {
     pub node_id: NodeId,
@@ -48,6 +62,9 @@ impl MeshNode {
             }
         };
 
+        // Enable UDP broadcast for LAN peer discovery
+        let _ = socket.set_broadcast(true);
+
         let node = Arc::new(Self {
             local_node,
             socket: Arc::new(socket),
@@ -63,7 +80,56 @@ impl MeshNode {
             node_clone.receive_loop().await;
         });
 
+        // Spawn periodic heartbeat keepalive loop (every 20s) to keep NAT pinholes open
+        let hb_node = Arc::clone(&node);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(20));
+            loop {
+                interval.tick().await;
+                let peers_snapshot: Vec<(Option<SocketAddr>, NodeId)> = {
+                    let lock = hb_node.peers.lock().await;
+                    lock.values().map(|p| (p.addr, p.node_id)).collect()
+                };
+
+                for (addr_opt, _) in peers_snapshot {
+                    let ping = Self::create_heartbeat_packet(hb_node.local_node, false);
+                    let encoded = ping.encode();
+                    if let Some(addr) = addr_opt {
+                        let _ = hb_node.socket.send_to(&encoded, addr).await;
+                    } else if let Ok(bcast_addr) =
+                        format!("255.255.255.255:{}", DEFAULT_KLIP_PORT).parse::<SocketAddr>()
+                    {
+                        let _ = hb_node.socket.send_to(&encoded, bcast_addr).await;
+                    }
+                }
+            }
+        });
+
         Ok(node)
+    }
+
+    pub fn create_heartbeat_packet(local_node: NodeId, is_pong: bool) -> WirePacket {
+        let header = klip_proto::wire::WireHeader {
+            magic: klip_proto::wire::MAGIC_BYTES,
+            version: klip_proto::wire::CURRENT_VERSION,
+            msg_type: if is_pong {
+                klip_proto::wire::MessageType::HeartbeatPong
+            } else {
+                klip_proto::wire::MessageType::HeartbeatPing
+            },
+            flags: 0,
+            sender: local_node,
+            nonce: klip_proto::wire::WireNonce::new(0),
+            hlc_physical: 0,
+            hlc_logical: 0,
+            hlc_node_seed: 0,
+            payload_len: 0,
+        };
+        WirePacket {
+            header,
+            payload: Vec::new(),
+            tag: [0u8; 16],
+        }
     }
 
     pub async fn add_peer(
@@ -110,6 +176,16 @@ impl MeshNode {
             .collect()
     }
 
+    pub async fn send_packet_direct(
+        &self,
+        packet: &WirePacket,
+        addr: SocketAddr,
+    ) -> Result<(), std::io::Error> {
+        let encoded = packet.encode();
+        self.socket.send_to(&encoded, addr).await?;
+        Ok(())
+    }
+
     /// Broadcast an encoded wire packet to all linked peers
     pub async fn broadcast_packet(&self, packet: &WirePacket) -> Result<usize, std::io::Error> {
         let encoded = packet.encode();
@@ -119,12 +195,14 @@ impl MeshNode {
         };
 
         let mut sent_count = 0;
+        let mut had_unresolved = false;
         for peer in peers_snapshot {
             if let Some(addr) = peer.addr {
                 if self.socket.send_to(&encoded, addr).await.is_ok() {
                     sent_count += 1;
                 }
             } else {
+                had_unresolved = true;
                 // If offline / direct address unknown, store into ephemeral mailbox
                 self.mailbox.deposit(
                     [0u8; 32],
@@ -132,6 +210,20 @@ impl MeshNode {
                     encoded.clone(),
                     crate::mailbox::DEFAULT_MAILBOX_TTL_SECS,
                 );
+            }
+        }
+
+        // If any peer has unresolved address, broadcast to LAN and loopback
+        if had_unresolved {
+            if let Ok(bcast_addr) =
+                format!("255.255.255.255:{}", DEFAULT_KLIP_PORT).parse::<SocketAddr>()
+            {
+                let _ = self.socket.send_to(&encoded, bcast_addr).await;
+            }
+            if let Ok(loopback_addr) =
+                format!("127.0.0.1:{}", DEFAULT_KLIP_PORT).parse::<SocketAddr>()
+            {
+                let _ = self.socket.send_to(&encoded, loopback_addr).await;
             }
         }
 
@@ -145,6 +237,30 @@ impl MeshNode {
                 Ok((len, remote_addr)) => {
                     let packet_bytes = &buf[..len];
                     if let Ok(packet) = WirePacket::decode(packet_bytes) {
+                        // Handle HeartbeatPing / HeartbeatPong
+                        if packet.header.msg_type == klip_proto::wire::MessageType::HeartbeatPing {
+                            {
+                                let mut peers = self.peers.lock().await;
+                                if let Some(peer) = peers.get_mut(&packet.header.sender) {
+                                    peer.addr = Some(remote_addr);
+                                    peer.is_direct = true;
+                                    peer.last_seen = Instant::now();
+                                }
+                            }
+                            let pong = Self::create_heartbeat_packet(self.local_node, true);
+                            let _ = self.socket.send_to(&pong.encode(), remote_addr).await;
+                            continue;
+                        }
+                        if packet.header.msg_type == klip_proto::wire::MessageType::HeartbeatPong {
+                            let mut peers = self.peers.lock().await;
+                            if let Some(peer) = peers.get_mut(&packet.header.sender) {
+                                peer.addr = Some(remote_addr);
+                                peer.is_direct = true;
+                                peer.last_seen = Instant::now();
+                            }
+                            continue;
+                        }
+
                         // Update peer address and last seen
                         {
                             let mut peers = self.peers.lock().await;

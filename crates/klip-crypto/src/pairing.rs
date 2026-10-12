@@ -74,10 +74,16 @@ pub struct PairingInvitation {
     pub host_node: NodeId,
     pub psk_hex: String,
     pub timestamp: u64,
+    #[serde(default)]
+    pub endpoints: Vec<String>,
 }
 
 impl PairingInvitation {
     pub fn create(node: NodeId, psk: &PairingPsk) -> Self {
+        Self::create_with_endpoints(node, psk, Vec::new())
+    }
+
+    pub fn create_with_endpoints(node: NodeId, psk: &PairingPsk, endpoints: Vec<String>) -> Self {
         let mut hex = String::with_capacity(64);
         for b in psk.as_bytes() {
             hex.push_str(&format!("{:02x}", b));
@@ -91,6 +97,7 @@ impl PairingInvitation {
             host_node: node,
             psk_hex: hex,
             timestamp: now,
+            endpoints,
         }
     }
 

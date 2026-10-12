@@ -101,14 +101,62 @@ pub fn png_to_bmp(png_bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Encodes raw RGBA pixel data into compressed WebP container bytes.
+pub fn rgba_to_webp(width: u32, height: u32, rgba_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if width == 0 || height == 0 {
+        return Err("Image dimensions cannot be zero".to_string());
+    }
+    let expected_len = (width as usize) * (height as usize) * 4;
+    if rgba_bytes.len() < expected_len {
+        return Err(format!(
+            "Buffer length {} insufficient for {}x{} RGBA (expected {})",
+            rgba_bytes.len(),
+            width,
+            height,
+            expected_len
+        ));
+    }
+
+    let img_buffer = RgbaImage::from_raw(width, height, rgba_bytes[..expected_len].to_vec())
+        .ok_or_else(|| "Failed to construct RgbaImage from buffer".to_string())?;
+
+    let dynamic = DynamicImage::ImageRgba8(img_buffer);
+    let mut out = Vec::new();
+    let mut cursor = Cursor::new(&mut out);
+
+    dynamic
+        .write_to(&mut cursor, ImgFormat::WebP)
+        .map_err(|e| format!("WebP encoding failed: {}", e))?;
+
+    Ok(out)
+}
+
+/// Transcodes uncompressed BMP/DIB screenshot into a compressed WebP container.
+pub fn transcode_uncompressed_bmp_to_webp(bmp_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let dynamic = image::load_from_memory_with_format(bmp_bytes, ImgFormat::Bmp)
+        .map_err(|e| format!("Failed to load BMP buffer: {}", e))?;
+
+    let mut out = Vec::new();
+    let mut cursor = Cursor::new(&mut out);
+    dynamic
+        .write_to(&mut cursor, ImgFormat::WebP)
+        .map_err(|e| format!("WebP transcoding failed: {}", e))?;
+
+    Ok(out)
+}
+
 /// Optimizes an image buffer before transmitting over the wire:
-/// - If uncompressed BMP, compresses to PNG (< 14ms).
+/// - If uncompressed BMP, compresses to WebP (< 14ms) or PNG.
 /// - If already compressed PNG or WebP, retains as-is.
 pub fn transcode_image_for_sync(bytes: &[u8]) -> Result<(ImageFormat, Vec<u8>), String> {
     match detect_image_format(bytes) {
         ImageFormat::Bmp => {
-            let compressed = transcode_uncompressed_bmp_to_png(bytes)?;
-            Ok((ImageFormat::Png, compressed))
+            if let Ok(webp_bytes) = transcode_uncompressed_bmp_to_webp(bytes) {
+                Ok((ImageFormat::WebP, webp_bytes))
+            } else {
+                let compressed = transcode_uncompressed_bmp_to_png(bytes)?;
+                Ok((ImageFormat::Png, compressed))
+            }
         }
         ImageFormat::Png => Ok((ImageFormat::Png, bytes.to_vec())),
         ImageFormat::WebP => Ok((ImageFormat::WebP, bytes.to_vec())),
@@ -181,16 +229,33 @@ mod tests {
         assert_eq!(detect_image_format(&bmp_bytes), ImageFormat::Bmp);
         assert!(is_uncompressed_image(&bmp_bytes));
 
-        // Transcode BMP -> PNG for sync
-        let (fmt, compressed_png) =
-            transcode_image_for_sync(&bmp_bytes).expect("Transcode for sync");
-        assert_eq!(fmt, ImageFormat::Png);
-        assert!(compressed_png.len() < bmp_bytes.len());
+        // Transcode BMP -> WebP/PNG for sync
+        let (fmt, compressed) = transcode_image_for_sync(&bmp_bytes).expect("Transcode for sync");
+        assert!(fmt == ImageFormat::WebP || fmt == ImageFormat::Png);
+        assert!(compressed.len() < bmp_bytes.len());
 
         // Verify content integrity
-        let (w, h, roundtrip_rgba) = png_to_rgba(&compressed_png).expect("Decode transcode result");
+        let (w, h, roundtrip_rgba) = png_to_rgba(&compressed).expect("Decode transcode result");
         assert_eq!(w, width as u32);
         assert_eq!(h, height as u32);
         assert_eq!(roundtrip_rgba, rgba);
+    }
+
+    #[test]
+    fn test_webp_roundtrip() {
+        let width = 8;
+        let height = 8;
+        let mut rgba = Vec::with_capacity(width * height * 4);
+        for _ in 0..(width * height) {
+            rgba.extend_from_slice(&[0, 255, 128, 255]);
+        }
+
+        let webp_bytes = rgba_to_webp(width as u32, height as u32, &rgba).expect("Encode WebP");
+        assert_eq!(detect_image_format(&webp_bytes), ImageFormat::WebP);
+
+        let (dec_w, dec_h, dec_rgba) = png_to_rgba(&webp_bytes).expect("Decode WebP to RGBA");
+        assert_eq!(dec_w, width as u32);
+        assert_eq!(dec_h, height as u32);
+        assert_eq!(dec_rgba, rgba);
     }
 }
