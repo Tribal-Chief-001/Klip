@@ -5,6 +5,9 @@ on:
     branches: [ "main" ]
     paths:
       - 'android/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/android.yml'
     tags:
       - "v*.*.*"
@@ -13,9 +16,12 @@ on:
 permissions:
   contents: write
 
+env:
+  NDK_VERSION: "28.2.13676358"
+
 jobs:
   build-apk:
-    name: Build Android Companion APK
+    name: Build Android app (Rust engine + Kotlin UI)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -27,6 +33,34 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Set up Rust toolchain (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin/cargo-ndk
+            target
+          key: ${{ runner.os }}-android-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-android-cargo-
+
+      - name: Install Android NDK r28 (16 KB page-size ready)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;${NDK_VERSION}" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      - name: Install cargo-ndk
+        run: command -v cargo-ndk >/dev/null || cargo install cargo-ndk --locked
+
+      - name: Build Rust engine for Android + generate Kotlin bindings
+        run: android/build-core.sh
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -34,14 +68,10 @@ jobs:
 
       - name: Build APK via Gradle
         working-directory: ./android
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
-        run: |
-          gradle assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace
 
       - name: Rename and Prepare APK
-        run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk ./Klip-Android.apk
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk ./Klip-Android.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4

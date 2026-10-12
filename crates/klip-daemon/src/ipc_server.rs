@@ -2,9 +2,7 @@ use klip_core::Shutdown;
 use klip_core::SyncCoordinator;
 use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
-use klip_proto::ipc::{
-    deserialize_ipc_msg, serialize_ipc_msg, DaemonStatusInfo, IpcRequest, IpcResponse,
-};
+use klip_proto::ipc::{deserialize_ipc_msg, serialize_ipc_msg, IpcRequest, IpcResponse};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -107,35 +105,10 @@ impl IpcServer {
         shutdown: &Shutdown,
     ) -> IpcResponse {
         match req {
-            IpcRequest::GetStatus => {
-                let last_clip = sync.history.last_item();
-                let last_sync_secs = sync
-                    .last_sync_instant
-                    .lock()
-                    .unwrap()
-                    .map(|t| t.elapsed().as_secs());
-                let (preview, size) = match last_clip {
-                    Some(c) => (Some(c.content_preview), c.size_bytes),
-                    None => (None, 0),
-                };
-                IpcResponse::Status(DaemonStatusInfo {
-                    is_active: true,
-                    is_paused: sync.check_pause_status(),
-                    paused_remaining_secs: sync.pause_remaining_secs(),
-                    platform: sync.driver.environment().to_string(),
-                    memory_rss_bytes: get_process_rss_bytes(),
-                    node_id: sync.identity.node_id,
-                    relay_mode: sync.relay_mode_label().to_string(),
-                    pairing_open: sync.net.pairing_open(),
-                    peers: sync.peer_status(),
-                    total_synced_clips: sync
-                        .total_synced_clips
-                        .load(std::sync::atomic::Ordering::SeqCst),
-                    last_sync_time_secs_ago: last_sync_secs,
-                    last_clip_preview: preview,
-                    last_clip_size_bytes: size,
-                })
-            }
+            IpcRequest::GetStatus => IpcResponse::Status(sync.status(
+                sync.driver.environment().to_string(),
+                get_process_rss_bytes(),
+            )),
             IpcRequest::PairStart {
                 ttl_secs,
                 include_lan_addrs,

@@ -7,66 +7,42 @@ import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
-import android.widget.Toast
 
-/**
- * Android Quick Settings (QS) Tile Service.
- * Allows users to pull down the Android status bar and tap the "📎 Klip" tile
- * to instantly sync clipboard bidirectionally with active window focus,
- * 100% safe from all banking/UPI restrictions.
- */
+/** Quick Settings tile: tap to send the current clipboard to the linked devices. */
 class KlipTileService : TileService() {
-
-    companion object {
-        private const val TAG = "KlipTileService"
-    }
 
     override fun onStartListening() {
         super.onStartListening()
         qsTile?.let { tile ->
             tile.state = Tile.STATE_ACTIVE
-            tile.label = "📎 Klip"
+            tile.label = "Klip"
             tile.icon = Icon.createWithResource(this, R.drawable.ic_klip_logo)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                tile.subtitle = "Tap to sync clip"
-            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.subtitle = "Send clipboard"
             tile.updateTile()
         }
     }
 
     override fun onClick() {
         super.onClick()
-        Log.i(TAG, "Quick Settings Klip tile tapped")
-
-        val launchAction = Runnable {
+        val launch = Runnable {
             try {
-                val syncIntent = Intent(this, CopyTrampolineActivity::class.java).apply {
-                    action = CopyTrampolineActivity.ACTION_TILE_SYNC
+                val intent = Intent(this, CopyTrampolineActivity::class.java).apply {
+                    action = CopyTrampolineActivity.ACTION_SEND_CLIPBOARD
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 }
-
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    val pendingIntent = PendingIntent.getActivity(
-                        this,
-                        0,
-                        syncIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    val pi = PendingIntent.getActivity(
+                        this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                     )
-                    startActivityAndCollapse(pendingIntent)
+                    startActivityAndCollapse(pi)
                 } else {
                     @Suppress("DEPRECATION")
-                    startActivityAndCollapse(syncIntent)
+                    startActivityAndCollapse(intent)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in KlipTileService onClick: ${e.message}", e)
-                Toast.makeText(this, "Klip sync error: ${e.message}", Toast.LENGTH_SHORT).show()
+            } catch (e: Throwable) {
+                Log.e("KlipTileService", "Tile action failed: ${e.message}", e)
             }
         }
-
-        if (isLocked) {
-            unlockAndRun(launchAction)
-        } else {
-            launchAction.run()
-        }
+        if (isLocked) unlockAndRun(launch) else launch.run()
     }
 }

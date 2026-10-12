@@ -9,8 +9,8 @@ pub enum PlatformEnvironment {
     LinuxGnomeMutter,
     MacOS,
     Windows,
-    AndroidAccessibility,
-    IosAppGroup,
+    /// A mobile app that owns the clipboard and feeds the engine through a bridge.
+    MobileApp,
     Generic,
 }
 
@@ -22,8 +22,7 @@ impl fmt::Display for PlatformEnvironment {
             Self::LinuxGnomeMutter => write!(f, "Linux (GNOME Mutter Bridge)"),
             Self::MacOS => write!(f, "macOS (NSPasteboard)"),
             Self::Windows => write!(f, "Windows (Win32 HWND_MESSAGE)"),
-            Self::AndroidAccessibility => write!(f, "Android (Accessibility Auto-Sync)"),
-            Self::IosAppGroup => write!(f, "iOS (App Group)"),
+            Self::MobileApp => write!(f, "Mobile app"),
             Self::Generic => write!(f, "Generic OS Clipboard"),
         }
     }
@@ -128,6 +127,18 @@ pub trait ClipboardDriver: Send + Sync {
     fn environment(&self) -> PlatformEnvironment;
     fn read_clip(&self) -> Result<Option<CapturedClip>, PlatformError>;
     fn write_clip(&self, content_type: &ClipContentType, data: &[u8]) -> Result<(), PlatformError>;
+    /// Like [`Self::write_clip`] but tells the driver the content was flagged as a secret, so it
+    /// can ask the OS to keep it out of keyboard suggestions/history where the platform allows
+    /// (Android `EXTRA_IS_SENSITIVE`, Windows history formats). Default: ignore the flag.
+    fn write_clip_flagged(
+        &self,
+        content_type: &ClipContentType,
+        data: &[u8],
+        sensitive: bool,
+    ) -> Result<(), PlatformError> {
+        let _ = sensitive;
+        self.write_clip(content_type, data)
+    }
     fn echo_shield(&self) -> &EchoShield;
 }
 

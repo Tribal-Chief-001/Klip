@@ -1,251 +1,325 @@
 package com.klip.app
 
 import android.app.Activity
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
-import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
+import android.os.Bundle
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.zxing.BarcodeFormat
+import com.journeyapps.barcodescanner.BarcodeEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import uniffi.klip_android.isValidPairingTicket
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var tvStatus: TextView
-    private lateinit var tvAccessibilityNotice: TextView
-    private lateinit var btnEnableAccessibility: Button
-    private lateinit var btnPair: Button
-    private lateinit var btnSimulatePaste: Button
+    private lateinit var switchRelays: Switch
 
-    private val notificationPermissionLauncher = registerForActivityResult(
+    private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) {
-            Toast.makeText(this, "Notifications required for UPI-safe clip sync", Toast.LENGTH_SHORT).show()
-        }
-    }
+    ) { /* the service works without it; the status notification is just hidden */ }
 
-    private val qrScanLauncher = registerForActivityResult(
+    private val qrScan = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val token = result.data?.getStringExtra(QrScannerActivity.EXTRA_SCANNED_TOKEN)
-            if (!token.isNullOrEmpty()) {
-                applyPairingToken(token)
-            }
+            result.data?.getStringExtra(QrScannerActivity.EXTRA_SCANNED_TICKET)?.let { joinWithTicket(it) }
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         tvStatus = findViewById(R.id.tvStatus)
-        tvAccessibilityNotice = findViewById(R.id.tvAccessibilityNotice)
-        btnEnableAccessibility = findViewById(R.id.btnEnableAccessibility)
-        btnPair = findViewById(R.id.btnPair)
-        btnSimulatePaste = findViewById(R.id.btnSimulatePaste)
+        switchRelays = findViewById(R.id.switchRelays)
 
-        checkNotificationPermission()
-        setupListeners()
-        startSyncService()
-        updateStatusUI()
-    }
-
-    private fun checkNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        updateAccessibilityUI()
-        updateStatusUI()
-    }
-
-    private fun startSyncService() {
-        try {
-            val intent = Intent(this, KlipSyncService::class.java).apply {
-                action = KlipSyncService.ACTION_START
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-        } catch (e: Throwable) {
-            android.util.Log.e("MainActivity", "Failed starting sync service: ${e.message}", e)
-        }
-    }
-
-    private fun setupListeners() {
-        btnEnableAccessibility.setOnClickListener {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
-            Toast.makeText(this, "Find 'Klip' in downloaded services and turn it ON", Toast.LENGTH_LONG).show()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        btnPair.setOnClickListener {
-            showPairSelectionDialog()
+        switchRelays.isChecked = KlipRuntime.useRelays(this)
+        switchRelays.setOnCheckedChangeListener { _, checked ->
+            if (checked != KlipRuntime.useRelays(this)) {
+                KlipRuntime.setUseRelays(this, checked)
+                restartEngine()
+            }
         }
 
-        btnSimulatePaste.setOnClickListener {
-            // Test injecting a clip via the dual-mode mechanism
-            val sampleClip = "https://github.com/Tribal-Chief-001/Klip (Synced from Klip companion)"
-            val intent = Intent(this, KlipSyncService::class.java).apply {
-                action = KlipSyncService.ACTION_INJECT_CLIP
-                putExtra(KlipSyncService.EXTRA_CLIP_TEXT, sampleClip)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-            Toast.makeText(this, "Simulated incoming clip processed!", Toast.LENGTH_SHORT).show()
+        findViewById<Button>(R.id.btnScan).setOnClickListener { qrScan.launch(Intent(this, QrScannerActivity::class.java)) }
+        findViewById<Button>(R.id.btnShowQr).setOnClickListener { showTicketDialog() }
+        findViewById<Button>(R.id.btnPaste).setOnClickListener { showPasteDialog() }
+        findViewById<Button>(R.id.btnSendNow).setOnClickListener {
+            startActivity(
+                Intent(this, CopyTrampolineActivity::class.java)
+                    .setAction(CopyTrampolineActivity.ACTION_SEND_CLIPBOARD)
+            )
         }
-    }
-
-    private fun updateAccessibilityUI() {
-        try {
-            val isEnabled = KlipAccessibilityService.isServiceRunning()
-            if (isEnabled) {
-                tvAccessibilityNotice.text = "🟢 Active (Scoped strictly to Klip • Zero screen reading/keylogging • RASP-safe)"
-                btnEnableAccessibility.text = "⚙️ Configure Accessibility"
-            } else {
-                tvAccessibilityNotice.text = "⚪ Inactive (UPI & Banking Safe Mode fully active via Notifications & QS Tile)"
-                btnEnableAccessibility.text = "⚡ Enable Silent Auto-Sync"
-            }
-        } catch (e: Throwable) {
-            android.util.Log.e("MainActivity", "Failed updating accessibility UI: ${e.message}")
+        findViewById<Button>(R.id.btnBackground).setOnClickListener { showBackgroundSetup() }
+        findViewById<Button>(R.id.btnTestBg).setOnClickListener {
+            startService(Intent(this, KlipSyncService::class.java).setAction(KlipSyncService.ACTION_TEST_BG_WRITE))
+            Toast.makeText(
+                this,
+                "Switch to any other app now. In 10 seconds Klip puts a test text on the clipboard — paste it. If it pastes, this phone allows background pasting.",
+                Toast.LENGTH_LONG
+            ).show()
         }
-    }
+        findViewById<Button>(R.id.btnBattery).setOnClickListener { requestBatteryExemption() }
 
-    private fun updateStatusUI() {
-        try {
-            val prefs = getSharedPreferences(KlipSyncService.PREFS_NAME, Context.MODE_PRIVATE)
-            val peerNodeHex = prefs.getString(KlipSyncService.PREF_PEER_NODE_HEX, null)
-            val endpoints = prefs.getString(KlipSyncService.PREF_ENDPOINTS, null)
-
-            if (!peerNodeHex.isNullOrEmpty()) {
-                val shortId = peerNodeHex.take(8)
-                val epInfo = if (!endpoints.isNullOrEmpty()) " ($endpoints)" else ""
-                tvStatus.text = "● Paired with Node: $shortId$epInfo"
-                tvStatus.setTextColor(android.graphics.Color.parseColor("#10B981"))
-            } else {
-                tvStatus.text = "● Mesh Status: Waiting for pairing..."
-                tvStatus.setTextColor(android.graphics.Color.parseColor("#94A3B8"))
-            }
-        } catch (e: Throwable) {
-            android.util.Log.e("MainActivity", "Failed updating status UI: ${e.message}")
-        }
-    }
-
-    private fun showPairSelectionDialog() {
-        val options = arrayOf("📷 Scan QR Code with Camera", "⌨️ Enter Pairing Token Manually", "🌐 Enter PC IP:Port Manually")
-        AlertDialog.Builder(this)
-            .setTitle("Link New Device")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> launchQrScanner()
-                    1 -> showManualTokenDialog()
-                    2 -> showManualIpDialog()
+        KlipSyncService.start(this)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (isActive) {
+                    renderStatus()
+                    delay(2000)
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+        }
     }
 
-    private fun launchQrScanner() {
-        val intent = Intent(this, QrScannerActivity::class.java)
-        qrScanLauncher.launch(intent)
+    private fun restartEngine() {
+        stopService(Intent(this, KlipSyncService::class.java))
+        lifecycleScope.launch {
+            delay(600)
+            KlipSyncService.start(this@MainActivity)
+        }
     }
 
-    private fun showManualTokenDialog() {
+    // ----------------------------------------------------------------------------- status
+
+    private suspend fun renderStatus() {
+        val engine = KlipRuntime.engine
+        if (engine == null) {
+            tvStatus.text = "Starting the engine…"
+            return
+        }
+        val st = withContext(Dispatchers.IO) { runCatching { engine.status() }.getOrNull() }
+        if (st == null) {
+            tvStatus.text = "Engine not responding"
+            return
+        }
+        val sb = StringBuilder()
+        sb.append("This device   ").append(st.deviceFingerprint).append('\n')
+        sb.append("Network       ").append(st.relayMode).append('\n')
+        sb.append("Connection    ").append(st.relayState).append('\n')
+        if (st.paused) sb.append("Sync          PAUSED\n")
+        sb.append('\n')
+        if (st.peers.isEmpty()) {
+            sb.append("No linked devices yet.\nOn your computer run `klip pair`, then scan its QR.")
+        } else {
+            sb.append("Linked devices\n")
+            for (p in st.peers) {
+                sb.append(if (p.online) "  ● " else "  ○ ").append(p.name)
+                    .append("  [").append(p.fingerprint).append("]  ")
+                    .append(if (p.online) "connected" else "not connected").append('\n')
+                p.lastError?.let { sb.append("      last send failed: ").append(it).append('\n') }
+            }
+        }
+        st.lastClipPreview?.let {
+            sb.append("\nLast clip: ").append(it.take(60))
+            st.lastSyncSecsAgo?.let { s -> sb.append("  (").append(s.toLong()).append("s ago)") }
+        }
+        tvStatus.text = sb.toString()
+    }
+
+    // ------------------------------------------------------------------------ pairing (join)
+
+    private fun showPasteDialog() {
         val input = EditText(this).apply {
-            hint = "Paste token or JSON from 'klip pair'"
+            hint = "klip1…"
             setSingleLine(false)
             maxLines = 6
+            val clip = (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                .primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+            if (clip != null && isValidPairingTicket(clip)) setText(clip)
         }
-
         AlertDialog.Builder(this)
-            .setTitle("Enter Pairing Token")
-            .setMessage("Paste the hex token or JSON generated by 'klip pair' on your computer:")
+            .setTitle("Paste the ticket")
+            .setMessage("Run `klip pair` on your computer and paste the ticket it shows:")
             .setView(input)
-            .setPositiveButton("Link") { _, _ ->
-                val token = input.text.toString().trim()
-                if (token.isNotEmpty()) {
-                    applyPairingToken(token)
-                }
-            }
+            .setPositiveButton("Link") { _, _ -> joinWithTicket(input.text.toString()) }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun showManualIpDialog() {
-        val layout = LinearLayout(this).apply {
+    private fun joinWithTicket(ticket: String) {
+        val engine = KlipRuntime.engine
+        if (engine == null) {
+            Toast.makeText(this, "Klip is still starting — try again in a moment", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (!isValidPairingTicket(ticket.trim())) {
+            Toast.makeText(this, "That is not a valid, unexpired Klip ticket", Toast.LENGTH_LONG).show()
+            return
+        }
+        val waiting = AlertDialog.Builder(this)
+            .setTitle("Linking…")
+            .setMessage("Approve this phone on the other device when it asks.")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val outcome = withContext(Dispatchers.IO) { runCatching { engine.pairJoin(ticket.trim()) } }
+            waiting.dismiss()
+            outcome.onSuccess {
+                Toast.makeText(this@MainActivity, "Linked with ${it.name}", Toast.LENGTH_LONG).show()
+                renderStatus()
+            }.onFailure {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("Could not link")
+                    .setMessage(it.message ?: "Unknown error")
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------- pairing (host)
+
+    private fun showTicketDialog() {
+        val engine = KlipRuntime.engine ?: run {
+            Toast.makeText(this, "Klip is still starting — try again in a moment", Toast.LENGTH_LONG).show()
+            return
+        }
+        val image = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 900)
+            setBackgroundColor(android.graphics.Color.WHITE)
+            setPadding(24, 24, 24, 24)
+        }
+        val caption = TextView(this).apply {
+            setPadding(24, 16, 24, 8)
+            text = "Preparing…"
+        }
+        val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(50, 20, 50, 10)
+            addView(image)
+            addView(caption)
         }
-        val etIp = EditText(this).apply { hint = "Host IP: e.g. 192.168.1.100" }
-        val etPort = EditText(this).apply {
-            hint = "Port: 7123"
-            setText("7123")
+        var watcher: Job? = null
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Link another device")
+            .setView(box)
+            .setNegativeButton("Close", null)
+            .create()
+        dialog.setOnDismissListener {
+            watcher?.cancel()
+            lifecycleScope.launch(Dispatchers.IO) { runCatching { engine.pairCancel() } }
         }
-        val etPsk = EditText(this).apply { hint = "32-byte hex PSK (from klip pair)" }
+        dialog.show()
 
-        layout.addView(etIp)
-        layout.addView(etPort)
-        layout.addView(etPsk)
-
-        AlertDialog.Builder(this)
-            .setTitle("Direct IP Connection")
-            .setView(layout)
-            .setPositiveButton("Connect") { _, _ ->
-                val ip = etIp.text.toString().trim()
-                val port = etPort.text.toString().trim()
-                val psk = etPsk.text.toString().trim()
-                if (ip.isNotEmpty() && psk.length == 64) {
-                    val synthJson = org.json.JSONObject().apply {
-                        put("host_node", org.json.JSONArray((1..32).map { 0 }))
-                        put("psk_hex", psk)
-                        put("timestamp", System.currentTimeMillis() / 1000)
-                        put("endpoints", org.json.JSONArray(listOf("$ip:$port")))
-                    }.toString()
-                    applyPairingToken(synthJson)
-                } else {
-                    Toast.makeText(this, "Please provide valid IP and 64-char hex PSK", Toast.LENGTH_LONG).show()
+        watcher = lifecycleScope.launch {
+            val ticket = withContext(Dispatchers.IO) {
+                runCatching { engine.pairStart(120UL, !KlipRuntime.useRelays(this@MainActivity)) }
+            }.getOrElse {
+                caption.text = "Error: ${it.message}"
+                return@launch
+            }
+            image.setImageBitmap(BarcodeEncoder().encodeBitmap(ticket.ticket, BarcodeFormat.QR_CODE, 720, 720))
+            caption.text = "On the other device choose “Scan”, or run:\n  klip pair ${ticket.ticket.take(18)}…\n(this device: ${ticket.deviceFingerprint})"
+            var asked = false
+            while (isActive) {
+                delay(500)
+                val p = withContext(Dispatchers.IO) { runCatching { engine.pairPoll() }.getOrNull() } ?: continue
+                p.pairedDevice?.let {
+                    Toast.makeText(this@MainActivity, "Linked with $it", Toast.LENGTH_LONG).show()
+                    dialog.dismiss()
+                    return@launch
+                }
+                val pending = p.pending
+                if (pending != null && !asked) {
+                    asked = true
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Link “${pending.deviceName}”?")
+                        .setMessage("Device fingerprint: ${pending.fingerprint}\n\nOnly approve a device you just set up yourself.")
+                        .setCancelable(false)
+                        .setPositiveButton("Approve") { _, _ ->
+                            lifecycleScope.launch(Dispatchers.IO) { engine.pairDecide(true) }
+                        }
+                        .setNegativeButton("Decline") { _, _ ->
+                            lifecycleScope.launch(Dispatchers.IO) { engine.pairDecide(false) }
+                            dialog.dismiss()
+                        }
+                        .show()
+                } else if (!p.windowOpen && !asked) {
+                    Toast.makeText(this@MainActivity, "The code expired. Open it again.", Toast.LENGTH_LONG).show()
+                    dialog.dismiss()
+                    return@launch
                 }
             }
-            .setNegativeButton("Cancel", null)
+        }
+    }
+
+    // ------------------------------------------------------------------ background setup (adb)
+
+    private fun showBackgroundSetup() {
+        val logsOk = checkSelfPermission(android.Manifest.permission.READ_LOGS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        val overlayOk = Settings.canDrawOverlays(this)
+        val cmd1 = "adb shell pm grant $packageName android.permission.READ_LOGS"
+        val msg = """
+            Android only lets the app you are looking at read the clipboard, so copying on this phone while another app is in front can't be noticed automatically.
+
+            Without any setup you can still send with: the Klip tile in Quick Settings, the “Send clipboard” button in Klip's notification, or “Send to Klip” in the text selection menu.
+
+            Optional automatic mode (same method KDE Connect uses), needs a computer once:
+            1. Enable USB debugging, connect the phone.
+            2. Run:  $cmd1
+            3. Allow “Display over other apps” for Klip (button below).
+            4. Reopen Klip.
+
+            It lets Klip read Android's system log, but Klip only looks at its own clipboard-denied line. Undo any time: adb shell pm revoke $packageName android.permission.READ_LOGS
+
+            Status:  log access ${if (logsOk) "✔ granted" else "✘ not granted"}   ·   overlay ${if (overlayOk) "✔ allowed" else "✘ not allowed"}
+        """.trimIndent()
+        AlertDialog.Builder(this)
+            .setTitle("Automatic copy from this phone")
+            .setMessage(msg)
+            .setPositiveButton("Overlay permission") { _, _ ->
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            }
+            .setNeutralButton("Copy command") { _, _ ->
+                (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("adb", cmd1))
+                Toast.makeText(this, "Command copied", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
             .show()
     }
 
-    private fun applyPairingToken(token: String) {
+    private fun requestBatteryExemption() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) {
+            Toast.makeText(this, "Already allowed", Toast.LENGTH_SHORT).show()
+            return
+        }
         try {
-            val invitation = KlipProtocol.parsePairingToken(token)
-            val intent = Intent(this, KlipSyncService::class.java).apply {
-                action = KlipSyncService.ACTION_PAIR
-                putExtra(KlipSyncService.EXTRA_PAIR_TOKEN, token)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-
-            Toast.makeText(this, "Pairing initiated with ${invitation.endpoints}", Toast.LENGTH_LONG).show()
-            updateStatusUI()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Invalid pairing token: ${e.message}", Toast.LENGTH_LONG).show()
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+            )
+        } catch (e: Throwable) {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
         }
     }
 }

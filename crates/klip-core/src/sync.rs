@@ -6,7 +6,7 @@ use klip_net::{ClipOutcome, EndpointId, KlipNode, NetEvent, PairDecision, PeerRe
 use klip_platform::driver::ClipboardDriver;
 use klip_proto::clip::{ClipContentType, ClipPayload};
 use klip_proto::hlc::{HybridLogicalClock, NodeId};
-use klip_proto::ipc::{PairPollInfo, PeerStatusInfo, PendingPairInfo};
+use klip_proto::ipc::{DaemonStatusInfo, PairPollInfo, PeerStatusInfo, PendingPairInfo};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -288,7 +288,11 @@ impl SyncCoordinator {
 
         if self
             .driver
-            .write_clip(&payload.content_type, &payload.content)
+            .write_clip_flagged(
+                &payload.content_type,
+                &payload.content,
+                payload.is_sensitive,
+            )
             .is_err()
         {
             // Not applied, so the "active clip" bookkeeping must not claim it was.
@@ -428,6 +432,35 @@ impl SyncCoordinator {
                 }
             })
             .collect()
+    }
+
+    /// Everything the UIs show on their status screen. The host supplies the values only it knows.
+    pub fn status(&self, platform: String, memory_rss_bytes: u64) -> DaemonStatusInfo {
+        let last_clip = self.history.last_item();
+        let (last_clip_preview, last_clip_size_bytes) = match last_clip {
+            Some(c) => (Some(c.content_preview), c.size_bytes),
+            None => (None, 0),
+        };
+        DaemonStatusInfo {
+            is_active: true,
+            is_paused: self.check_pause_status(),
+            paused_remaining_secs: self.pause_remaining_secs(),
+            platform,
+            memory_rss_bytes,
+            node_id: self.identity.node_id,
+            relay_mode: self.relay_mode_label().to_string(),
+            relay_state: self.net.relay_state_label(),
+            pairing_open: self.net.pairing_open(),
+            peers: self.peer_status(),
+            total_synced_clips: self.total_synced_clips.load(Ordering::SeqCst),
+            last_sync_time_secs_ago: self
+                .last_sync_instant
+                .lock()
+                .unwrap()
+                .map(|t| t.elapsed().as_secs()),
+            last_clip_preview,
+            last_clip_size_bytes,
+        }
     }
 
     pub fn relay_mode_label(&self) -> &'static str {

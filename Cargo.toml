@@ -7,6 +7,7 @@ members = [
     "crates/klip-platform",
     "crates/klip-net",
     "crates/klip-core",
+    "crates/klip-android",
     "crates/klip-daemon",
     "crates/klip-cli",
 ]
@@ -56,7 +57,15 @@ klip-diff = { path = "crates/klip-diff" }
 klip-platform = { path = "crates/klip-platform" }
 klip-net = { path = "crates/klip-net" }
 klip-core = { path = "crates/klip-core" }
+uniffi = "0.32"
 klip-daemon = { path = "crates/klip-daemon" }
+
+# Smaller dev artifacts: full debuginfo for ~400 crates took 15 GB on a 180 GB disk.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 opt-level = "z"
@@ -65,3 +74,13 @@ codegen-units = 1
 panic = "abort"
 strip = true
 overflow-checks = true
+
+# Profile for the Android native library. Differs from `release` on purpose:
+# - panic = "unwind": a Rust panic must surface as an error to the app (UniFFI catches it);
+#   with abort it would kill the whole Android process.
+# - thin LTO + several codegen units: fat LTO of the iroh stack needs several GB of RAM.
+[profile.android]
+inherits = "release"
+panic = "unwind"
+lto = "thin"
+codegen-units = 4

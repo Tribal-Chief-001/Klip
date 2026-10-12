@@ -56,6 +56,8 @@ pub struct DaemonStatusInfo {
     pub memory_rss_bytes: u64,
     pub node_id: NodeId,
     pub relay_mode: String,
+    /// Live state of the relay connection (connected / connecting / unreachable + reason).
+    pub relay_state: String,
     pub pairing_open: bool,
     pub peers: Vec<PeerStatusInfo>,
     pub total_synced_clips: u64,

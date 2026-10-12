@@ -4,6 +4,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Lets the engine receive mDNS multicast on Wi-Fi (finding paired devices on the same LAN). -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -11,6 +13,17 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
+      Optional "background clipboard" mode (same technique KDE Connect uses). Android only lets the
+      app that has focus read the clipboard, and READ_LOGS can only be granted over adb:
+        adb shell pm grant com.klip.app android.permission.READ_LOGS
+      Klip then watches the system log for its own "clipboard access denied" line and briefly
+      brings a transparent window to the front (needs the overlay permission) to read the clip.
+      Nothing else is read from the log. Fully optional; the app works without it.
+    -->
+    <uses-permission android:name="android.permission.READ_LOGS" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:allowBackup="false"
@@ -36,7 +49,7 @@
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Klip" />
 
-        <!-- Lightweight Transparent Trampoline for Direct Foreground Clipboard Injection (Banking & UPI Safe) -->
+        <!-- Transparent window that briefly takes focus: Android only lets the focused app read the clipboard. -->
         <activity
             android:name=".CopyTrampolineActivity"
             android:exported="false"
@@ -44,7 +57,7 @@
             android:noHistory="true"
             android:theme="@style/Theme.Klip.Transparent" />
 
-        <!-- Direct Text Selection Action (Context Menu "Send to Klip") -->
+        <!-- "Send to Klip" in the text selection menu. Needs no special permission. -->
         <activity
             android:name=".ProcessTextActivity"
             android:exported="true"
@@ -59,7 +72,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Android Quick Settings (QS) Tile Service (100% Safe Clipboard Sync) -->
+        <!-- Quick Settings tile: tap to send the current clipboard. -->
         <service
             android:name=".KlipTileService"
             android:exported="true"
@@ -71,21 +84,7 @@
             </intent-filter>
         </service>
 
-        <!-- True Silent Auto-Sync via Accessibility Service (KDE Connect Grade, Scoped to Klip) -->
-        <service
-            android:name=".KlipAccessibilityService"
-            android:exported="true"
-            android:label="@string/accessibility_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
-
-        <!-- Foreground Network Worker Service for Iroh QUIC Mesh Connection -->
+        <!-- Keeps the engine (network connection) alive in the background. -->
         <service
             android:name=".KlipSyncService"
             android:exported="false"

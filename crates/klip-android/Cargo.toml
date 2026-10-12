@@ -1,0 +1,29 @@
+[package]
+name = "klip-android"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Klip engine for Android: UniFFI bindings over klip-core"
+
+[lib]
+name = "klip_android"
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# Only needed to (re)generate the Kotlin bindings: cargo run --features bindgen --bin uniffi-bindgen
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+klip-core = { workspace = true }
+klip-proto = { workspace = true }
+klip-crypto = { workspace = true }
+klip-platform = { workspace = true }
+klip-net = { workspace = true }
+tokio = { workspace = true }
+uniffi = { workspace = true }

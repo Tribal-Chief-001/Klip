@@ -4,7 +4,7 @@ use crate::proto::{
 };
 use crate::ticket::{now_unix, PairingTicket};
 use iroh::endpoint::{presets, Connection, IdleTimeout, Incoming, QuicTransportConfig};
-use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, Watcher};
 use klip_proto::clip::ClipPayload;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -223,6 +223,23 @@ impl KlipNode {
                 name: p.name,
             })
             .collect()
+    }
+
+    /// One-line, human-readable state of the connection to the relay server, for status screens.
+    /// This is what to look at first when two devices on different networks cannot find each other.
+    pub fn relay_state_label(&self) -> String {
+        if self.inner.cfg.relay == RelayChoice::Disabled {
+            return "relays off (LAN only)".to_string();
+        }
+        let statuses = self.endpoint.home_relay_status().get();
+        match statuses.first() {
+            None => "choosing a relay…".to_string(),
+            Some(r) if r.is_connected() => format!("relay connected ({})", r.url()),
+            Some(r) => match r.last_error() {
+                Some(e) => format!("relay unreachable: {e}"),
+                None => "connecting to relay…".to_string(),
+            },
+        }
     }
 
     pub fn is_paired(&self, id: &EndpointId) -> bool {

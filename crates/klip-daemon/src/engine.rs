@@ -39,7 +39,15 @@ impl DaemonEngine {
                     &config.device_name,
                 )
                 .map_err(|e| format!("Failed to load keystore: {e}"))?;
-                Arc::from(create_default_driver(identity.node_id))
+                // KLIP_CLIPBOARD=memory runs without touching the OS clipboard (headless servers,
+                // demos, tests of the real binary): clips are still synced and kept in history.
+                if std::env::var("KLIP_CLIPBOARD").as_deref() == Ok("memory") {
+                    Arc::new(klip_platform::memory::MemoryClipboardDriver::new(
+                        identity.node_id,
+                    ))
+                } else {
+                    Arc::from(create_default_driver(identity.node_id))
+                }
             }
         };
         let core = CoreEngine::start(config.clone(), paths.clone(), driver)

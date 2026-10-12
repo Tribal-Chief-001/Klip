@@ -19,7 +19,7 @@ import com.journeyapps.barcodescanner.DefaultDecoderFactory
 class QrScannerActivity : AppCompatActivity() {
 
     companion object {
-        const val EXTRA_SCANNED_TOKEN = "extra_scanned_token"
+        const val EXTRA_SCANNED_TICKET = "extra_scanned_ticket"
         private const val REQUEST_CAMERA_PERMISSION = 101
         private const val TAG = "QrScannerActivity"
     }
@@ -68,7 +68,7 @@ class QrScannerActivity : AppCompatActivity() {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 startScanning()
             } else {
-                Toast.makeText(this, "Camera permission denied. Use manual token input.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Camera permission denied. Paste the ticket instead.", Toast.LENGTH_SHORT).show()
                 finish()
             }
         }
@@ -80,13 +80,18 @@ class QrScannerActivity : AppCompatActivity() {
             override fun barcodeResult(result: BarcodeResult?) {
                 if (result == null || isScanHandled) return
                 val text = result.text?.trim() ?: return
+                if (text.isNotEmpty() && !uniffi.klip_android.isValidPairingTicket(text)) {
+                    // Not one of ours (or expired): keep scanning instead of accepting garbage.
+                    Toast.makeText(this@QrScannerActivity, "That is not a valid Klip QR code", Toast.LENGTH_SHORT).show()
+                    return
+                }
                 if (text.isNotEmpty()) {
                     isScanHandled = true
                     barcodeView.pause()
-                    Log.i(TAG, "QR Code decoded successfully: ${text.take(32)}...")
+                    Log.i(TAG, "Klip ticket scanned")
 
                     val data = Intent().apply {
-                        putExtra(EXTRA_SCANNED_TOKEN, text)
+                        putExtra(EXTRA_SCANNED_TICKET, text)
                     }
                     setResult(Activity.RESULT_OK, data)
                     finish()

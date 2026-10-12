@@ -1,135 +1,133 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:background="#090D16"
-    android:padding="24dp">
+    android:fillViewport="true">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="📎 Klip"
-        android:textColor="#FFFFFF"
-        android:textSize="28sp"
-        android:textStyle="bold"
-        android:layout_marginTop="16dp" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Universal E2EE Clipboard Companion"
-        android:textColor="#8B5CF6"
-        android:textSize="14sp"
-        android:layout_marginBottom="24dp" />
-
-    <!-- Dual Sync Mode Info Card -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:background="#131B2E"
-        android:padding="16dp"
-        android:layout_marginBottom="16dp">
+        android:padding="20dp">
 
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Klip"
+            android:textColor="#FFFFFF"
+            android:textSize="30sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="20dp"
+            android:text="Clipboard sync between your own devices"
+            android:textColor="#8B5CF6"
+            android:textSize="14sp" />
+
+        <!-- Live status -->
         <TextView
             android:id="@+id/tvStatus"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="● Mesh Status: Waiting for pairing..."
-            android:textColor="#10B981"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-
-        <View
             android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#1E293B"
-            android:layout_marginTop="12dp"
-            android:layout_marginBottom="12dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="⚡ Mode 1: Silent Auto-Sync"
-            android:textColor="#F59E0B"
-            android:textSize="13sp"
-            android:textStyle="bold" />
+            android:layout_marginBottom="16dp"
+            android:background="#131B2E"
+            android:fontFamily="monospace"
+            android:padding="16dp"
+            android:text="Starting…"
+            android:textColor="#E2E8F0"
+            android:textSize="13sp" />
 
-        <TextView
-            android:id="@+id/tvAccessibilityNotice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Checking Accessibility Service..."
-            android:textColor="#94A3B8"
-            android:textSize="12sp"
-            android:layout_marginTop="4dp" />
-
-        <View
+        <Button
+            android:id="@+id/btnScan"
             android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="#1E293B"
-            android:layout_marginTop="12dp"
-            android:layout_marginBottom="12dp" />
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:backgroundTint="#8B5CF6"
+            android:text="Scan a QR code to link a device"
+            android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/btnShowQr"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:backgroundTint="#1E293B"
+            android:text="Show a QR code for another device"
+            android:textColor="#E2E8F0" />
+
+        <Button
+            android:id="@+id/btnPaste"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:backgroundTint="#1E293B"
+            android:text="Paste a ticket instead"
+            android:textColor="#E2E8F0" />
+
+        <Button
+            android:id="@+id/btnSendNow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:backgroundTint="#10B981"
+            android:text="Send my clipboard now"
+            android:textColor="#04210F" />
+
+        <Switch
+            android:id="@+id/switchRelays"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="4dp"
+            android:text="Work across different networks (uses n0 relay servers)"
+            android:textColor="#E2E8F0"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:text="Relays see which devices talk and when, never what you copy. Turn off for same-Wi-Fi only."
+            android:textColor="#64748B"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnBackground"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:backgroundTint="#1E293B"
+            android:text="Automatic copy from this phone (setup)"
+            android:textColor="#E2E8F0" />
+
+        <Button
+            android:id="@+id/btnTestBg"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:backgroundTint="#1E293B"
+            android:text="Test: can this phone paste from the background?"
+            android:textColor="#E2E8F0" />
+
+        <Button
+            android:id="@+id/btnBattery"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="20dp"
+            android:backgroundTint="#1E293B"
+            android:text="Allow background activity (battery)"
+            android:textColor="#E2E8F0" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="🛡️ Mode 2: UPI &amp; Bank Safe Mode"
-            android:textColor="#38BDF8"
-            android:textSize="13sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="100% PhonePe / GPay / Paytm compatible. Pull down status bar to use '📎 Klip' Quick Settings tile, tap 'Copy to Clipboard' on incoming notifications, or use 'Send to Klip' text context menu."
-            android:textColor="#94A3B8"
-            android:textSize="12sp"
-            android:layout_marginTop="4dp" />
+            android:layout_gravity="center_horizontal"
+            android:text="End-to-end encrypted • no account • alpha"
+            android:textColor="#475569"
+            android:textSize="11sp" />
     </LinearLayout>
-
-    <Button
-        android:id="@+id/btnEnableAccessibility"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="⚡ Toggle Scoped Auto-Sync"
-        android:backgroundTint="#F59E0B"
-        android:textColor="#000000"
-        android:textStyle="bold"
-        android:layout_marginBottom="12dp" />
-
-    <Button
-        android:id="@+id/btnPair"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="🔑 Link Device (Enter Token / Scan)"
-        android:backgroundTint="#8B5CF6"
-        android:textColor="#FFFFFF"
-        android:textStyle="bold"
-        android:layout_marginBottom="12dp" />
-
-    <Button
-        android:id="@+id/btnSimulatePaste"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="📋 Test Clipboard Inject"
-        android:backgroundTint="#1E293B"
-        android:textColor="#E2E8F0"
-        android:layout_marginBottom="16dp" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Zero-Cloud • Post-Quantum RFC 10024 • ChaCha20-Poly1305"
-        android:textColor="#475569"
-        android:textSize="11sp"
-        android:layout_gravity="center_horizontal"
-        android:layout_marginBottom="8dp" />
-
-</LinearLayout>
+</ScrollView>
