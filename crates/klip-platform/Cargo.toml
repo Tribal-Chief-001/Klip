@@ -1,0 +1,14 @@
+[package]
+name = "klip-platform"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+klip-proto = { workspace = true }
+arboard = { workspace = true }
+tokio = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

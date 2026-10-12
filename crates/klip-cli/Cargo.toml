@@ -1,0 +1,24 @@
+[package]
+name = "klip-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "klip"
+path = "src/main.rs"
+
+[dependencies]
+klip-proto = { workspace = true }
+klip-crypto = { workspace = true }
+klip-diff = { workspace = true }
+klip-platform = { workspace = true }
+klip-transport = { workspace = true }
+klip-daemon = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+owo-colors = { workspace = true }
+indicatif = { workspace = true }
+qr2term = { workspace = true }
+directories = { workspace = true }

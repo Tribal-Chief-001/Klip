@@ -1,0 +1,13 @@
+[package]
+name = "klip-proto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bincode = { workspace = true }
+serde = { workspace = true }
+blake3 = { workspace = true }
+zeroize = { workspace = true }
+rand = { workspace = true }

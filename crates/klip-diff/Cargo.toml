@@ -1,0 +1,14 @@
+[package]
+name = "klip-diff"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+klip-proto = { workspace = true }
+fastcdc = { workspace = true }
+fossil-delta = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
