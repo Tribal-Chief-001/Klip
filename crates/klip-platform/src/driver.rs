@@ -17,11 +17,11 @@ pub enum PlatformEnvironment {
 impl fmt::Display for PlatformEnvironment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::LinuxWayland => write!(f, "Linux (Wayland ext-data-control)"),
-            Self::LinuxX11 => write!(f, "Linux (X11 INCR)"),
-            Self::LinuxGnomeMutter => write!(f, "Linux (GNOME Mutter Bridge)"),
-            Self::MacOS => write!(f, "macOS (NSPasteboard)"),
-            Self::Windows => write!(f, "Windows (Win32 HWND_MESSAGE)"),
+            Self::LinuxWayland => write!(f, "Linux (Wayland, via XWayland)"),
+            Self::LinuxX11 => write!(f, "Linux (X11)"),
+            Self::LinuxGnomeMutter => write!(f, "Linux (GNOME Wayland, via XWayland)"),
+            Self::MacOS => write!(f, "macOS"),
+            Self::Windows => write!(f, "Windows"),
             Self::MobileApp => write!(f, "Mobile app"),
             Self::Generic => write!(f, "Generic OS Clipboard"),
         }

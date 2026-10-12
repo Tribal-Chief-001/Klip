@@ -48,9 +48,23 @@ jobs:
         run: |
           copy target\${{ matrix.target }}\release\klip.exe .\${{ matrix.artifact_name }}
 
+      - name: Checksum (Unix)
+        if: matrix.os != 'windows-latest'
+        run: sha256sum ${{ matrix.artifact_name }} > ${{ matrix.artifact_name }}.sha256
+
+      - name: Checksum (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash ${{ matrix.artifact_name }} -Algorithm SHA256).Hash.ToLower()
+          "$h  ${{ matrix.artifact_name }}" | Out-File -Encoding ascii ${{ matrix.artifact_name }}.sha256
+
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact_name }}
+          files: |
+            ${{ matrix.artifact_name }}
+            ${{ matrix.artifact_name }}.sha256
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

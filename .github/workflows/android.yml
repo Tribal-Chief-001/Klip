@@ -66,23 +66,46 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build APK via Gradle
+      - name: Build APK via Gradle (release-signed when the signing secrets exist)
         working-directory: ./android
-        run: gradle assembleDebug --stacktrace
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KLIP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KLIP_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KLIP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/klip-release.jks"
+            export KLIP_KEYSTORE_FILE="$RUNNER_TEMP/klip-release.jks"
+            gradle assembleRelease --stacktrace
+            echo "APK_PATH=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+          else
+            echo "::warning::No signing secrets available (fork or missing secrets): building a DEBUG-signed APK"
+            gradle assembleDebug --stacktrace
+            echo "APK_PATH=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+          fi
 
-      - name: Rename and Prepare APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk ./Klip-Android.apk
+      - name: Rename APK and write checksum
+        run: |
+          cp "android/$APK_PATH" ./Klip-Android.apk
+          sha256sum Klip-Android.apk > Klip-Android.apk.sha256
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs Klip-Android.apk | head -3 || true
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Klip-Android-APK
-          path: ./Klip-Android.apk
+          path: |
+            ./Klip-Android.apk
+            ./Klip-Android.apk.sha256
 
       - name: Attach APK to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ./Klip-Android.apk
+          files: |
+            ./Klip-Android.apk
+            ./Klip-Android.apk.sha256
+          prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

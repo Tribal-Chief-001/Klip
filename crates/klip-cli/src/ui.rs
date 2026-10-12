@@ -108,6 +108,10 @@ pub fn print_status_card(info: &DaemonStatusInfo) {
         format!("● NETWORK  {}", info.relay_mode),
     );
     push(
+        format!("● RELAY    {}", info.relay_state),
+        format!("● RELAY    {}", info.relay_state),
+    );
+    push(
         format!("● DEVICE   {}", info.node_id.fingerprint()),
         format!("● DEVICE   {}", info.node_id.fingerprint().cyan()),
     );

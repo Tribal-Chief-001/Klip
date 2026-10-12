@@ -20,8 +20,23 @@ android {
         }
     }
 
+    // Release signing comes from the environment (CI secrets or a local keystore); without it the
+    // release build stays unsigned and `assembleDebug` is used instead. Nothing secret lives here.
+    val keystoreFile = System.getenv("KLIP_KEYSTORE_FILE")
+    signingConfigs {
+        if (keystoreFile != null) {
+            create("release") {
+                storeFile = file(keystoreFile)
+                storePassword = System.getenv("KLIP_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KLIP_KEY_ALIAS")
+                keyPassword = System.getenv("KLIP_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (keystoreFile != null) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
