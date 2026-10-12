@@ -8,9 +8,5 @@ license.workspace = true
 [dependencies]
 klip-proto = { workspace = true }
 arboard = { workspace = true }
-tokio = { workspace = true }
-blake3 = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
 image = { workspace = true }
 klip-diff = { workspace = true }

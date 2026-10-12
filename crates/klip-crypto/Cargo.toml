@@ -7,15 +7,7 @@ license.workspace = true
 
 [dependencies]
 klip-proto = { workspace = true }
-chacha20poly1305 = { workspace = true }
-zeroize = { workspace = true }
-blake3 = { workspace = true }
-rand = { workspace = true }
-sha2 = { workspace = true }
-hmac = { workspace = true }
 ed25519-dalek = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

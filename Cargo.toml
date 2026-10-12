@@ -5,7 +5,6 @@ members = [
     "crates/klip-crypto",
     "crates/klip-diff",
     "crates/klip-platform",
-    "crates/klip-transport",
     "crates/klip-net",
     "crates/klip-daemon",
     "crates/klip-cli",
@@ -21,33 +20,24 @@ repository = "https://github.com/Tribal-Chief-001/Klip"
 [workspace.dependencies]
 # Async Runtime & Utilities
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "io-util", "fs", "signal"] }
-tokio-util = { version = "0.7", features = ["codec"] }
-bytes = "1.7"
-futures-util = "0.3"
 
 # Cryptography & Security
-chacha20poly1305 = { version = "0.10", features = ["alloc"] }
-zeroize = { version = "1.8", features = ["derive"] }
 blake3 = "1.5"
 rand = "0.8"
-sha2 = "0.10"
-hmac = "0.12"
 ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
 
 # Serialization & Diff
 bincode = "1.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-fastcdc = "3.1"
-fossil-delta = "0.1"
 image = { version = "0.25", default-features = false, features = ["png", "bmp", "webp"] }
 
 # Terminal UI & CLI
 clap = { version = "4.5", features = ["derive"] }
 directories = "5.0"
 owo-colors = "4.1"
-indicatif = "0.17"
-qr2term = "0.3"
+qrcode = { version = "0.14", default-features = false }
+unicode-width = "0.2"
 
 # Clipboard
 arboard = "3.4"
@@ -57,15 +47,12 @@ iroh = { version = "1", default-features = false, features = ["tls-ring", "portm
 postcard = { version = "1", features = ["use-std"] }
 data-encoding = "2"
 subtle = "2"
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 
 # Internal workspace crates
 klip-proto = { path = "crates/klip-proto" }
 klip-crypto = { path = "crates/klip-crypto" }
 klip-diff = { path = "crates/klip-diff" }
 klip-platform = { path = "crates/klip-platform" }
-klip-transport = { path = "crates/klip-transport" }
 klip-net = { path = "crates/klip-net" }
 klip-daemon = { path = "crates/klip-daemon" }
 

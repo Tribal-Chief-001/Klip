@@ -5,7 +5,7 @@ use crate::proto::{
 use crate::ticket::{now_unix, PairingTicket};
 use iroh::endpoint::{presets, Connection, IdleTimeout, Incoming, QuicTransportConfig};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey};
-use klip_proto::wire::ClipPayload;
+use klip_proto::clip::ClipPayload;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,8 +21,12 @@ const PAIR_CLIENT_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_PAIR_FAILURES: u8 = 5;
 /// Slack on top of the clip size limit for the serialized envelope (ids, hlc, mime string).
 const ENVELOPE_SLACK: usize = 4096;
-const ACK_ACCEPTED: u8 = 1;
+const ACK_APPLIED: u8 = 1;
 const ACK_REJECTED: u8 = 0;
+const ACK_PAUSED: u8 = 2;
+const ACK_NO_CLIPBOARD: u8 = 3;
+/// How long the receiving application may take to apply a clip before we report a refusal.
+const APPLY_TIMEOUT: Duration = Duration::from_secs(5);
 const CODE_UNPAIRED: u32 = 1;
 const CODE_DONE: u32 = 0;
 
@@ -43,6 +47,9 @@ pub struct NetConfig {
     pub keep_alive: Duration,
     pub idle_timeout: Duration,
     pub max_clip_bytes: usize,
+    /// Announce this device on the local network (mDNS) and find paired devices there, so sync
+    /// works on the same Wi-Fi even without internet. Advertises the device id to the LAN.
+    pub lan_discovery: bool,
 }
 
 impl Default for NetConfig {
@@ -53,6 +60,7 @@ impl Default for NetConfig {
             keep_alive: Duration::from_secs(20),
             idle_timeout: Duration::from_secs(60),
             max_clip_bytes: 32 * 1024 * 1024,
+            lan_discovery: true,
         }
     }
 }
@@ -71,6 +79,24 @@ pub struct PeerStatus {
     pub connected: bool,
 }
 
+/// What the receiving application did with a clip; this is what the sender is told.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipOutcome {
+    /// Written to the clipboard.
+    Applied,
+    /// A newer clip was already active (last-write-wins); nothing to do, not an error.
+    Superseded,
+    /// The receiving device has sync paused.
+    Paused,
+    /// The OS clipboard could not be written (no display, locked, unsupported type).
+    ClipboardUnavailable,
+    /// Invalid or unacceptable clip.
+    Rejected,
+}
+
+/// Reply channel for the application's decision on a received clip.
+pub type ClipAck = oneshot::Sender<ClipOutcome>;
+
 /// Reply channel for a pairing request: send `true` to accept, `false` to decline.
 pub type PairDecision = oneshot::Sender<bool>;
 
@@ -79,6 +105,8 @@ pub enum NetEvent {
     Clip {
         from: EndpointId,
         payload: ClipPayload,
+        /// Must be answered; the sender waits for it (5 s) before reporting a refusal.
+        ack: ClipAck,
     },
     /// A device holding a valid ticket wants to pair; the host must decide.
     PairRequest {
@@ -144,6 +172,17 @@ impl KlipNode {
             .await
             .map_err(|e| NetError::Bind(e.to_string()))?;
 
+        if cfg.lan_discovery {
+            // Failure here (no multicast-capable interface, sandbox) only costs LAN discovery.
+            if let Ok(mdns) =
+                iroh_mdns_address_lookup::MdnsAddressLookup::builder().build(endpoint.id())
+            {
+                if let Ok(services) = endpoint.address_lookup() {
+                    services.add(mdns);
+                }
+            }
+        }
+
         let (tx, rx) = mpsc::channel(256);
         let inner = Arc::new(Inner {
             cfg,
@@ -208,7 +247,11 @@ impl KlipNode {
 
     /// Open a pairing window and return the ticket to show as text/QR.
     /// Single use: the secret is consumed by the first request that presents it.
-    pub async fn open_pairing(&self, ttl: Duration) -> PairingTicket {
+    ///
+    /// `include_direct_addrs = false` keeps the ticket (and its QR code) small by carrying only the
+    /// relay hint; peers then find each other through the relay/discovery. Direct addresses are
+    /// always included when relays are disabled, because there is no other way to reach the host.
+    pub async fn open_pairing(&self, ttl: Duration, include_direct_addrs: bool) -> PairingTicket {
         if self.inner.cfg.relay == RelayChoice::N0Default {
             // Give the endpoint a moment to learn its home relay so the ticket can carry it.
             let _ = timeout(Duration::from_secs(3), self.endpoint.online()).await;
@@ -220,7 +263,11 @@ impl KlipNode {
             expires: Instant::now() + ttl,
             failures: 0,
         });
-        PairingTicket::new(self.endpoint.addr(), secret, now_unix() + ttl.as_secs())
+        let mut addr = self.endpoint.addr();
+        if !include_direct_addrs && self.inner.cfg.relay != RelayChoice::Disabled {
+            addr.addrs.retain(|a| a.is_relay());
+        }
+        PairingTicket::new(addr, secret, now_unix() + ttl.as_secs())
     }
 
     pub fn close_pairing(&self) {
@@ -340,10 +387,13 @@ impl KlipNode {
     }
 
     async fn send_to(&self, id: EndpointId, bytes: &[u8]) -> Result<(), NetError> {
-        // One retry with a fresh connection if the cached one turned out to be dead.
+        // Retry once with a fresh connection, but only for transport problems (a cached
+        // connection can be dead). A peer that answered "no" has given its final answer: sending
+        // the same clip again would, at best, be reported as a stale duplicate.
         match self.try_send(id, bytes, false).await {
-            Ok(()) => Ok(()),
+            Err(NetError::PeerRefused(why)) => Err(NetError::PeerRefused(why)),
             Err(_) => self.try_send(id, bytes, true).await,
+            ok => ok,
         }
     }
 
@@ -368,10 +418,17 @@ impl KlipNode {
                 .read_to_end(1)
                 .await
                 .map_err(|e| NetError::Stream(e.to_string()))?;
-            if ack.as_slice() == [ACK_ACCEPTED] {
-                Ok(())
-            } else {
-                Err(NetError::Protocol("peer rejected the clip".into()))
+            match ack.as_slice() {
+                [ACK_APPLIED] => Ok(()),
+                [ACK_PAUSED] => Err(NetError::PeerRefused(
+                    "the other device has sync paused".into(),
+                )),
+                [ACK_NO_CLIPBOARD] => Err(NetError::PeerRefused(
+                    "the other device could not write its clipboard".into(),
+                )),
+                _ => Err(NetError::PeerRefused(
+                    "the other device rejected the clip".into(),
+                )),
             }
         })
         .await
@@ -474,31 +531,48 @@ impl KlipNode {
                 conn.close(CODE_UNPAIRED.into(), b"unpaired");
                 return;
             }
-            let accepted = match rx.read_to_end(limit).await {
+            let outcome = match rx.read_to_end(limit).await {
                 // Oversized or broken stream: reject this clip, keep the connection.
-                Err(_) => false,
+                Err(_) => ClipOutcome::Rejected,
                 Ok(bytes) => match postcard::from_bytes::<ClipPayload>(&bytes) {
-                    Err(_) => false,
+                    Err(_) => ClipOutcome::Rejected,
                     Ok(payload) => {
                         // A peer may only speak for itself: forged origins are dropped.
                         let origin_ok = payload.origin_node.as_bytes() == remote.as_bytes();
                         let size_ok = payload.content.len() <= self.inner.cfg.max_clip_bytes;
                         if origin_ok && size_ok {
-                            self.inner
+                            let (ack_tx, ack_rx) = oneshot::channel();
+                            let sent = self
+                                .inner
                                 .events
                                 .send(NetEvent::Clip {
                                     from: remote,
                                     payload,
+                                    ack: ack_tx,
                                 })
                                 .await
-                                .is_ok()
+                                .is_ok();
+                            if sent {
+                                timeout(APPLY_TIMEOUT, ack_rx)
+                                    .await
+                                    .ok()
+                                    .and_then(|r| r.ok())
+                                    .unwrap_or(ClipOutcome::Rejected)
+                            } else {
+                                ClipOutcome::Rejected
+                            }
                         } else {
-                            false
+                            ClipOutcome::Rejected
                         }
                     }
                 },
             };
-            let ack = if accepted { ACK_ACCEPTED } else { ACK_REJECTED };
+            let ack = match outcome {
+                ClipOutcome::Applied | ClipOutcome::Superseded => ACK_APPLIED,
+                ClipOutcome::Paused => ACK_PAUSED,
+                ClipOutcome::ClipboardUnavailable => ACK_NO_CLIPBOARD,
+                ClipOutcome::Rejected => ACK_REJECTED,
+            };
             let _ = tx.write_all(&[ack]).await;
             let _ = tx.finish();
         }

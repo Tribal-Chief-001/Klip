@@ -16,6 +16,8 @@ pub enum NetError {
     PairingRejected(String),
     /// A clip exceeded the configured size limit.
     TooLarge { size: usize, limit: usize },
+    /// The peer received the clip but did not apply it (paused, clipboard unavailable, invalid).
+    PeerRefused(String),
     /// The operation needs a paired peer.
     UnknownPeer,
 }
@@ -32,6 +34,7 @@ impl fmt::Display for NetError {
             Self::TooLarge { size, limit } => {
                 write!(f, "clip of {size} bytes exceeds the {limit} byte limit")
             }
+            Self::PeerRefused(why) => write!(f, "{why}"),
             Self::UnknownPeer => write!(f, "peer is not paired"),
         }
     }

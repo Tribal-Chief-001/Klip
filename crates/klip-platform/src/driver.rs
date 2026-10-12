@@ -1,4 +1,4 @@
-use klip_proto::wire::ClipContentType;
+use klip_proto::clip::ClipContentType;
 use std::fmt;
 use std::sync::Mutex;
 

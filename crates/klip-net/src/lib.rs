@@ -14,7 +14,10 @@ mod proto;
 mod ticket;
 
 pub use error::NetError;
-pub use node::{KlipNode, NetConfig, NetEvent, PairDecision, PeerRecord, PeerStatus, RelayChoice};
+pub use node::{
+    ClipAck, ClipOutcome, KlipNode, NetConfig, NetEvent, PairDecision, PeerRecord, PeerStatus,
+    RelayChoice,
+};
 pub use proto::{MAX_CONTROL_BYTES, PAIR_ALPN, SYNC_ALPN};
 pub use ticket::{PairingTicket, TICKET_PREFIX};
 

@@ -1,8 +1,8 @@
 use crate::driver::{
     CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError,
 };
+use klip_proto::clip::{compute_fingerprint, ClipContentType};
 use klip_proto::hlc::NodeId;
-use klip_proto::wire::{compute_fingerprint, ClipContentType};
 use std::sync::Mutex;
 
 pub const IOS_APP_GROUP_ID: &str = "group.com.klip.app";

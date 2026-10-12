@@ -1,15 +1,8 @@
-#![allow(clippy::manual_is_multiple_of)]
+//! Device identity and the on-disk keystore.
+//!
+//! Transport security (key exchange, encryption, mutual authentication) is provided by QUIC/TLS in
+//! `klip-net`; this crate only owns the long-term Ed25519 device key and the list of trusted peers.
 
-pub mod aead;
-pub mod hybrid;
 pub mod identity;
-pub mod mem;
-pub mod pairing;
 
-pub use aead::{
-    decrypt_payload_in_place, encrypt_payload_in_place, CryptoError, NonceGenerator, SymmetricKey,
-};
-pub use hybrid::HybridSharedSecret;
-pub use identity::{DeviceIdentity, KeyStore, PairedPeer};
-pub use mem::PinnedBuffer;
-pub use pairing::{compute_sas, format_sas_pin, PairingInvitation, PairingPsk};
+pub use identity::{restrict_to_owner, DeviceIdentity, KeyStore, PairedPeer};

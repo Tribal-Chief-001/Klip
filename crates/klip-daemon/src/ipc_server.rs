@@ -1,230 +1,189 @@
-use crate::config::get_ipc_socket_path;
+use crate::engine::Shutdown;
 use crate::sync::SyncCoordinator;
-use klip_crypto::aead::encrypt_payload_in_place_with_aad;
-use klip_crypto::identity::PairedPeer;
-use klip_crypto::pairing::{compute_sas_invitation, format_sas_pin, PairingInvitation, PairingPsk};
+use klip_net::PairingTicket;
+use klip_proto::clip::ClipContentType;
 use klip_proto::ipc::{
     deserialize_ipc_msg, serialize_ipc_msg, DaemonStatusInfo, IpcRequest, IpcResponse,
 };
-use klip_proto::wire::{
-    MessageType, WireHeader, WirePacket, CURRENT_VERSION, FLAG_ENCRYPTED, MAGIC_BYTES,
-};
-use std::fs;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
+use tokio::time::timeout;
+
+/// Largest request the control socket accepts (a `klip send` of a big text is the worst case).
+pub const MAX_IPC_REQUEST_BYTES: usize = 8 * 1024 * 1024;
+const IPC_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const MIN_PAIR_TTL_SECS: u64 = 30;
+const MAX_PAIR_TTL_SECS: u64 = 600;
 
 pub struct IpcServer {
     sync: Arc<SyncCoordinator>,
-    shutdown_flag: Arc<AtomicBool>,
+    shutdown: Arc<Shutdown>,
 }
 
 impl IpcServer {
-    pub fn new(sync: Arc<SyncCoordinator>, shutdown_flag: Arc<AtomicBool>) -> Self {
-        Self {
-            sync,
-            shutdown_flag,
-        }
+    pub fn new(sync: Arc<SyncCoordinator>, shutdown: Arc<Shutdown>) -> Self {
+        Self { sync, shutdown }
     }
 
-    pub async fn run(&self) -> Result<(), std::io::Error> {
-        let sock_path = get_ipc_socket_path();
-        #[cfg(unix)]
-        {
-            let _ = fs::remove_file(&sock_path);
-            let listener = UnixListener::bind(&sock_path)?;
-            // The IPC socket can read clipboard history and stop the daemon: owner only.
-            klip_crypto::identity::restrict_to_owner(&sock_path, 0o600);
+    /// Bind the control socket. Done before anything else so a failure is reported, never hidden.
+    #[cfg(unix)]
+    pub fn bind(&self) -> Result<UnixListener, std::io::Error> {
+        let sock_path = self.sync.paths.ipc_socket();
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = UnixListener::bind(&sock_path).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("cannot create control socket {}: {e}", sock_path.display()),
+            )
+        })?;
+        // The socket can read clipboard history and stop the daemon: owner only.
+        klip_crypto::identity::restrict_to_owner(&sock_path, 0o600);
+        Ok(listener)
+    }
 
-            while !self.shutdown_flag.load(Ordering::SeqCst) {
-                match listener.accept().await {
+    #[cfg(unix)]
+    pub async fn serve(&self, listener: UnixListener) {
+        loop {
+            tokio::select! {
+                _ = self.shutdown.wait() => break,
+                accepted = listener.accept() => match accepted {
                     Ok((stream, _)) => {
-                        let sync_clone = Arc::clone(&self.sync);
-                        let shutdown_clone = Arc::clone(&self.shutdown_flag);
+                        let sync = Arc::clone(&self.sync);
+                        let shutdown = Arc::clone(&self.shutdown);
                         tokio::spawn(async move {
-                            Self::handle_client(stream, sync_clone, shutdown_clone).await;
+                            Self::handle_client(stream, sync, shutdown).await;
                         });
                     }
                     Err(_) => break,
                 }
             }
-            let _ = fs::remove_file(&sock_path);
         }
-
-        Ok(())
+        let _ = std::fs::remove_file(self.sync.paths.ipc_socket());
     }
 
     #[cfg(unix)]
     async fn handle_client(
         mut stream: UnixStream,
         sync: Arc<SyncCoordinator>,
-        shutdown: Arc<AtomicBool>,
+        shutdown: Arc<Shutdown>,
     ) {
-        let mut len_buf = [0u8; 4];
-        if stream.read_exact(&mut len_buf).await.is_err() {
-            return;
-        }
-        let msg_len = u32::from_be_bytes(len_buf) as usize;
-        let mut payload_buf = vec![0u8; msg_len];
-        if stream.read_exact(&mut payload_buf).await.is_err() {
-            return;
-        }
-
-        let request: IpcRequest = match deserialize_ipc_msg(&payload_buf) {
-            Ok(req) => req,
-            Err(e) => {
-                let resp = IpcResponse::Error(e);
-                let _ = Self::send_response(&mut stream, &resp).await;
+        let request = match timeout(IPC_IO_TIMEOUT, Self::read_request(&mut stream)).await {
+            Ok(Ok(req)) => req,
+            Ok(Err(msg)) => {
+                let _ = Self::send_response(&mut stream, &IpcResponse::Error(msg)).await;
                 return;
             }
+            Err(_) => return,
         };
+        let response = Self::dispatch(request, &sync, &shutdown).await;
+        let _ = timeout(IPC_IO_TIMEOUT, Self::send_response(&mut stream, &response)).await;
+    }
 
-        let response = match request {
+    #[cfg(unix)]
+    async fn read_request(stream: &mut UnixStream) -> Result<IpcRequest, String> {
+        let mut len_buf = [0u8; 4];
+        stream
+            .read_exact(&mut len_buf)
+            .await
+            .map_err(|e| e.to_string())?;
+        let len = u32::from_be_bytes(len_buf) as usize;
+        if len > MAX_IPC_REQUEST_BYTES {
+            return Err(format!("request too large ({len} bytes)"));
+        }
+        let mut buf = vec![0u8; len];
+        stream
+            .read_exact(&mut buf)
+            .await
+            .map_err(|e| e.to_string())?;
+        deserialize_ipc_msg(&buf)
+    }
+
+    async fn dispatch(
+        req: IpcRequest,
+        sync: &Arc<SyncCoordinator>,
+        shutdown: &Shutdown,
+    ) -> IpcResponse {
+        match req {
             IpcRequest::GetStatus => {
-                let peers = sync.mesh.peer_statuses().await;
                 let last_clip = sync.history.last_item();
                 let last_sync_secs = sync
                     .last_sync_instant
                     .lock()
                     .unwrap()
                     .map(|t| t.elapsed().as_secs());
-
-                let (last_preview, last_size) = match last_clip {
+                let (preview, size) = match last_clip {
                     Some(c) => (Some(c.content_preview), c.size_bytes),
                     None => (None, 0),
                 };
-
-                let remaining_pause = if sync.check_pause_status() {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    sync.pause_until_secs
-                        .load(Ordering::SeqCst)
-                        .saturating_sub(now)
-                } else {
-                    0
-                };
-
                 IpcResponse::Status(DaemonStatusInfo {
                     is_active: true,
                     is_paused: sync.check_pause_status(),
-                    paused_remaining_secs: remaining_pause,
+                    paused_remaining_secs: sync.pause_remaining_secs(),
                     platform: sync.driver.environment().to_string(),
                     memory_rss_bytes: get_process_rss_bytes(),
                     node_id: sync.identity.node_id,
-                    peers,
-                    total_synced_clips: sync.total_synced_clips.load(Ordering::SeqCst),
+                    relay_mode: sync.relay_mode_label().to_string(),
+                    pairing_open: sync.net.pairing_open(),
+                    peers: sync.peer_status(),
+                    total_synced_clips: sync
+                        .total_synced_clips
+                        .load(std::sync::atomic::Ordering::SeqCst),
                     last_sync_time_secs_ago: last_sync_secs,
-                    last_clip_preview: last_preview,
-                    last_clip_size_bytes: last_size,
+                    last_clip_preview: preview,
+                    last_clip_size_bytes: size,
                 })
             }
-            IpcRequest::PairInit => {
-                let psk = PairingPsk::generate();
-                let endpoints =
-                    klip_transport::mesh::detect_local_endpoints(sync.config.listen_port);
-                let invitation = PairingInvitation::create_with_endpoints(
-                    sync.identity.node_id,
-                    &psk,
-                    endpoints,
-                );
-                let token = invitation.to_token();
-
-                // Store pending pairing PSK so incoming handshakes can authenticate
-                {
-                    let mut lock = sync.pending_pairing.lock().await;
-                    *lock = Some((psk.clone(), std::time::Instant::now()));
-                }
-
-                // Compute SAS code derived from PSK and host node
-                let sas_pin = format_sas_pin(compute_sas_invitation(&psk, &sync.identity.node_id));
-
-                IpcResponse::PairCode {
-                    qr_ascii: format!("[ Pairing Token: {} ]", &token[..token.len().min(32)]),
-                    sas_code: sas_pin,
-                    token,
+            IpcRequest::PairStart {
+                ttl_secs,
+                include_lan_addrs,
+            } => {
+                let ttl = ttl_secs.clamp(MIN_PAIR_TTL_SECS, MAX_PAIR_TTL_SECS);
+                sync.mark_pairing_started(ttl);
+                let ticket = sync
+                    .net
+                    .open_pairing(Duration::from_secs(ttl), include_lan_addrs)
+                    .await;
+                IpcResponse::PairTicket {
+                    ticket: ticket.encode(),
+                    expires_in_secs: ticket.seconds_left(),
+                    host_fingerprint: sync.identity.node_id.fingerprint(),
                 }
             }
-            IpcRequest::PairConnect { token } => {
-                match PairingInvitation::from_token(&token) {
-                    Ok(invitation) => match invitation.parse_psk() {
-                        Ok(psk) => {
-                            let peer_key = psk.to_symmetric_key();
-                            let peer_node = invitation.host_node;
-                            let peer_name = format!("Klip-{}", peer_node.short_id());
-
-                            // Find candidate endpoint if provided
-                            let target_addr: Option<std::net::SocketAddr> =
-                                invitation.endpoints.iter().find_map(|ep| ep.parse().ok());
-
-                            // Save to keystore
-                            {
-                                let mut ks = sync.keystore.lock().await;
-                                ks.add_peer(PairedPeer::new(
-                                    peer_node,
-                                    peer_name.clone(),
-                                    &peer_key,
-                                ));
-                                let _ = ks.save(crate::config::get_keystore_path());
-                            }
-
-                            // Add to active mesh with candidate address if available
-                            sync.mesh
-                                .add_peer(
-                                    peer_node,
-                                    peer_name.clone(),
-                                    peer_key.clone(),
-                                    target_addr,
-                                )
-                                .await;
-
-                            // Send Handshake packet to host node across mesh
-                            let mut handshake_payload =
-                                sync.config.device_name.clone().into_bytes();
-                            let nonce = sync.nonce_gen.next_nonce();
-                            let header = WireHeader {
-                                magic: MAGIC_BYTES,
-                                version: CURRENT_VERSION,
-                                msg_type: MessageType::Handshake,
-                                flags: FLAG_ENCRYPTED,
-                                sender: sync.identity.node_id,
-                                nonce,
-                                hlc_physical: 0,
-                                hlc_logical: 0,
-                                hlc_node_seed: 0,
-                                payload_len: handshake_payload.len() as u32,
-                            };
-                            let header_bytes = header.to_bytes();
-                            if let Ok(tag) = encrypt_payload_in_place_with_aad(
-                                &peer_key,
-                                &nonce,
-                                &header_bytes,
-                                &mut handshake_payload,
-                            ) {
-                                let packet = WirePacket {
-                                    header,
-                                    payload: handshake_payload,
-                                    tag,
-                                };
-                                if let Some(addr) = target_addr {
-                                    let _ = sync.mesh.send_packet_direct(&packet, addr).await;
-                                }
-                                let _ = sync.mesh.broadcast_packet(&packet).await;
-                            }
-
-                            IpcResponse::PairSuccess {
-                                peer_node,
-                                peer_name,
-                            }
+            IpcRequest::PairPoll => IpcResponse::PairPoll(sync.poll_pairing()),
+            IpcRequest::PairDecide { accept } => {
+                if sync.decide_pairing(accept) {
+                    IpcResponse::PairPoll(sync.poll_pairing())
+                } else {
+                    IpcResponse::Error("no pairing request is waiting".into())
+                }
+            }
+            IpcRequest::PairCancel => {
+                sync.cancel_pairing();
+                IpcResponse::PairCancelled
+            }
+            IpcRequest::PairJoin { ticket } => {
+                let ticket = match PairingTicket::decode(&ticket) {
+                    Ok(t) => t,
+                    Err(e) => return IpcResponse::Error(e.to_string()),
+                };
+                match sync.net.pair_with(&ticket).await {
+                    Ok(rec) => {
+                        sync.persist_peer(&rec).await;
+                        IpcResponse::PairSuccess {
+                            peer_name: rec.name,
+                            peer_fingerprint: crate::sync::node_of(&rec.id).fingerprint(),
                         }
-                        Err(e) => IpcResponse::Error(e),
-                    },
-                    Err(e) => IpcResponse::Error(e),
+                    }
+                    Err(e) => IpcResponse::Error(e.to_string()),
                 }
             }
+            IpcRequest::Unpair { selector } => match sync.unpair(&selector).await {
+                Ok(name) => IpcResponse::Unpaired { name },
+                Err(e) => IpcResponse::Error(e),
+            },
             IpcRequest::Pause { duration_secs } => {
                 sync.pause(duration_secs);
                 IpcResponse::Paused {
@@ -236,23 +195,44 @@ impl IpcServer {
                 IpcResponse::Resumed
             }
             IpcRequest::GetHistory { limit } => {
-                let items = sync.history.get_recent(limit);
-                IpcResponse::History(items)
+                IpcResponse::History(sync.history.get_recent(limit))
             }
             IpcRequest::SendClip { text } => {
                 let bytes = text.into_bytes();
                 let len = bytes.len();
-                sync.process_local_clip(klip_proto::wire::ClipContentType::PlainTextUtf8, bytes)
-                    .await;
-                IpcResponse::Sent { bytes: len }
+                if len > sync.config.max_clip_bytes {
+                    return IpcResponse::Error(format!(
+                        "text is {len} bytes; the limit is {} bytes",
+                        sync.config.max_clip_bytes
+                    ));
+                }
+                match sync
+                    .broadcast_local_clip(ClipContentType::PlainTextUtf8, bytes)
+                    .await
+                {
+                    None => IpcResponse::Error("sync is paused or the text is empty".into()),
+                    Some(reports) => {
+                        let mut delivered = Vec::new();
+                        let mut failed = Vec::new();
+                        for r in reports {
+                            match r.result {
+                                Ok(()) => delivered.push(r.peer_name),
+                                Err(e) => failed.push((r.peer_name, e)),
+                            }
+                        }
+                        IpcResponse::Sent {
+                            bytes: len,
+                            delivered,
+                            failed,
+                        }
+                    }
+                }
             }
             IpcRequest::StopDaemon => {
-                shutdown.store(true, Ordering::SeqCst);
+                shutdown.trigger();
                 IpcResponse::DaemonStopping
             }
-        };
-
-        let _ = Self::send_response(&mut stream, &response).await;
+        }
     }
 
     #[cfg(unix)]
@@ -261,24 +241,28 @@ impl IpcServer {
         resp: &IpcResponse,
     ) -> Result<(), std::io::Error> {
         let serialized = serialize_ipc_msg(resp).map_err(std::io::Error::other)?;
-        let len_bytes = (serialized.len() as u32).to_be_bytes();
-        stream.write_all(&len_bytes).await?;
+        stream
+            .write_all(&(serialized.len() as u32).to_be_bytes())
+            .await?;
         stream.write_all(&serialized).await?;
-        stream.flush().await?;
-        Ok(())
+        stream.flush().await
     }
 }
 
 fn get_process_rss_bytes() -> u64 {
+    // /proc/self/status reports VmRSS in kB, which avoids guessing the page size.
     #[cfg(target_os = "linux")]
     {
-        if let Ok(statm) = fs::read_to_string("/proc/self/statm") {
-            if let Some(rss_pages) = statm.split_whitespace().nth(1) {
-                if let Ok(pages) = rss_pages.parse::<u64>() {
-                    return pages * 4096;
-                }
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            if let Some(kb) = status
+                .lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|v| v.parse::<u64>().ok())
+            {
+                return kb * 1024;
             }
         }
     }
-    4 * 1024 * 1024 // 4 MB baseline fallback estimate
+    0
 }

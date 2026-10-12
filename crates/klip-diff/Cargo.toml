@@ -7,9 +7,4 @@ license.workspace = true
 
 [dependencies]
 klip-proto = { workspace = true }
-fastcdc = { workspace = true }
-fossil-delta = { workspace = true }
-blake3 = { workspace = true }
-serde = { workspace = true }
-bincode = { workspace = true }
 image = { workspace = true }

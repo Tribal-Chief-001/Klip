@@ -9,5 +9,7 @@ license.workspace = true
 bincode = { workspace = true }
 serde = { workspace = true }
 blake3 = { workspace = true }
-zeroize = { workspace = true }
 rand = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

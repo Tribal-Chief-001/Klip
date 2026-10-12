@@ -39,6 +39,9 @@ impl DaemonClient {
                 .await
                 .map_err(|e| format!("Failed to read response length: {}", e))?;
             let resp_len = u32::from_be_bytes(resp_len_buf) as usize;
+            if resp_len > 64 * 1024 * 1024 {
+                return Err("daemon sent an implausible response size".to_string());
+            }
 
             let mut resp_buf = vec![0u8; resp_len];
             stream

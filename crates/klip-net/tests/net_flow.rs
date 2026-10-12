@@ -2,10 +2,11 @@
 //! so nothing leaves the machine).
 
 use klip_net::{
-    EndpointId, KlipNode, NetConfig, NetError, NetEvent, PairingTicket, PeerRecord, RelayChoice,
+    ClipOutcome, EndpointId, KlipNode, NetConfig, NetError, NetEvent, PairingTicket, PeerRecord,
+    RelayChoice,
 };
+use klip_proto::clip::{ClipContentType, ClipPayload};
 use klip_proto::hlc::{HybridLogicalClock, NodeId};
-use klip_proto::wire::{ClipContentType, ClipPayload};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -19,6 +20,7 @@ fn cfg(name: &str) -> NetConfig {
     NetConfig {
         device_name: name.into(),
         relay: RelayChoice::Disabled,
+        lan_discovery: false,
         ..NetConfig::default()
     }
 }
@@ -36,7 +38,8 @@ async fn spawn_node(name: &str, accept_pairs: bool, cfg_override: Option<NetConf
     tokio::spawn(async move {
         while let Some(ev) = events.recv().await {
             match ev {
-                NetEvent::Clip { from, payload } => {
+                NetEvent::Clip { from, payload, ack } => {
+                    let _ = ack.send(ClipOutcome::Applied);
                     let _ = clip_tx.send((from, payload)).await;
                 }
                 NetEvent::PairRequest { respond, .. } => {
@@ -69,7 +72,7 @@ fn clip_from(node: &KlipNode, text: &str) -> ClipPayload {
 }
 
 async fn pair(host: &Harness, joiner: &Harness) {
-    let ticket = host.node.open_pairing(Duration::from_secs(60)).await;
+    let ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
     // Round-trip through the text form exactly like a user copying/scanning it.
     let ticket = PairingTicket::decode(&ticket.encode()).unwrap();
     joiner
@@ -136,7 +139,7 @@ async fn wrong_secret_is_rejected_and_ticket_is_single_use() {
     let good = spawn_node("Phone", true, None).await;
     let evil = spawn_node("Evil", true, None).await;
 
-    let ticket = host.node.open_pairing(Duration::from_secs(60)).await;
+    let ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
     let tampered = PairingTicket::decode(&ticket.encode()).unwrap();
     // Flip the secret by re-encoding a ticket of the same host with a different secret.
     let mut bad = tampered.clone();
@@ -163,7 +166,7 @@ async fn wrong_secret_is_rejected_and_ticket_is_single_use() {
 async fn too_many_wrong_guesses_lock_the_window() {
     let host = spawn_node("Laptop", true, None).await;
     let evil = spawn_node("Evil", true, None).await;
-    let ticket = host.node.open_pairing(Duration::from_secs(60)).await;
+    let ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
     for i in 0..5u8 {
         let mut bad = ticket.clone();
         bad.secret[1] = i.wrapping_add(1);
@@ -185,7 +188,7 @@ async fn expired_or_closed_window_is_rejected() {
     let phone = spawn_node("Phone", true, None).await;
 
     // Client-side expiry check.
-    let ticket = host.node.open_pairing(Duration::from_secs(60)).await;
+    let ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
     let mut old = ticket.clone();
     old.expires_unix = 1;
     assert!(matches!(
@@ -198,7 +201,10 @@ async fn expired_or_closed_window_is_rejected() {
     let err = phone.node.pair_with(&ticket).await.unwrap_err();
     assert!(matches!(err, NetError::PairingRejected(_)), "{err}");
 
-    let t = host.node.open_pairing(Duration::from_millis(50)).await;
+    let t = host
+        .node
+        .open_pairing(Duration::from_millis(50), true)
+        .await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     let mut t = t;
     t.expires_unix = u64::MAX; // pretend the client clock is wrong; the host must still refuse
@@ -211,7 +217,7 @@ async fn expired_or_closed_window_is_rejected() {
 async fn host_can_decline_a_valid_request() {
     let host = spawn_node("Laptop", false, None).await; // declines everything
     let phone = spawn_node("Phone", true, None).await;
-    let ticket = host.node.open_pairing(Duration::from_secs(60)).await;
+    let ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
     let err = phone.node.pair_with(&ticket).await.unwrap_err();
     assert!(matches!(err, NetError::PairingRejected(_)), "{err}");
     assert!(host.node.peers().is_empty());
@@ -238,7 +244,7 @@ async fn unpaired_device_cannot_deliver_clips() {
     drop(stranger);
     // ... but the host never trusted it. The host's direct address is only known to a node that
     // has talked to it, so give the rogue an address through the ticket path of another channel:
-    let ticket = host.node.open_pairing(Duration::from_secs(5)).await;
+    let ticket = host.node.open_pairing(Duration::from_secs(5), true).await;
     let _ = rogue
         .pair_with(&{
             let mut t = ticket.clone();

@@ -3,6 +3,7 @@ pub mod driver;
 pub mod ios;
 pub mod linux;
 pub mod macos;
+pub mod memory;
 pub mod windows;
 
 pub use driver::{CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError};

@@ -1,5 +1,4 @@
-use crate::aead::SymmetricKey;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use klip_proto::hlc::NodeId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -7,109 +6,80 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-/// Device Identity with Ed25519 keypair.
+/// Keystore format version. v1 stored per-peer symmetric keys for the retired UDP protocol; those
+/// entries are meaningless (and untrustworthy) now and are dropped on load.
+const KEYSTORE_VERSION: u32 = 2;
+
+/// Long-term device identity. The 32-byte seed is also the QUIC endpoint secret key, so the
+/// `node_id` equals the iroh endpoint id.
 pub struct DeviceIdentity {
-    pub signing_key: SigningKey,
-    pub verifying_key: VerifyingKey,
+    seed: [u8; 32],
     pub node_id: NodeId,
 }
 
 impl DeviceIdentity {
     pub fn generate() -> Self {
-        let mut csprng = rand::rngs::OsRng;
-        let signing_key = SigningKey::generate(&mut csprng);
-        let verifying_key = signing_key.verifying_key();
-        let node_id = NodeId::new(verifying_key.to_bytes());
-        Self {
-            signing_key,
-            verifying_key,
-            node_id,
-        }
+        let mut seed = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
+        Self::from_seed(&seed)
     }
 
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let signing_key = SigningKey::from_bytes(seed);
-        let verifying_key = signing_key.verifying_key();
-        let node_id = NodeId::new(verifying_key.to_bytes());
+        let node_id = NodeId::new(signing_key.verifying_key().to_bytes());
         Self {
-            signing_key,
-            verifying_key,
+            seed: *seed,
             node_id,
         }
     }
 
-    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
-        self.signing_key.sign(message).to_bytes()
-    }
-
-    pub fn verify(node_id: &NodeId, message: &[u8], signature_bytes: &[u8; 64]) -> bool {
-        if let Ok(vk) = VerifyingKey::from_bytes(node_id.as_bytes()) {
-            let sig = Signature::from_bytes(signature_bytes);
-            vk.verify(message, &sig).is_ok()
-        } else {
-            false
-        }
+    /// Secret seed (the endpoint secret key). Handle with care; never log it.
+    pub fn seed(&self) -> &[u8; 32] {
+        &self.seed
     }
 }
 
-/// Stored entry for a trusted paired peer.
-#[derive(Clone, Serialize, Deserialize)]
+/// A trusted (paired) device.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PairedPeer {
     pub node_id: NodeId,
     pub name: String,
-    pub key_hex: String,
+    #[serde(default)]
     pub paired_at_secs: u64,
 }
 
 impl PairedPeer {
-    pub fn new(node_id: NodeId, name: String, key: &SymmetricKey) -> Self {
-        let mut key_hex = String::with_capacity(64);
-        for b in key.as_bytes() {
-            key_hex.push_str(&format!("{:02x}", b));
-        }
+    pub fn new(node_id: NodeId, name: String) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-
         Self {
             node_id,
             name,
-            key_hex,
             paired_at_secs: now,
         }
     }
-
-    pub fn get_symmetric_key(&self) -> Result<SymmetricKey, String> {
-        let bytes = hex_decode(&self.key_hex)?;
-        if bytes.len() != 32 {
-            return Err("Key is not 32 bytes".to_string());
-        }
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        Ok(SymmetricKey::new(arr))
-    }
 }
 
-/// Keystore holding node identity and paired peers.
+/// Keystore holding the device identity seed and the trusted peers.
 #[derive(Default, Serialize, Deserialize)]
 pub struct KeyStore {
+    #[serde(default)]
+    pub version: u32,
     pub device_name: String,
     pub identity_seed_hex: String,
+    #[serde(default)]
     pub peers: HashMap<String, PairedPeer>,
 }
 
 impl KeyStore {
     pub fn new(device_name: String) -> (Self, DeviceIdentity) {
         let identity = DeviceIdentity::generate();
-        let mut seed_hex = String::with_capacity(64);
-        for b in identity.signing_key.as_bytes() {
-            seed_hex.push_str(&format!("{:02x}", b));
-        }
-
         let store = Self {
+            version: KEYSTORE_VERSION,
             device_name,
-            identity_seed_hex: seed_hex,
+            identity_seed_hex: hex_encode(identity.seed()),
             peers: HashMap::new(),
         };
         (store, identity)
@@ -124,14 +94,18 @@ impl KeyStore {
             // Older versions wrote this file world/group readable; tighten on every load.
             restrict_to_owner(p, 0o600);
             let data = fs::read_to_string(p).map_err(|e| e.to_string())?;
-            let store: KeyStore = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            let mut store: KeyStore = serde_json::from_str(&data).map_err(|e| e.to_string())?;
             let seed = hex_decode(&store.identity_seed_hex)?;
-            if seed.len() != 32 {
-                return Err("Corrupted identity seed".to_string());
-            }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&seed);
+            let arr: [u8; 32] = seed
+                .try_into()
+                .map_err(|_| "Corrupted identity seed".to_string())?;
             let identity = DeviceIdentity::from_seed(&arr);
+            if store.version < KEYSTORE_VERSION {
+                // Legacy peers were bound to a symmetric key of the retired protocol.
+                store.peers.clear();
+                store.version = KEYSTORE_VERSION;
+                store.save(p)?;
+            }
             Ok((store, identity))
         } else {
             if let Some(parent) = p.parent() {
@@ -151,6 +125,10 @@ impl KeyStore {
 
     pub fn add_peer(&mut self, peer: PairedPeer) {
         self.peers.insert(peer.node_id.to_hex(), peer);
+    }
+
+    pub fn remove_peer(&mut self, node_id: &NodeId) -> bool {
+        self.peers.remove(&node_id.to_hex()).is_some()
     }
 
     pub fn get_peer(&self, node_id: &NodeId) -> Option<&PairedPeer> {
@@ -191,13 +169,25 @@ fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
     fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
 fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("Odd length hex string".to_string());
     }
     (0..hex.len())
         .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
+        .map(|i| {
+            hex.get(i..i + 2)
+                .ok_or_else(|| "Invalid hex".to_string())
+                .and_then(|h| u8::from_str_radix(h, 16).map_err(|e| e.to_string()))
+        })
         .collect()
 }
 
@@ -205,41 +195,95 @@ fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_identity_signature() {
-        let identity = DeviceIdentity::generate();
-        let message = b"Sign this clipboard update";
-        let sig = identity.sign(message);
-        assert!(DeviceIdentity::verify(&identity.node_id, message, &sig));
-
-        let wrong_node = NodeId::new([99u8; 32]);
-        assert!(!DeviceIdentity::verify(&wrong_node, message, &sig));
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("klip-ks-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
     }
 
     #[test]
-    fn test_keystore_peer_persistence() {
-        let (mut store, _id) = KeyStore::new("TestMachine".to_string());
-        let peer_node = NodeId::new([77u8; 32]);
-        let sym_key = SymmetricKey::random();
-        let peer = PairedPeer::new(peer_node, "Pixel-8".to_string(), &sym_key);
+    fn identity_is_deterministic_from_seed() {
+        let id = DeviceIdentity::generate();
+        let again = DeviceIdentity::from_seed(id.seed());
+        assert_eq!(id.node_id, again.node_id);
+        assert_ne!(id.node_id, DeviceIdentity::generate().node_id);
+    }
 
-        store.add_peer(peer);
-        assert!(store.get_peer(&peer_node).is_some());
+    #[test]
+    fn keystore_peer_persistence() {
+        let dir = temp_dir("persist");
+        let path = dir.join("keystore.json");
+        let (mut store, id) = KeyStore::load_or_create(&path, "Laptop").unwrap();
+        let peer = NodeId::new([77u8; 32]);
+        store.add_peer(PairedPeer::new(peer, "Pixel".into()));
+        store.save(&path).unwrap();
 
-        let loaded_key = store
-            .get_peer(&peer_node)
-            .unwrap()
-            .get_symmetric_key()
-            .unwrap();
-        assert_eq!(loaded_key.as_bytes(), sym_key.as_bytes());
+        let (loaded, id2) = KeyStore::load_or_create(&path, "ignored").unwrap();
+        assert_eq!(id.node_id, id2.node_id);
+        assert_eq!(loaded.device_name, "Laptop");
+        assert_eq!(loaded.get_peer(&peer).unwrap().name, "Pixel");
+
+        let mut loaded = loaded;
+        assert!(loaded.remove_peer(&peer));
+        assert!(!loaded.remove_peer(&peer));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_keystore_is_migrated_and_old_peers_dropped() {
+        let dir = temp_dir("legacy");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keystore.json");
+        let seed_hex = "11".repeat(32);
+        let legacy = format!(
+            r#"{{"device_name":"Old","identity_seed_hex":"{seed_hex}","peers":{{"aa":{{"node_id":{nid:?},"name":"OldPhone","key_hex":"{key}","paired_at_secs":1}}}}}}"#,
+            nid = vec![9u8; 32],
+            key = "22".repeat(32),
+        );
+        fs::write(&path, legacy).unwrap();
+
+        let (store, id) = KeyStore::load_or_create(&path, "x").unwrap();
+        assert_eq!(store.version, KEYSTORE_VERSION);
+        assert!(
+            store.peers.is_empty(),
+            "legacy PSK peers must not stay trusted"
+        );
+        assert_eq!(
+            id.node_id,
+            DeviceIdentity::from_seed(&[0x11u8; 32]).node_id,
+            "identity survives"
+        );
+        // The migrated file is persisted and private.
+        let again = fs::read_to_string(&path).unwrap();
+        assert!(again.contains("\"version\": 2"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupted_seed_is_an_error() {
+        let dir = temp_dir("corrupt");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("keystore.json");
+        fs::write(
+            &path,
+            r#"{"version":2,"device_name":"x","identity_seed_hex":"zz","peers":{}}"#,
+        )
+        .unwrap();
+        assert!(KeyStore::load_or_create(&path, "x").is_err());
+        fs::write(
+            &path,
+            r#"{"version":2,"device_name":"x","identity_seed_hex":"abcd","peers":{}}"#,
+        )
+        .unwrap();
+        assert!(KeyStore::load_or_create(&path, "x").is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
     #[test]
     fn test_keystore_is_private_and_tightens_existing_files() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("klip-ks-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        let dir = temp_dir("perm");
         let path = dir.join("keystore.json");
 
         // Fresh store: file 0600, directory 0700.

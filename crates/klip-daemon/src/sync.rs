@@ -1,84 +1,96 @@
-use crate::config::DaemonConfig;
+use crate::config::{DaemonConfig, KlipPaths, RelayMode};
 use crate::history::HistoryBuffer;
-use klip_crypto::aead::{
-    decrypt_payload_in_place_with_aad, encrypt_payload_in_place_with_aad, NonceGenerator,
-};
 use klip_crypto::identity::{DeviceIdentity, KeyStore, PairedPeer};
-use klip_crypto::pairing::PairingPsk;
-use klip_diff::delta::RecentClipCache;
 use klip_diff::entropy::analyze_snippet;
+use klip_net::{ClipOutcome, EndpointId, KlipNode, NetEvent, PairDecision, PeerRecord};
 use klip_platform::driver::ClipboardDriver;
-use klip_proto::hlc::HybridLogicalClock;
-use klip_proto::wire::{
-    ClipContentType, MessageType, WireHeader, WirePacket, CURRENT_VERSION, FLAG_DELTA,
-    FLAG_ENCRYPTED, FLAG_SENSITIVE, MAGIC_BYTES,
-};
-use klip_transport::mesh::MeshNode;
+use klip_proto::clip::{ClipContentType, ClipPayload};
+use klip_proto::hlc::{HybridLogicalClock, NodeId};
+use klip_proto::ipc::{PairPollInfo, PeerStatusInfo, PendingPairInfo};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
+
+/// Remote clocks further ahead than this are refused (see `HybridLogicalClock::recv_event_bounded`).
+const MAX_CLOCK_DRIFT_MS: u64 = 5 * 60 * 1000;
+
+pub fn node_of(id: &EndpointId) -> NodeId {
+    NodeId::new(*id.as_bytes())
+}
+
+struct PendingPair {
+    peer: NodeId,
+    device_name: String,
+    respond: PairDecision,
+}
+
+#[derive(Default)]
+struct PairingUi {
+    pending: Option<PendingPair>,
+    paired_name: Option<String>,
+    expires_at: Option<Instant>,
+}
+
+/// Outcome of sending one clip to one peer.
+pub struct DeliveryReport {
+    pub peer_name: String,
+    pub result: Result<(), String>,
+}
 
 pub struct SyncCoordinator {
     pub config: DaemonConfig,
+    pub paths: KlipPaths,
     pub identity: Arc<DeviceIdentity>,
-    pub keystore: Arc<Mutex<KeyStore>>,
-    pub driver: Arc<Box<dyn ClipboardDriver>>,
-    pub mesh: Arc<MeshNode>,
-    pub clock: Arc<std::sync::Mutex<HybridLogicalClock>>,
-    pub last_applied_clip_hlc: Arc<std::sync::Mutex<Option<HybridLogicalClock>>>,
-    pub pending_pairing: Arc<Mutex<Option<(PairingPsk, Instant)>>>,
-    pub nonce_gen: Arc<NonceGenerator>,
-    pub diff_cache: Arc<std::sync::Mutex<RecentClipCache>>,
+    pub keystore: Arc<tokio::sync::Mutex<KeyStore>>,
+    pub driver: Arc<dyn ClipboardDriver>,
+    pub net: KlipNode,
     pub history: HistoryBuffer,
-    pub is_paused: AtomicBool,
-    pub pause_until_secs: AtomicU64,
+    clock: Mutex<HybridLogicalClock>,
+    last_applied_clip_hlc: Mutex<Option<HybridLogicalClock>>,
+    pairing: Mutex<PairingUi>,
+    last_errors: Mutex<HashMap<NodeId, String>>,
+    is_paused: AtomicBool,
+    pause_until_secs: AtomicU64,
     pub total_synced_clips: AtomicU64,
-    pub last_sync_instant: Arc<std::sync::Mutex<Option<Instant>>>,
+    pub last_sync_instant: Mutex<Option<Instant>>,
 }
 
 impl SyncCoordinator {
     pub fn new(
         config: DaemonConfig,
+        paths: KlipPaths,
         identity: Arc<DeviceIdentity>,
-        keystore: Arc<Mutex<KeyStore>>,
-        driver: Arc<Box<dyn ClipboardDriver>>,
-        mesh: Arc<MeshNode>,
+        keystore: Arc<tokio::sync::Mutex<KeyStore>>,
+        driver: Arc<dyn ClipboardDriver>,
+        net: KlipNode,
     ) -> Self {
-        let node_id = identity.node_id;
-        let clock = Arc::new(std::sync::Mutex::new(HybridLogicalClock::new(node_id)));
-        let last_applied_clip_hlc = Arc::new(std::sync::Mutex::new(None));
-        let pending_pairing = Arc::new(Mutex::new(None));
-        let nonce_gen = Arc::new(NonceGenerator::new(1));
-        let diff_cache = Arc::new(std::sync::Mutex::new(RecentClipCache::default()));
         let history = HistoryBuffer::new(config.max_history_items);
-
+        let clock = Mutex::new(HybridLogicalClock::new(identity.node_id));
         Self {
             config,
+            paths,
             identity,
             keystore,
             driver,
-            mesh,
-            clock,
-            last_applied_clip_hlc,
-            pending_pairing,
-            nonce_gen,
-            diff_cache,
+            net,
             history,
+            clock,
+            last_applied_clip_hlc: Mutex::new(None),
+            pairing: Mutex::new(PairingUi::default()),
+            last_errors: Mutex::new(HashMap::new()),
             is_paused: AtomicBool::new(false),
             pause_until_secs: AtomicU64::new(0),
             total_synced_clips: AtomicU64::new(0),
-            last_sync_instant: Arc::new(std::sync::Mutex::new(None)),
+            last_sync_instant: Mutex::new(None),
         }
     }
 
+    // ------------------------------------------------------------------------------ pause
+
     pub fn pause(&self, duration_secs: u64) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
         self.pause_until_secs
-            .store(now + duration_secs, Ordering::SeqCst);
+            .store(now_secs().saturating_add(duration_secs), Ordering::SeqCst);
         self.is_paused.store(true, Ordering::SeqCst);
     }
 
@@ -88,324 +100,347 @@ impl SyncCoordinator {
     }
 
     pub fn check_pause_status(&self) -> bool {
-        if self.is_paused.load(Ordering::SeqCst) {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let until = self.pause_until_secs.load(Ordering::SeqCst);
-            if until > 0 && now >= until {
-                self.resume();
-                false
-            } else {
-                true
-            }
-        } else {
+        if !self.is_paused.load(Ordering::SeqCst) {
+            return false;
+        }
+        let until = self.pause_until_secs.load(Ordering::SeqCst);
+        if until > 0 && now_secs() >= until {
+            self.resume();
             false
+        } else {
+            true
         }
     }
 
-    /// Process locally captured clipboard item and broadcast to mesh
-    pub async fn process_local_clip(&self, content_type: ClipContentType, data: Vec<u8>) {
+    pub fn pause_remaining_secs(&self) -> u64 {
+        if self.check_pause_status() {
+            self.pause_until_secs
+                .load(Ordering::SeqCst)
+                .saturating_sub(now_secs())
+        } else {
+            0
+        }
+    }
+
+    // ----------------------------------------------------------------------- local -> peers
+
+    /// Record a locally copied item and send it to all peers in the background, so a slow or
+    /// unreachable peer can never stall clipboard polling or inbound processing.
+    pub fn spawn_local_clip(self: &Arc<Self>, content_type: ClipContentType, data: Vec<u8>) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            this.broadcast_local_clip(content_type, data).await;
+        });
+    }
+
+    /// Prepare and send a local clip, waiting for each peer's answer. `None` when ignored
+    /// (paused / empty).
+    pub async fn broadcast_local_clip(
+        &self,
+        content_type: ClipContentType,
+        data: Vec<u8>,
+    ) -> Option<Vec<DeliveryReport>> {
+        let payload = self.prepare_local_clip(content_type, data)?;
+        let results = self.net.send_clip(&payload).await;
+        let names: HashMap<NodeId, String> = self
+            .net
+            .peers()
+            .into_iter()
+            .map(|p| (node_of(&p.id), p.name))
+            .collect();
+
+        let mut errors = self.last_errors.lock().unwrap();
+        let mut reports = Vec::new();
+        for (id, res) in results {
+            let node = node_of(&id);
+            let peer_name = names.get(&node).cloned().unwrap_or_else(|| node.short_id());
+            match res {
+                Ok(()) => {
+                    errors.remove(&node);
+                    reports.push(DeliveryReport {
+                        peer_name,
+                        result: Ok(()),
+                    });
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    errors.insert(node, msg.clone());
+                    reports.push(DeliveryReport {
+                        peer_name,
+                        result: Err(msg),
+                    });
+                }
+            }
+        }
+        drop(errors);
+        // "Last sync" means a peer really accepted something, not that we merely saw a local copy.
+        if reports.iter().any(|r| r.result.is_ok()) {
+            self.record_sync();
+        }
+        Some(reports)
+    }
+
+    fn prepare_local_clip(
+        &self,
+        content_type: ClipContentType,
+        data: Vec<u8>,
+    ) -> Option<ClipPayload> {
         if self.check_pause_status() || data.is_empty() {
-            return;
+            return None;
         }
 
-        // If image format, optimize / transcode if uncompressed BMP
+        // Compress uncompressed bitmaps; keep the label in sync with the bytes we actually send.
         let (content_type, data) = match content_type {
             ClipContentType::ImagePng | ClipContentType::ImageWebP => {
-                if let Ok((_fmt, opt_bytes)) = klip_diff::transcode_image_for_sync(&data) {
-                    (ClipContentType::ImagePng, opt_bytes)
-                } else {
-                    (content_type, data)
+                match klip_diff::transcode_image_for_sync(&data) {
+                    Ok((klip_diff::ImageFormat::WebP, bytes)) => {
+                        (ClipContentType::ImageWebP, bytes)
+                    }
+                    Ok((klip_diff::ImageFormat::Png, bytes)) => (ClipContentType::ImagePng, bytes),
+                    _ => (content_type, data),
                 }
             }
             other => (other, data),
         };
 
-        // Entropy / Sensitivity check
-        let is_sensitive = if let Ok(text) = std::str::from_utf8(&data) {
-            analyze_snippet(text).is_likely_secret
-        } else {
-            false
+        let is_sensitive = match (&content_type, std::str::from_utf8(&data)) {
+            (ClipContentType::PlainTextUtf8, Ok(text)) => analyze_snippet(text).is_likely_secret,
+            _ => false,
         };
 
-        let mut flags = FLAG_ENCRYPTED | content_type.to_flag();
-        if is_sensitive {
-            flags |= FLAG_SENSITIVE;
-        }
-
-        // Advance local HLC and record as active local clip
-        let hlc_stamp = {
-            let mut clk = self.clock.lock().unwrap();
-            let stamp = clk.send_event();
-            let mut active = self.last_applied_clip_hlc.lock().unwrap();
-            *active = Some(stamp);
+        let hlc = {
+            let mut clock = self.clock.lock().unwrap();
+            let stamp = clock.send_event();
+            *self.last_applied_clip_hlc.lock().unwrap() = Some(stamp);
             stamp
         };
 
-        // Cache for differential sync
-        let (msg_type, payload_to_encrypt) = {
-            let mut cache = self.diff_cache.lock().unwrap();
-            if let Some(delta) = cache.create_delta_if_beneficial(&data) {
-                flags |= FLAG_DELTA;
-                let delta_bytes = bincode::serialize(&delta).unwrap_or_default();
-                cache.insert(data.clone()); // Cache base for subsequent deltas
-                (MessageType::ClipDeltaPatch, delta_bytes)
-            } else {
-                cache.insert(data.clone());
-                (MessageType::ClipFullPayload, data.clone())
-            }
-        };
-
-        // Record in local history
+        let payload =
+            ClipPayload::new(content_type, data, self.identity.node_id, hlc, is_sensitive);
         self.history.push(
-            [0u8; 16],
+            payload.id,
             self.identity.node_id,
             self.config.device_name.clone(),
-            data.clone(),
+            payload.content.clone(),
             is_sensitive,
         );
-
-        // Broadcast to all paired peers with their respective symmetric keys
-        let peers_status = self.mesh.peer_statuses().await;
-        for peer_info in peers_status {
-            if let Some(sym_key) = self.mesh.get_peer_key(&peer_info.node_id).await {
-                let nonce = self.nonce_gen.next_nonce();
-                let mut encrypted_payload = payload_to_encrypt.clone();
-
-                let header = WireHeader {
-                    magic: MAGIC_BYTES,
-                    version: CURRENT_VERSION,
-                    msg_type,
-                    flags,
-                    sender: self.identity.node_id,
-                    nonce,
-                    hlc_physical: hlc_stamp.physical_time_ms,
-                    hlc_logical: hlc_stamp.logical_counter,
-                    hlc_node_seed: u32::from_be_bytes([
-                        self.identity.node_id.0[0],
-                        self.identity.node_id.0[1],
-                        self.identity.node_id.0[2],
-                        self.identity.node_id.0[3],
-                    ]),
-                    payload_len: encrypted_payload.len() as u32,
-                };
-                let header_bytes = header.to_bytes();
-
-                if let Ok(tag) = encrypt_payload_in_place_with_aad(
-                    &sym_key,
-                    &nonce,
-                    &header_bytes,
-                    &mut encrypted_payload,
-                ) {
-                    let packet = WirePacket {
-                        header,
-                        payload: encrypted_payload,
-                        tag,
-                    };
-
-                    let _ = self.mesh.broadcast_packet(&packet).await;
-                }
-            }
-        }
-
-        self.total_synced_clips.fetch_add(1, Ordering::SeqCst);
-        let mut last_sync = self.last_sync_instant.lock().unwrap();
-        *last_sync = Some(Instant::now());
+        Some(payload)
     }
 
-    /// Process an inbound packet received from mesh
-    pub async fn process_inbound_packet(&self, packet: WirePacket) {
+    // ----------------------------------------------------------------------- peers -> local
+
+    /// Handle one event from the network layer.
+    pub async fn handle_net_event(&self, event: NetEvent) {
+        match event {
+            NetEvent::Clip { from, payload, ack } => {
+                let outcome = self.apply_remote_clip(&from, payload);
+                let _ = ack.send(outcome);
+            }
+            NetEvent::PairRequest {
+                peer,
+                device_name,
+                respond,
+            } => {
+                let mut ui = self.pairing.lock().unwrap();
+                if ui.pending.is_some() {
+                    // One decision at a time; a second request is declined, not queued.
+                    let _ = respond.send(false);
+                } else {
+                    ui.pending = Some(PendingPair {
+                        peer: node_of(&peer),
+                        device_name,
+                        respond,
+                    });
+                }
+            }
+            NetEvent::Paired(rec) => {
+                self.persist_peer(&rec).await;
+                self.pairing.lock().unwrap().paired_name = Some(rec.name);
+            }
+            NetEvent::PeerConnected(_) | NetEvent::PeerDisconnected(_) => {}
+        }
+    }
+
+    fn apply_remote_clip(&self, from: &EndpointId, payload: ClipPayload) -> ClipOutcome {
         if self.check_pause_status() {
-            return;
+            return ClipOutcome::Paused;
         }
-
-        // 1. Handle pairing handshakes
-        if packet.header.msg_type == MessageType::Handshake {
-            self.handle_inbound_handshake(packet).await;
-            return;
+        let sender = node_of(from);
+        // The transport already guarantees origin == sender; the clock owner must match too.
+        if payload.hlc.node_id != sender || payload.origin_node != sender {
+            return ClipOutcome::Rejected;
         }
-        if packet.header.msg_type == MessageType::HandshakeAck {
-            self.handle_inbound_handshake_ack(packet).await;
-            return;
-        }
-
-        // 2. Verify sender key from mesh peer registry
-        let sym_key = match self.mesh.get_peer_key(&packet.header.sender).await {
-            Some(k) => k,
-            None => return, // Ignore clips from unauthenticated/unpaired peers
-        };
-
-        let header_bytes = packet.header.to_bytes();
-        let mut decrypted_payload = packet.payload;
-        if decrypt_payload_in_place_with_aad(
-            &sym_key,
-            &packet.header.nonce,
-            &header_bytes,
-            &mut decrypted_payload,
-            &packet.tag,
-        )
-        .is_err()
+        let remote_hlc = payload.hlc;
         {
-            return; // Corrupted or tampered
-        }
-
-        // 3. HLC causality and Last-Write-Wins (LWW) resolution
-        let remote_hlc = HybridLogicalClock {
-            physical_time_ms: packet.header.hlc_physical,
-            logical_counter: packet.header.hlc_logical,
-            node_id: packet.header.sender,
-        };
-
-        // Monotonically advance node's logical clock
-        {
-            let mut clk = self.clock.lock().unwrap();
-            clk.recv_event(&remote_hlc);
-        }
-
-        // Check if remote clip supersedes active local clipboard content
-        {
-            let mut active_guard = self.last_applied_clip_hlc.lock().unwrap();
-            if let Some(active_hlc) = *active_guard {
-                if remote_hlc <= active_hlc {
-                    // Local active clip was created more recently; local clip wins LWW
-                    return;
-                }
-            }
-            *active_guard = Some(remote_hlc);
-        }
-
-        // 4. Delta reconstruction if patch
-        let final_data = if (packet.header.flags & FLAG_DELTA) != 0 {
-            if let Ok(delta) =
-                bincode::deserialize::<klip_diff::delta::DeltaPatch>(&decrypted_payload)
+            let mut clock = self.clock.lock().unwrap();
+            if clock
+                .recv_event_bounded(&remote_hlc, MAX_CLOCK_DRIFT_MS)
+                .is_err()
             {
-                let mut cache = self.diff_cache.lock().unwrap();
-                match cache.apply_delta(&delta) {
-                    Ok(reconstructed) => {
-                        cache.insert(reconstructed.clone());
-                        reconstructed
-                    }
-                    Err(_) => return, // Base clip missing, cannot apply
-                }
-            } else {
-                return;
+                return ClipOutcome::Rejected; // absurd timestamp: keep our clock sane
             }
-        } else {
-            let mut cache = self.diff_cache.lock().unwrap();
-            cache.insert(decrypted_payload.clone());
-            decrypted_payload
-        };
+        }
+        if let Some(current) = *self.last_applied_clip_hlc.lock().unwrap() {
+            if remote_hlc <= current {
+                return ClipOutcome::Superseded; // a newer clip is already active (LWW)
+            }
+        }
 
-        let is_sensitive = (packet.header.flags & FLAG_SENSITIVE) != 0;
-
-        let content_type = ClipContentType::from_flags(packet.header.flags);
-
-        // 5. Inject into host OS clipboard (Echo Shield suppresses echo loop)
-        let _ = self.driver.write_clip(&content_type, &final_data);
-
-        // 6. Record in local history buffer
+        if self
+            .driver
+            .write_clip(&payload.content_type, &payload.content)
+            .is_err()
+        {
+            // Not applied, so the "active clip" bookkeeping must not claim it was.
+            return ClipOutcome::ClipboardUnavailable;
+        }
+        {
+            let mut active = self.last_applied_clip_hlc.lock().unwrap();
+            if active.map(|cur| remote_hlc > cur).unwrap_or(true) {
+                *active = Some(remote_hlc);
+            }
+        }
+        let name = self
+            .net
+            .peers()
+            .into_iter()
+            .find(|p| p.id == *from)
+            .map(|p| p.name)
+            .unwrap_or_else(|| sender.short_id());
         self.history.push(
-            [0u8; 16],
-            packet.header.sender,
-            "Linked Peer".to_string(),
-            final_data,
-            is_sensitive,
+            payload.id,
+            sender,
+            name,
+            payload.content,
+            payload.is_sensitive,
         );
+        self.record_sync();
+        ClipOutcome::Applied
+    }
 
+    fn record_sync(&self) {
         self.total_synced_clips.fetch_add(1, Ordering::SeqCst);
-        let mut last_sync = self.last_sync_instant.lock().unwrap();
-        *last_sync = Some(Instant::now());
+        *self.last_sync_instant.lock().unwrap() = Some(Instant::now());
     }
 
-    async fn handle_inbound_handshake(&self, packet: WirePacket) {
-        let (pending_psk, _) = match self.pending_pairing.lock().await.clone() {
-            Some(pair) => pair,
-            None => return,
-        };
+    // ---------------------------------------------------------------------------- pairing
 
-        let sym_key = pending_psk.to_symmetric_key();
-        let header_bytes = packet.header.to_bytes();
-        let mut payload = packet.payload;
+    pub async fn persist_peer(&self, rec: &PeerRecord) {
+        let mut ks = self.keystore.lock().await;
+        ks.add_peer(PairedPeer::new(node_of(&rec.id), rec.name.clone()));
+        let _ = ks.save(self.paths.keystore());
+    }
 
-        if decrypt_payload_in_place_with_aad(
-            &sym_key,
-            &packet.header.nonce,
-            &header_bytes,
-            &mut payload,
-            &packet.tag,
-        )
-        .is_err()
-        {
-            return;
-        }
-
-        let peer_name = String::from_utf8(payload)
-            .unwrap_or_else(|_| format!("Klip-{}", packet.header.sender.short_id()));
-        let peer_node = packet.header.sender;
-
-        // Save to keystore
-        {
-            let mut ks = self.keystore.lock().await;
-            ks.add_peer(PairedPeer::new(peer_node, peer_name.clone(), &sym_key));
-            let _ = ks.save(crate::config::get_keystore_path());
-        }
-
-        // Add to active mesh
-        self.mesh
-            .add_peer(peer_node, peer_name.clone(), sym_key.clone(), None)
-            .await;
-
-        // Clear pending pairing
-        *self.pending_pairing.lock().await = None;
-
-        // Send HandshakeAck back
-        let mut ack_payload = self.config.device_name.clone().into_bytes();
-        let nonce = self.nonce_gen.next_nonce();
-        let ack_header = WireHeader {
-            magic: MAGIC_BYTES,
-            version: CURRENT_VERSION,
-            msg_type: MessageType::HandshakeAck,
-            flags: FLAG_ENCRYPTED,
-            sender: self.identity.node_id,
-            nonce,
-            hlc_physical: 0,
-            hlc_logical: 0,
-            hlc_node_seed: 0,
-            payload_len: ack_payload.len() as u32,
-        };
-        let ack_header_bytes = ack_header.to_bytes();
-        if let Ok(tag) =
-            encrypt_payload_in_place_with_aad(&sym_key, &nonce, &ack_header_bytes, &mut ack_payload)
-        {
-            let ack_packet = WirePacket {
-                header: ack_header,
-                payload: ack_payload,
-                tag,
-            };
-            let _ = self.mesh.broadcast_packet(&ack_packet).await;
+    pub fn mark_pairing_started(&self, ttl_secs: u64) {
+        let mut ui = self.pairing.lock().unwrap();
+        ui.expires_at = Some(Instant::now() + std::time::Duration::from_secs(ttl_secs));
+        ui.paired_name = None;
+        if let Some(old) = ui.pending.take() {
+            let _ = old.respond.send(false);
         }
     }
 
-    async fn handle_inbound_handshake_ack(&self, packet: WirePacket) {
-        if let Some(sym_key) = self.mesh.get_peer_key(&packet.header.sender).await {
-            let header_bytes = packet.header.to_bytes();
-            let mut payload = packet.payload;
-            if decrypt_payload_in_place_with_aad(
-                &sym_key,
-                &packet.header.nonce,
-                &header_bytes,
-                &mut payload,
-                &packet.tag,
-            )
-            .is_ok()
-            {
-                let mut peers = self.mesh.peers.lock().await;
-                if let Some(peer) = peers.get_mut(&packet.header.sender) {
-                    peer.last_seen = tokio::time::Instant::now();
-                }
+    pub fn cancel_pairing(&self) {
+        self.net.close_pairing();
+        let mut ui = self.pairing.lock().unwrap();
+        ui.expires_at = None;
+        if let Some(old) = ui.pending.take() {
+            let _ = old.respond.send(false);
+        }
+    }
+
+    pub fn poll_pairing(&self) -> PairPollInfo {
+        let mut ui = self.pairing.lock().unwrap();
+        let pending = ui.pending.as_ref().map(|p| PendingPairInfo {
+            device_name: p.device_name.clone(),
+            fingerprint: p.peer.fingerprint(),
+        });
+        let seconds_left = ui
+            .expires_at
+            .map(|t| t.saturating_duration_since(Instant::now()).as_secs())
+            .unwrap_or(0);
+        PairPollInfo {
+            window_open: self.net.pairing_open() || pending.is_some(),
+            seconds_left,
+            pending,
+            paired: ui.paired_name.take(),
+        }
+    }
+
+    /// Answer the pending pairing request. Returns false if none was pending.
+    pub fn decide_pairing(&self, accept: bool) -> bool {
+        match self.pairing.lock().unwrap().pending.take() {
+            Some(p) => {
+                let _ = p.respond.send(accept);
+                true
             }
+            None => false,
         }
     }
+
+    /// Remove a paired device selected by exact name or fingerprint prefix.
+    pub async fn unpair(&self, selector: &str) -> Result<String, String> {
+        let wanted = selector.trim();
+        if wanted.is_empty() {
+            return Err("tell me which device to remove".into());
+        }
+        let norm = |s: &str| s.replace('-', "").to_uppercase();
+        let matches: Vec<PeerRecord> = self
+            .net
+            .peers()
+            .into_iter()
+            .filter(|p| {
+                p.name == wanted
+                    || (norm(wanted).len() >= 4
+                        && norm(&node_of(&p.id).fingerprint()).starts_with(&norm(wanted)))
+            })
+            .collect();
+        match matches.as_slice() {
+            [] => Err(format!("no paired device matches '{wanted}'")),
+            [one] => {
+                self.net.unpair(&one.id);
+                let mut ks = self.keystore.lock().await;
+                ks.remove_peer(&node_of(&one.id));
+                let _ = ks.save(self.paths.keystore());
+                Ok(one.name.clone())
+            }
+            many => Err(format!(
+                "'{wanted}' is ambiguous ({} devices); use more of the fingerprint",
+                many.len()
+            )),
+        }
+    }
+
+    // ----------------------------------------------------------------------------- status
+
+    pub fn peer_status(&self) -> Vec<PeerStatusInfo> {
+        let errors = self.last_errors.lock().unwrap();
+        self.net
+            .peer_statuses()
+            .into_iter()
+            .map(|p| {
+                let node = node_of(&p.id);
+                PeerStatusInfo {
+                    node_id: node,
+                    name: p.name,
+                    is_online: p.connected,
+                    last_error: errors.get(&node).cloned(),
+                }
+            })
+            .collect()
+    }
+
+    pub fn relay_mode_label(&self) -> &'static str {
+        match self.config.relay {
+            RelayMode::N0 => "n0 public relays + discovery",
+            RelayMode::Lan => "LAN only (no third-party servers)",
+        }
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
