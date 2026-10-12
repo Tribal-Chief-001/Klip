@@ -17,6 +17,7 @@
   <a href="#-quick-download-pre-compiled-assets">Downloads</a> •
   <a href="#-architecture--data-flow">Architecture</a> •
   <a href="#-step-by-step-setup-guides-spoonfeeding">Setup Guides</a> •
+  <a href="#-background-persistence--auto-start-on-boot">Auto-Start Guide</a> •
   <a href="#-pairing-guide-5-second-setup">Pairing</a> •
   <a href="#-cli-command-reference">CLI Reference</a> •
   <a href="#-competitor-benchmark">Comparison</a> •
@@ -135,8 +136,9 @@ curl -L -o /tmp/klip https://github.com/Tribal-Chief-001/Klip/releases/download/
 chmod +x /tmp/klip
 sudo mv /tmp/klip /usr/local/bin/klip
 
-# 2. Start Klip as a persistent user service (starts on login)
+# 2. Register and start background service (starts automatically on login)
 klip install-service
+systemctl --user enable --now klip.service
 ```
 
 #### Option B: Build From Source via Cargo
@@ -146,6 +148,7 @@ cd Klip
 cargo build --release --bin klip
 sudo cp target/release/klip /usr/local/bin/
 klip install-service
+systemctl --user enable --now klip.service
 ```
 
 #### Wayland GNOME Note
@@ -218,6 +221,103 @@ cargo build --release --bin klip
    *(Registers Klip in the Windows Startup registry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).*
 3. **Win+V History**:
    Klip injects clips using native Win32 `OpenClipboard`/`SetClipboardData`. Pressing `Win + V` shows all remote clips cleanly in your Windows clipboard timeline!
+
+---
+
+## 🔄 Background Persistence & Auto-Start on Boot (Set-and-Forget Guide)
+
+Once your devices are paired, you should never have to manually open a terminal or type `klip start` again. Here is exactly how to set up silent, background persistence on each platform:
+
+### 🐧 Linux (Ubuntu, Mint, Arch, Fedora) — `systemd` User Unit
+Klip integrates natively with `systemd --user` session management:
+
+1. **Install unit file**:
+   ```bash
+   klip install-service
+   ```
+   *Creates: `~/.config/systemd/user/klip.service`*
+
+2. **Enable and start immediately**:
+   ```bash
+   systemctl --user enable --now klip.service
+   ```
+
+3. **Verify it is active**:
+   ```bash
+   systemctl --user status klip.service
+   ```
+   *(You will see `Active: active (running)` consuming only ~2.1 MB RAM and 0.0% CPU).*
+
+4. **To stop or disable anytime**:
+   ```bash
+   systemctl --user disable --now klip.service
+   ```
+
+---
+
+### 📱 Android Phone (Samsung, Pixel, OnePlus, Xiaomi)
+Android companion persistence is built into the architecture:
+
+1. **Auto-Start on Phone Boot**:
+   The Klip Android app includes a native `BootReceiver` listening for `BOOT_COMPLETED`. Whenever you reboot or turn on your phone, the background worker launches automatically.
+2. **Persistent Accessibility Privilege**:
+   Once you toggle **"Klip Clipboard Auto-Sync"** in Android Accessibility Settings, Android preserves this system privilege permanently across reboots.
+3. **Crucial Step (Disable Battery Killing)**:
+   Modern Android manufacturers aggressively kill background sync processes. To prevent this:
+   - Go to: **Settings ➔ Apps ➔ Klip ➔ Battery** (or *App Battery Usage*).
+   - Change from *Optimized* to **"Unrestricted"**.
+   - *(Optional on Xiaomi/MIUI: Enable "Autostart" in App Permissions).*
+
+---
+
+### 🍎 macOS (Apple Silicon & Intel) — `launchd` Agent
+Klip integrates with macOS native `launchd`:
+
+1. **Install LaunchAgent**:
+   ```bash
+   klip install-service
+   ```
+   *Creates: `~/Library/LaunchAgents/com.klip.daemon.plist`*
+
+2. **Load and start service**:
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.klip.daemon.plist
+   ```
+
+3. **Verify running**:
+   ```bash
+   launchctl list | grep com.klip.daemon
+   ```
+
+4. **To stop or unload anytime**:
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.klip.daemon.plist
+   ```
+
+---
+
+### 🪟 Windows (10 & 11) — Task Scheduler Automation
+Klip generates a native PowerShell script to register with Windows Task Scheduler:
+
+1. **Generate script**:
+   ```powershell
+   .\klip.exe install-service
+   ```
+   *Creates: `$HOME\.klip\register-service.ps1`*
+
+2. **Register task (Run in PowerShell as Administrator)**:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File "$HOME\.klip\register-service.ps1"
+   ```
+   *Registers `KlipDaemon` in Task Scheduler to launch silently on user logon (`AtLogOn`), with battery resilience enabled.*
+
+3. **Verify task**:
+   Open Windows Task Scheduler (`taskschd.msc`) ➔ Find `KlipDaemon` (Status: *Ready*).
+
+4. **To remove task anytime**:
+   ```powershell
+   Unregister-ScheduledTask -TaskName "KlipDaemon" -Confirm:$false
+   ```
 
 ---
 
