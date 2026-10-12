@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use klip_cli::client::DaemonClient;
 use klip_cli::ui::{print_history, print_pair_card, print_pair_request, print_status_card};
-use klip_daemon::config::{DaemonConfig, KlipPaths};
+use klip_daemon::config::DaemonConfig;
 use klip_daemon::engine::DaemonEngine;
 use klip_proto::ipc::{IpcRequest, IpcResponse};
 use owo_colors::OwoColorize;
@@ -190,7 +190,7 @@ async fn start(foreground: bool) -> AnyResult<()> {
         println!("{}", "Klip is already running.".yellow());
         return Ok(());
     }
-    let paths = KlipPaths::for_user();
+    let paths = klip_daemon::config::user_paths();
     let _ = std::fs::remove_file(paths.ipc_socket()); // stale socket from a crash
 
     if foreground {

@@ -1,5 +1,5 @@
-use crate::engine::Shutdown;
-use crate::sync::SyncCoordinator;
+use klip_core::Shutdown;
+use klip_core::SyncCoordinator;
 use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
 use klip_proto::ipc::{
@@ -174,7 +174,7 @@ impl IpcServer {
                         sync.persist_peer(&rec).await;
                         IpcResponse::PairSuccess {
                             peer_name: rec.name,
-                            peer_fingerprint: crate::sync::node_of(&rec.id).fingerprint(),
+                            peer_fingerprint: klip_core::node_of(&rec.id).fingerprint(),
                         }
                     }
                     Err(e) => IpcResponse::Error(e.to_string()),

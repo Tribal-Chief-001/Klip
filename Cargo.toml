@@ -6,6 +6,7 @@ members = [
     "crates/klip-diff",
     "crates/klip-platform",
     "crates/klip-net",
+    "crates/klip-core",
     "crates/klip-daemon",
     "crates/klip-cli",
 ]
@@ -54,6 +55,7 @@ klip-crypto = { path = "crates/klip-crypto" }
 klip-diff = { path = "crates/klip-diff" }
 klip-platform = { path = "crates/klip-platform" }
 klip-net = { path = "crates/klip-net" }
+klip-core = { path = "crates/klip-core" }
 klip-daemon = { path = "crates/klip-daemon" }
 
 [profile.release]

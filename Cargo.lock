@@ -1888,6 +1888,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "klip-core"
+version = "0.1.0"
+dependencies = [
+ "hostname",
+ "klip-crypto",
+ "klip-diff",
+ "klip-net",
+ "klip-platform",
+ "klip-proto",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "klip-crypto"
 version = "0.1.0"
 dependencies = [
@@ -1903,7 +1918,7 @@ name = "klip-daemon"
 version = "0.1.0"
 dependencies = [
  "directories",
- "hostname",
+ "klip-core",
  "klip-crypto",
  "klip-diff",
  "klip-net",
