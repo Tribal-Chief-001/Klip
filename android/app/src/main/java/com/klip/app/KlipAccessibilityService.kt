@@ -15,20 +15,19 @@ class KlipAccessibilityService : AccessibilityService() {
         private var instance: KlipAccessibilityService? = null
 
         fun injectRemoteClip(context: Context, text: String, isSensitive: Boolean = false) {
-            instance?.let { service ->
-                try {
-                    val clipboard = service.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val clip = ClipData.newPlainText("Klip", text)
-                    if (isSensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        clip.description.extras?.putBoolean("android.content.extra.IS_SENSITIVE", true)
-                    }
-                    clipboard.setPrimaryClip(clip)
-                    Log.i(TAG, "Successfully injected remote clip (${text.length} chars) silently via Accessibility Service")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to inject remote clip: ${e.message}", e)
+            val targetContext = instance ?: context
+            try {
+                val clipboard = targetContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                val clip = ClipData.newPlainText("Klip", text)
+                if (isSensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val extras = clip.description.extras ?: android.os.PersistableBundle()
+                    extras.putBoolean("android.content.extra.IS_SENSITIVE", true)
+                    clip.description.extras = extras
                 }
-            } ?: run {
-                Log.w(TAG, "Accessibility service instance not bound. Falling back to background clipboard manager")
+                clipboard.setPrimaryClip(clip)
+                Log.i(TAG, "Successfully injected remote clip (${text.length} chars)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to inject remote clip: ${e.message}", e)
             }
         }
 

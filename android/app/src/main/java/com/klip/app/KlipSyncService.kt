@@ -1,5 +1,6 @@
 package com.klip.app
 
+import android.app.ActivityOptions
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -51,6 +52,13 @@ class KlipSyncService : Service() {
         const val PREF_DEVICE_NODE_HEX = "pref_device_node_hex"
 
         const val DEFAULT_PORT = 7123
+
+        @Volatile
+        var latestRemoteClip: String? = null
+        @Volatile
+        var latestRemoteSensitive: Boolean = false
+        @Volatile
+        var lastSyncedLocalText: String = ""
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -127,6 +135,7 @@ class KlipSyncService : Service() {
                 val text = intent.getStringExtra(EXTRA_CLIP_TEXT) ?: ""
                 if (text.isNotEmpty()) {
                     lastLocalFingerprint = text
+                    lastSyncedLocalText = text
                     broadcastLocalClip(text)
                     updateNotification("Broadcasting clip (${text.length} chars)")
                 }
@@ -451,6 +460,8 @@ class KlipSyncService : Service() {
     }
 
     private fun handleIncomingClip(clipText: String, isSensitive: Boolean) {
+        latestRemoteClip = clipText
+        latestRemoteSensitive = isSensitive
         val preview = if (clipText.length > 30) clipText.take(30) + "…" else clipText
         val accessibilityActive = KlipAccessibilityService.isServiceRunning()
 
@@ -469,16 +480,26 @@ class KlipSyncService : Service() {
 
     private fun showIncomingClipNotification(clipText: String, isSensitive: Boolean, accessibilityAlreadyInjected: Boolean) {
         val trampolineIntent = Intent(this, CopyTrampolineActivity::class.java).apply {
+            action = CopyTrampolineActivity.ACTION_COPY
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(CopyTrampolineActivity.EXTRA_CLIP_TEXT, clipText)
             putExtra(CopyTrampolineActivity.EXTRA_IS_SENSITIVE, isSensitive)
+        }
+
+        val optionsBundle = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ActivityOptions.makeBasic().apply {
+                setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            }.toBundle()
+        } else {
+            null
         }
 
         val pendingCopyIntent = PendingIntent.getActivity(
             this,
             System.currentTimeMillis().toInt(),
             trampolineIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            optionsBundle
         )
 
         val displayText = if (isSensitive) "•••••••• (Sensitive Content)" else clipText

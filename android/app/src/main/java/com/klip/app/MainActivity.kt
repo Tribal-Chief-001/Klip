@@ -23,6 +23,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPair: Button
     private lateinit var btnSimulatePaste: Button
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(this, "Notifications required for UPI-safe clip sync", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private val qrScanLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -44,9 +52,18 @@ class MainActivity : AppCompatActivity() {
         btnPair = findViewById(R.id.btnPair)
         btnSimulatePaste = findViewById(R.id.btnSimulatePaste)
 
+        checkNotificationPermission()
         setupListeners()
         startSyncService()
         updateStatusUI()
+    }
+
+    private fun checkNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
     }
 
     override fun onResume() {

@@ -48,6 +48,8 @@
         <activity
             android:name=".ProcessTextActivity"
             android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
             android:label="@string/process_text_label"
             android:theme="@style/Theme.Klip.Transparent">
             <intent-filter>

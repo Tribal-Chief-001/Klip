@@ -1,9 +1,8 @@
 package com.klip.app
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
+import android.app.PendingIntent
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
@@ -26,7 +25,8 @@ class KlipTileService : TileService() {
         super.onStartListening()
         qsTile?.let { tile ->
             tile.state = Tile.STATE_ACTIVE
-            tile.label = "Klip Sync"
+            tile.label = "📎 Klip"
+            tile.icon = Icon.createWithResource(this, R.drawable.ic_klip_logo)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 tile.subtitle = "Tap to sync clip"
             }
@@ -38,33 +38,35 @@ class KlipTileService : TileService() {
         super.onClick()
         Log.i(TAG, "Quick Settings Klip tile tapped")
 
-        try {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val clip = clipboard.primaryClip
-
-            if (clip != null && clip.itemCount > 0) {
-                val text = clip.getItemAt(0).text?.toString() ?: ""
-                if (text.isNotEmpty()) {
-                    val syncIntent = Intent(this, KlipSyncService::class.java).apply {
-                        action = KlipSyncService.ACTION_BROADCAST_CLIP
-                        putExtra(KlipSyncService.EXTRA_CLIP_TEXT, text)
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(syncIntent)
-                    } else {
-                        startService(syncIntent)
-                    }
-                    val preview = if (text.length > 20) text.take(20) + "…" else text
-                    Toast.makeText(this, "Synced to Klip: \"$preview\"", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "Klip: Clipboard is empty", Toast.LENGTH_SHORT).show()
+        val launchAction = Runnable {
+            try {
+                val syncIntent = Intent(this, CopyTrampolineActivity::class.java).apply {
+                    action = CopyTrampolineActivity.ACTION_TILE_SYNC
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
                 }
-            } else {
-                Toast.makeText(this, "Klip: Clipboard is empty", Toast.LENGTH_SHORT).show()
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    val pendingIntent = PendingIntent.getActivity(
+                        this,
+                        0,
+                        syncIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                    )
+                    startActivityAndCollapse(pendingIntent)
+                } else {
+                    @Suppress("DEPRECATION")
+                    startActivityAndCollapse(syncIntent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in KlipTileService onClick: ${e.message}", e)
+                Toast.makeText(this, "Klip sync error: ${e.message}", Toast.LENGTH_SHORT).show()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in KlipTileService onClick: ${e.message}", e)
-            Toast.makeText(this, "Klip sync error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+
+        if (isLocked) {
+            unlockAndRun(launchAction)
+        } else {
+            launchAction.run()
         }
     }
 }

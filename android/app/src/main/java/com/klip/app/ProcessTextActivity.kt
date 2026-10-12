@@ -16,6 +16,12 @@ class ProcessTextActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+        } else {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
 
         val selectedText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT)?.toString()
@@ -35,8 +41,20 @@ class ProcessTextActivity : Activity() {
             }
             val preview = if (selectedText.length > 25) selectedText.take(25) + "…" else selectedText
             Toast.makeText(this, "Sent to Klip: \"$preview\"", Toast.LENGTH_SHORT).show()
+
+            // Return original text so calling editor preserves selection without modifying it
+            val resultIntent = Intent().putExtra(Intent.EXTRA_PROCESS_TEXT, selectedText)
+            setResult(RESULT_OK, resultIntent)
+        } else {
+            setResult(RESULT_CANCELED)
         }
 
         finish()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+        } else {
+            @Suppress("DEPRECATION")
+            overridePendingTransition(0, 0)
+        }
     }
 }
