@@ -8,5 +8,7 @@ pub mod sync;
 pub use config::{get_ipc_socket_path, get_keystore_path, get_klip_dir, DaemonConfig};
 pub use engine::DaemonEngine;
 pub use history::HistoryBuffer;
-pub use services::{generate_launchd_plist_file, generate_systemd_unit_file};
+pub use services::{
+    generate_launchd_plist_file, generate_systemd_unit_file, generate_windows_service_script,
+};
 pub use sync::SyncCoordinator;

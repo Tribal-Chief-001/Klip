@@ -60,6 +60,25 @@ impl LinuxClipboardDriver {
     }
 }
 
+fn read_bridge_socket() -> Option<String> {
+    if let Some(sock_path) = LinuxClipboardDriver::bridge_socket_path() {
+        if sock_path.exists() {
+            #[cfg(unix)]
+            {
+                use std::io::Read;
+                if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(sock_path) {
+                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(15)));
+                    let mut buf = Vec::new();
+                    if stream.read_to_end(&mut buf).is_ok() && !buf.is_empty() {
+                        return String::from_utf8(buf).ok();
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn detect_linux_environment() -> PlatformEnvironment {
     let session_type = env::var("XDG_SESSION_TYPE")
         .unwrap_or_default()
@@ -94,7 +113,8 @@ impl ClipboardDriver for LinuxClipboardDriver {
         };
 
         // Try reading text first
-        if let Ok(text) = cb.get_text() {
+        let text_opt = cb.get_text().ok().or_else(read_bridge_socket);
+        if let Some(text) = text_opt {
             if !text.is_empty() {
                 let bytes = text.into_bytes();
                 let fp = compute_fingerprint(&bytes, &self.local_node);
@@ -111,17 +131,20 @@ impl ClipboardDriver for LinuxClipboardDriver {
 
         // Try reading image
         if let Ok(img) = cb.get_image() {
-            let bytes = img.bytes.into_owned();
-            if !bytes.is_empty() {
-                let fp = compute_fingerprint(&bytes, &self.local_node);
-                if self.echo_shield.should_suppress(&fp) {
-                    return Ok(None);
+            if let Ok(png_bytes) =
+                klip_diff::rgba_to_png(img.width as u32, img.height as u32, &img.bytes)
+            {
+                if !png_bytes.is_empty() {
+                    let fp = compute_fingerprint(&png_bytes, &self.local_node);
+                    if self.echo_shield.should_suppress(&fp) {
+                        return Ok(None);
+                    }
+                    return Ok(Some(CapturedClip {
+                        content_type: ClipContentType::ImagePng,
+                        data: png_bytes,
+                        fingerprint: fp,
+                    }));
                 }
-                return Ok(Some(CapturedClip {
-                    content_type: ClipContentType::ImagePng,
-                    data: bytes,
-                    fingerprint: fp,
-                }));
             }
         }
 
@@ -149,13 +172,14 @@ impl ClipboardDriver for LinuxClipboardDriver {
                     .map_err(|e| PlatformError::BackendUnavailable(e.to_string()))?;
             }
             ClipContentType::ImagePng | ClipContentType::ImageWebP => {
-                // If raw RGBA is supported, inject image
-                let img = ImageData {
-                    width: 1,
-                    height: 1,
-                    bytes: Cow::Borrowed(&[0, 0, 0, 255]),
-                };
-                let _ = cb.set_image(img);
+                if let Ok((width, height, rgba)) = klip_diff::png_to_rgba(data) {
+                    let img = ImageData {
+                        width: width as usize,
+                        height: height as usize,
+                        bytes: Cow::Owned(rgba),
+                    };
+                    let _ = cb.set_image(img);
+                }
             }
             ClipContentType::CustomMime(_) => {
                 let text = String::from_utf8_lossy(data);

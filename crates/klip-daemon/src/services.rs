@@ -42,6 +42,14 @@ pub const LAUNCHD_PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"
 </plist>
 "#;
 
+pub const WINDOWS_TASK_SCRIPT_TEMPLATE: &str = r#"# Klip Daemon Windows Task Scheduler Registration
+$Action = New-ScheduledTaskAction -Execute "__EXE_PATH__" -Argument "start --foreground"
+$Trigger = New-ScheduledTaskTrigger -AtLogOn
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "KlipDaemon" -Action $Action -Trigger $Trigger -Settings $Settings -Description "Klip Universal E2EE Universal Clipboard Synchronization Daemon" -Force
+Write-Host "✓ KlipDaemon Windows Task registered successfully."
+"#;
+
 pub fn generate_systemd_unit_file(dest: &PathBuf) -> std::io::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
@@ -68,4 +76,15 @@ pub fn generate_launchd_plist_file(dest: &PathBuf) -> std::io::Result<()> {
         &format!("<string>{}</string>", exe_path),
     );
     fs::write(dest, plist)
+}
+
+pub fn generate_windows_service_script(dest: &PathBuf) -> std::io::Result<()> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let exe_path = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "klip.exe".to_string());
+    let script = WINDOWS_TASK_SCRIPT_TEMPLATE.replace("__EXE_PATH__", &exe_path);
+    fs::write(dest, script)
 }

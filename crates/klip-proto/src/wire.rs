@@ -14,6 +14,13 @@ pub const FLAG_DELTA: u16 = 0x0002;
 pub const FLAG_SENSITIVE: u16 = 0x0004;
 pub const FLAG_COMPRESSED: u16 = 0x0008;
 
+// Content Type Flags (bits 4-7)
+pub const FLAG_TYPE_TEXT: u16 = 0x0000;
+pub const FLAG_TYPE_HTML: u16 = 0x0010;
+pub const FLAG_TYPE_IMAGE_PNG: u16 = 0x0020;
+pub const FLAG_TYPE_IMAGE_WEBP: u16 = 0x0030;
+pub const FLAG_TYPE_MASK: u16 = 0x00F0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum MessageType {
@@ -56,6 +63,27 @@ pub enum ClipContentType {
     ImageWebP,
     ImagePng,
     CustomMime(String),
+}
+
+impl ClipContentType {
+    pub fn to_flag(&self) -> u16 {
+        match self {
+            Self::PlainTextUtf8 => FLAG_TYPE_TEXT,
+            Self::HtmlContent => FLAG_TYPE_HTML,
+            Self::ImagePng => FLAG_TYPE_IMAGE_PNG,
+            Self::ImageWebP => FLAG_TYPE_IMAGE_WEBP,
+            Self::CustomMime(_) => FLAG_TYPE_TEXT,
+        }
+    }
+
+    pub fn from_flags(flags: u16) -> Self {
+        match flags & FLAG_TYPE_MASK {
+            FLAG_TYPE_HTML => Self::HtmlContent,
+            FLAG_TYPE_IMAGE_PNG => Self::ImagePng,
+            FLAG_TYPE_IMAGE_WEBP => Self::ImageWebP,
+            _ => Self::PlainTextUtf8,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

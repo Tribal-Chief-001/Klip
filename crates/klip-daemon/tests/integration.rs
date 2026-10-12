@@ -289,3 +289,120 @@ fn test_pairing_invitation_sas_matching() {
     assert_eq!(host_sas, peer_sas);
     assert!(host_sas.contains(" • "));
 }
+
+#[test]
+fn test_image_payload_sync_and_transcoding() {
+    let node_a = DeviceIdentity::generate();
+    let _node_b = DeviceIdentity::generate();
+    let sym_key = SymmetricKey::random();
+
+    // Generate 8x8 RGBA test pattern
+    let width = 8u32;
+    let height = 8u32;
+    let mut rgba_original = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            rgba_original.extend_from_slice(&[(x * 30) as u8, (y * 30) as u8, 200, 255]);
+        }
+    }
+
+    // Convert to PNG container
+    let png_bytes = klip_diff::rgba_to_png(width, height, &rgba_original).expect("Encode PNG");
+    assert_eq!(
+        klip_diff::detect_image_format(&png_bytes),
+        klip_diff::ImageFormat::Png
+    );
+
+    // Node A packages image into wire packet with FLAG_TYPE_IMAGE_PNG
+    let content_type = klip_proto::wire::ClipContentType::ImagePng;
+    let flags = FLAG_ENCRYPTED | content_type.to_flag();
+    let nonce = WireNonce::new(500);
+
+    let mut ciphertext = png_bytes.clone();
+    let header = WireHeader {
+        magic: MAGIC_BYTES,
+        version: CURRENT_VERSION,
+        msg_type: MessageType::ClipFullPayload,
+        flags,
+        sender: node_a.node_id,
+        nonce,
+        hlc_physical: 1728000000,
+        hlc_logical: 1,
+        hlc_node_seed: 0x9999,
+        payload_len: ciphertext.len() as u32,
+    };
+    let header_bytes = header.to_bytes();
+    let tag = encrypt_payload_in_place_with_aad(&sym_key, &nonce, &header_bytes, &mut ciphertext)
+        .expect("Encrypt image");
+
+    let packet = WirePacket {
+        header,
+        payload: ciphertext,
+        tag,
+    };
+    let wire_bytes = packet.encode();
+
+    // Node B receives and decodes
+    let decoded_packet = WirePacket::decode(&wire_bytes).expect("Decode wire bytes");
+    let recovered_content_type =
+        klip_proto::wire::ClipContentType::from_flags(decoded_packet.header.flags);
+    assert_eq!(
+        recovered_content_type,
+        klip_proto::wire::ClipContentType::ImagePng
+    );
+
+    // Decrypt
+    let mut decrypted = decoded_packet.payload;
+    let dec_header_bytes = decoded_packet.header.to_bytes();
+    decrypt_payload_in_place_with_aad(
+        &sym_key,
+        &decoded_packet.header.nonce,
+        &dec_header_bytes,
+        &mut decrypted,
+        &decoded_packet.tag,
+    )
+    .expect("Decrypt image");
+
+    assert_eq!(decrypted, png_bytes);
+
+    // Unpack to raw RGBA for host clipboard
+    let (rec_w, rec_h, rec_rgba) = klip_diff::png_to_rgba(&decrypted).expect("Decode PNG to RGBA");
+    assert_eq!(rec_w, width);
+    assert_eq!(rec_h, height);
+    assert_eq!(rec_rgba, rgba_original);
+}
+
+#[test]
+fn test_wire_content_type_flag_preservation() {
+    use klip_proto::wire::ClipContentType;
+
+    let types = vec![
+        ClipContentType::PlainTextUtf8,
+        ClipContentType::HtmlContent,
+        ClipContentType::ImagePng,
+        ClipContentType::ImageWebP,
+    ];
+
+    for ct in types {
+        let flag = ct.to_flag();
+        let recovered = ClipContentType::from_flags(flag);
+        assert_eq!(recovered, ct);
+    }
+}
+
+#[test]
+fn test_nonce_monotonic_counter_invariance() {
+    let nonce_gen = NonceGenerator::new(100);
+    let mut prev_counter = 99;
+
+    for _ in 0..100 {
+        let nonce = nonce_gen.next_nonce();
+        let counter = nonce.counter();
+        assert!(counter > prev_counter);
+        assert_eq!(counter, prev_counter + 1);
+        prev_counter = counter;
+
+        // Verify top 4 bytes are zero-padded per spec
+        assert_eq!(&nonce.as_bytes()[0..4], &[0u8; 4]);
+    }
+}

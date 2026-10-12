@@ -29,6 +29,12 @@ impl HistoryBuffer {
         let size_bytes = content.len();
         let preview = if is_sensitive {
             "•••••••••••••••• (Sensitive Token / Key)".to_string()
+        } else if content.starts_with(b"\x89PNG\r\n\x1a\n") {
+            format!("[Image: PNG ({} B)]", size_bytes)
+        } else if content.len() >= 12 && &content[0..4] == b"RIFF" && &content[8..12] == b"WEBP" {
+            format!("[Image: WebP ({} B)]", size_bytes)
+        } else if content.starts_with(b"BM") {
+            format!("[Image: Bitmap ({} B)]", size_bytes)
         } else {
             let s = String::from_utf8_lossy(&content);
             let mut preview_str = s.chars().take(80).collect::<String>();

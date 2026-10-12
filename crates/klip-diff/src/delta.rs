@@ -1,9 +1,36 @@
+use fastcdc::v2020::FastCDC;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
 pub const MIN_DIFF_PAYLOAD_SIZE: usize = 32 * 1024; // 32 KB threshold
 pub const RECENT_CACHE_CAPACITY: usize = 16;
 pub const BLOCK_SIZE: usize = 32;
+
+/// Content-Defined Chunk generated via FastCDC rolling hash algorithm.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContentChunk {
+    pub offset: usize,
+    pub length: usize,
+    pub hash: u64,
+}
+
+/// Chunk clipboard payload using FastCDC content-defined boundaries.
+pub fn chunk_with_fastcdc(data: &[u8]) -> Vec<ContentChunk> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let min_size = 64;
+    let avg_size = 256;
+    let max_size = 1024;
+    let chunker = FastCDC::new(data, min_size, avg_size, max_size);
+    chunker
+        .map(|c| ContentChunk {
+            offset: c.offset,
+            length: c.length,
+            hash: c.hash,
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeltaOp {
@@ -214,5 +241,15 @@ mod tests {
 
         let restored = cache.apply_delta(&delta).expect("Apply delta must succeed");
         assert_eq!(restored, modified);
+    }
+
+    #[test]
+    fn test_fastcdc_chunking() {
+        let data = b"Content-Defined Chunking using FastCDC for universal clipboard deduplication."
+            .repeat(50);
+        let chunks = chunk_with_fastcdc(&data);
+        assert!(!chunks.is_empty());
+        let total_len: usize = chunks.iter().map(|c| c.length).sum();
+        assert_eq!(total_len, data.len());
     }
 }

@@ -249,7 +249,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(target_os = "windows")]
             {
-                println!("Windows service registration script configured.");
+                let dest = klip_daemon::get_klip_dir().join("register-service.ps1");
+                klip_daemon::generate_windows_service_script(&dest)?;
+                println!(
+                    "{} Generated Windows Task Scheduler registration script to {}\nRun in PowerShell as Administrator: powershell -ExecutionPolicy Bypass -File \"{}\"",
+                    "✓".green(),
+                    dest.display(),
+                    dest.display()
+                );
             }
         }
     }

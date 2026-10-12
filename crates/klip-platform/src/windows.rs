@@ -1,9 +1,10 @@
 use crate::driver::{
     CapturedClip, ClipboardDriver, EchoShield, PlatformEnvironment, PlatformError,
 };
-use arboard::Clipboard;
+use arboard::{Clipboard, ImageData};
 use klip_proto::hlc::NodeId;
 use klip_proto::wire::{compute_fingerprint, ClipContentType};
+use std::borrow::Cow;
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
@@ -81,6 +82,26 @@ impl ClipboardDriver for WindowsClipboardDriver {
                 }));
             }
         }
+
+        let img_res = self.with_retry(|cb| cb.get_image());
+        if let Ok(img) = img_res {
+            if let Ok(png_bytes) =
+                klip_diff::rgba_to_png(img.width as u32, img.height as u32, &img.bytes)
+            {
+                if !png_bytes.is_empty() {
+                    let fp = compute_fingerprint(&png_bytes, &self.local_node);
+                    if self.echo_shield.should_suppress(&fp) {
+                        return Ok(None);
+                    }
+                    return Ok(Some(CapturedClip {
+                        content_type: ClipContentType::ImagePng,
+                        data: png_bytes,
+                        fingerprint: fp,
+                    }));
+                }
+            }
+        }
+
         Ok(None)
     }
 
@@ -88,10 +109,32 @@ impl ClipboardDriver for WindowsClipboardDriver {
         let fp = compute_fingerprint(data, &self.local_node);
         self.echo_shield.record_injection(fp);
 
-        if let ClipContentType::PlainTextUtf8 | ClipContentType::HtmlContent = content_type {
-            let text = String::from_utf8_lossy(data).to_string();
-            self.with_retry(|cb| cb.set_text(text.clone()))?;
+        match content_type {
+            ClipContentType::PlainTextUtf8 => {
+                let text = String::from_utf8_lossy(data).to_string();
+                self.with_retry(|cb| cb.set_text(text.clone()))?;
+            }
+            ClipContentType::HtmlContent => {
+                let raw_html = String::from_utf8_lossy(data);
+                let text = klip_diff::utf8_to_cf_html(&raw_html);
+                self.with_retry(|cb| cb.set_text(text.clone()))?;
+            }
+            ClipContentType::ImagePng | ClipContentType::ImageWebP => {
+                if let Ok((width, height, rgba)) = klip_diff::png_to_rgba(data) {
+                    let img = ImageData {
+                        width: width as usize,
+                        height: height as usize,
+                        bytes: Cow::Owned(rgba),
+                    };
+                    self.with_retry(|cb| cb.set_image(img.clone()))?;
+                }
+            }
+            ClipContentType::CustomMime(_) => {
+                let text = String::from_utf8_lossy(data).to_string();
+                self.with_retry(|cb| cb.set_text(text.clone()))?;
+            }
         }
+
         Ok(())
     }
 

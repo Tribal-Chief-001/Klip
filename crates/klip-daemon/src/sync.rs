@@ -106,10 +106,22 @@ impl SyncCoordinator {
     }
 
     /// Process locally captured clipboard item and broadcast to mesh
-    pub async fn process_local_clip(&self, _content_type: ClipContentType, data: Vec<u8>) {
+    pub async fn process_local_clip(&self, content_type: ClipContentType, data: Vec<u8>) {
         if self.check_pause_status() || data.is_empty() {
             return;
         }
+
+        // If image format, optimize / transcode if uncompressed BMP
+        let (content_type, data) = match content_type {
+            ClipContentType::ImagePng | ClipContentType::ImageWebP => {
+                if let Ok((_fmt, opt_bytes)) = klip_diff::transcode_image_for_sync(&data) {
+                    (ClipContentType::ImagePng, opt_bytes)
+                } else {
+                    (content_type, data)
+                }
+            }
+            other => (other, data),
+        };
 
         // Entropy / Sensitivity check
         let is_sensitive = if let Ok(text) = std::str::from_utf8(&data) {
@@ -118,7 +130,7 @@ impl SyncCoordinator {
             false
         };
 
-        let mut flags = FLAG_ENCRYPTED;
+        let mut flags = FLAG_ENCRYPTED | content_type.to_flag();
         if is_sensitive {
             flags |= FLAG_SENSITIVE;
         }
@@ -288,10 +300,10 @@ impl SyncCoordinator {
 
         let is_sensitive = (packet.header.flags & FLAG_SENSITIVE) != 0;
 
+        let content_type = ClipContentType::from_flags(packet.header.flags);
+
         // 5. Inject into host OS clipboard (Echo Shield suppresses echo loop)
-        let _ = self
-            .driver
-            .write_clip(&ClipContentType::PlainTextUtf8, &final_data);
+        let _ = self.driver.write_clip(&content_type, &final_data);
 
         // 6. Record in local history buffer
         self.history.push(
