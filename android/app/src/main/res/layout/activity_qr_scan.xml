@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#090D16"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="📷 Scan Pairing QR"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Point camera at the QR code displayed in your terminal by 'klip pair'"
+        android:textColor="#94A3B8"
+        android:textSize="13sp"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Camera Preview Viewfinder Frame -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#000000">
+
+        <SurfaceView
+            android:id="@+id/cameraSurfaceView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Overlay Reticle -->
+        <View
+            android:layout_width="260dp"
+            android:layout_height="260dp"
+            android:layout_gravity="center"
+            android:background="#208B5CF6" />
+    </FrameLayout>
+
+    <Button
+        android:id="@+id/btnCancelScan"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Enter Token / IP Manually"
+        android:backgroundTint="#1E293B"
+        android:textColor="#E2E8F0"
+        android:layout_marginTop="16dp" />
+
+</LinearLayout>
