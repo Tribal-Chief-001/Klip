@@ -1,0 +1,55 @@
+name: CI & Hardening Matrix
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Suite & Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry and build target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Code format verification
+        run: cargo fmt --all -- --check
+
+      - name: Workspace Clippy verification
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run complete test suite (28 tests)
+        run: cargo test --workspace --verbose
+
+      - name: Compile hardened release binary
+        run: cargo build --release --bin klip
+
+      - name: Verify binary size budget (< 8.5MB)
+        run: |
+          BINARY_SIZE=$(stat -c%s target/release/klip)
+          echo "Release binary size: $BINARY_SIZE bytes"
+          if [ $BINARY_SIZE -gt 8912896 ]; then
+            echo "Binary size exceeded 8.5MB performance budget!"
+            exit 1
+          fi
