@@ -73,13 +73,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startSyncService() {
-        val intent = Intent(this, KlipSyncService::class.java).apply {
-            action = KlipSyncService.ACTION_START
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        try {
+            val intent = Intent(this, KlipSyncService::class.java).apply {
+                action = KlipSyncService.ACTION_START
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Failed starting sync service: ${e.message}", e)
         }
     }
 
@@ -111,29 +115,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateAccessibilityUI() {
-        val isEnabled = KlipAccessibilityService.isServiceRunning()
-        if (isEnabled) {
-            tvAccessibilityNotice.text = "🟢 Active (Scoped strictly to Klip • Zero screen reading/keylogging • RASP-safe)"
-            btnEnableAccessibility.text = "⚙️ Configure Accessibility"
-        } else {
-            tvAccessibilityNotice.text = "⚪ Inactive (UPI & Banking Safe Mode fully active via Notifications & QS Tile)"
-            btnEnableAccessibility.text = "⚡ Enable Silent Auto-Sync"
+        try {
+            val isEnabled = KlipAccessibilityService.isServiceRunning()
+            if (isEnabled) {
+                tvAccessibilityNotice.text = "🟢 Active (Scoped strictly to Klip • Zero screen reading/keylogging • RASP-safe)"
+                btnEnableAccessibility.text = "⚙️ Configure Accessibility"
+            } else {
+                tvAccessibilityNotice.text = "⚪ Inactive (UPI & Banking Safe Mode fully active via Notifications & QS Tile)"
+                btnEnableAccessibility.text = "⚡ Enable Silent Auto-Sync"
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Failed updating accessibility UI: ${e.message}")
         }
     }
 
     private fun updateStatusUI() {
-        val prefs = getSharedPreferences(KlipSyncService.PREFS_NAME, Context.MODE_PRIVATE)
-        val peerNodeHex = prefs.getString(KlipSyncService.PREF_PEER_NODE_HEX, null)
-        val endpoints = prefs.getString(KlipSyncService.PREF_ENDPOINTS, null)
+        try {
+            val prefs = getSharedPreferences(KlipSyncService.PREFS_NAME, Context.MODE_PRIVATE)
+            val peerNodeHex = prefs.getString(KlipSyncService.PREF_PEER_NODE_HEX, null)
+            val endpoints = prefs.getString(KlipSyncService.PREF_ENDPOINTS, null)
 
-        if (!peerNodeHex.isNullOrEmpty()) {
-            val shortId = peerNodeHex.take(8)
-            val epInfo = if (!endpoints.isNullOrEmpty()) " ($endpoints)" else ""
-            tvStatus.text = "● Paired with Node: $shortId$epInfo"
-            tvStatus.setTextColor(android.graphics.Color.parseColor("#10B981"))
-        } else {
-            tvStatus.text = "● Mesh Status: Waiting for pairing..."
-            tvStatus.setTextColor(android.graphics.Color.parseColor("#94A3B8"))
+            if (!peerNodeHex.isNullOrEmpty()) {
+                val shortId = peerNodeHex.take(8)
+                val epInfo = if (!endpoints.isNullOrEmpty()) " ($endpoints)" else ""
+                tvStatus.text = "● Paired with Node: $shortId$epInfo"
+                tvStatus.setTextColor(android.graphics.Color.parseColor("#10B981"))
+            } else {
+                tvStatus.text = "● Mesh Status: Waiting for pairing..."
+                tvStatus.setTextColor(android.graphics.Color.parseColor("#94A3B8"))
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "Failed updating status UI: ${e.message}")
         }
     }
 

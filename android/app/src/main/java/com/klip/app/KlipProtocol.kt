@@ -169,11 +169,31 @@ object KlipProtocol {
         return nonce
     }
 
+    private fun getChaChaCipher(): Cipher {
+        val transforms = listOf(
+            "ChaCha20-Poly1305",
+            "ChaCha20/Poly1305/NoPadding",
+            "ChaCha20-Poly1305/None/NoPadding"
+        )
+        for (tf in transforms) {
+            try {
+                return Cipher.getInstance(tf)
+            } catch (_: Throwable) {}
+        }
+        return Cipher.getInstance("ChaCha20-Poly1305")
+    }
+
+    private fun createKeySpec(key: ByteArray): SecretKeySpec {
+        return try {
+            SecretKeySpec(key, "ChaCha20")
+        } catch (_: Throwable) {
+            SecretKeySpec(key, "ChaCha20-Poly1305")
+        }
+    }
+
     /**
      * ChaCha20-Poly1305 AEAD detached encryption.
-     * Uses Android / Java standard "ChaCha20-Poly1305" cipher.
-     * With ChaCha20-Poly1305, the tag is appended to ciphertext by Java Cipher,
-     * so we separate the detached ciphertext and 16-byte Poly1305 tag.
+     * Compatible with Conscrypt (Android) and SunJCE (JVM).
      */
     fun encryptWithAad(
         key: ByteArray,
@@ -181,8 +201,8 @@ object KlipProtocol {
         aad: ByteArray,
         plaintext: ByteArray
     ): Pair<ByteArray, ByteArray> {
-        val cipher = Cipher.getInstance("ChaCha20-Poly1305/None/NoPadding")
-        val keySpec = SecretKeySpec(key, "ChaCha20")
+        val cipher = getChaChaCipher()
+        val keySpec = createKeySpec(key)
         val paramSpec = IvParameterSpec(nonce)
         cipher.init(Cipher.ENCRYPT_MODE, keySpec, paramSpec)
         if (aad.isNotEmpty()) {
@@ -199,7 +219,7 @@ object KlipProtocol {
 
     /**
      * ChaCha20-Poly1305 AEAD detached decryption.
-     * Assembles ciphertext + 16-byte tag and verifies authentication against AAD.
+     * Compatible with Conscrypt (Android) and SunJCE (JVM).
      */
     fun decryptWithAad(
         key: ByteArray,
@@ -208,8 +228,8 @@ object KlipProtocol {
         ciphertext: ByteArray,
         tag: ByteArray
     ): ByteArray {
-        val cipher = Cipher.getInstance("ChaCha20-Poly1305/None/NoPadding")
-        val keySpec = SecretKeySpec(key, "ChaCha20")
+        val cipher = getChaChaCipher()
+        val keySpec = createKeySpec(key)
         val paramSpec = IvParameterSpec(nonce)
         cipher.init(Cipher.DECRYPT_MODE, keySpec, paramSpec)
         if (aad.isNotEmpty()) {

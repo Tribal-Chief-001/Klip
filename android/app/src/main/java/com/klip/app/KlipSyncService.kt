@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -61,7 +62,10 @@ class KlipSyncService : Service() {
         var lastSyncedLocalText: String = ""
     }
 
-    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val coroutineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Suppressed uncaught coroutine exception: ${throwable.message}", throwable)
+    }
+    private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob() + coroutineExceptionHandler)
     private var lastLocalFingerprint: String = ""
     private var lastRemoteFingerprint: String = ""
 
@@ -280,62 +284,70 @@ class KlipSyncService : Service() {
 
     private fun sendHandshake() {
         val key = peerKey ?: return
-        val deviceName = "Android (${Build.MODEL})"
-        val payload = deviceName.toByteArray(Charsets.UTF_8)
-        val nonce = KlipProtocol.makeNonce(nonceCounter.getAndIncrement())
+        try {
+            val deviceName = "Android (${Build.MODEL})"
+            val payload = deviceName.toByteArray(Charsets.UTF_8)
+            val nonce = KlipProtocol.makeNonce(nonceCounter.getAndIncrement())
 
-        val header = KlipProtocol.WireHeader(
-            magic = KlipProtocol.MAGIC_BYTES,
-            version = KlipProtocol.CURRENT_VERSION,
-            msgType = KlipProtocol.MSG_HANDSHAKE,
-            flags = KlipProtocol.FLAG_ENCRYPTED,
-            senderNodeId = localNodeId,
-            nonce = nonce,
-            hlcPhysical = System.currentTimeMillis(),
-            hlcLogical = 0,
-            hlcNodeSeed = 0,
-            payloadLen = payload.size
-        )
+            val header = KlipProtocol.WireHeader(
+                magic = KlipProtocol.MAGIC_BYTES,
+                version = KlipProtocol.CURRENT_VERSION,
+                msgType = KlipProtocol.MSG_HANDSHAKE,
+                flags = KlipProtocol.FLAG_ENCRYPTED,
+                senderNodeId = localNodeId,
+                nonce = nonce,
+                hlcPhysical = System.currentTimeMillis(),
+                hlcLogical = 0,
+                hlcNodeSeed = 0,
+                payloadLen = payload.size
+            )
 
-        val (ciphertext, tag) = KlipProtocol.encryptWithAad(
-            key = key,
-            nonce = nonce,
-            aad = header.toBytes(),
-            plaintext = payload
-        )
+            val (ciphertext, tag) = KlipProtocol.encryptWithAad(
+                key = key,
+                nonce = nonce,
+                aad = header.toBytes(),
+                plaintext = payload
+            )
 
-        val wirePacket = KlipProtocol.WirePacket(header, ciphertext, tag)
-        sendToPeers(wirePacket.encode())
+            val wirePacket = KlipProtocol.WirePacket(header, ciphertext, tag)
+            sendToPeers(wirePacket.encode())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed sending handshake packet: ${e.message}", e)
+        }
     }
 
     private fun sendHandshakeAck(addr: InetAddress, port: Int) {
         val key = peerKey ?: return
-        val deviceName = "Android (${Build.MODEL})"
-        val payload = deviceName.toByteArray(Charsets.UTF_8)
-        val nonce = KlipProtocol.makeNonce(nonceCounter.getAndIncrement())
+        try {
+            val deviceName = "Android (${Build.MODEL})"
+            val payload = deviceName.toByteArray(Charsets.UTF_8)
+            val nonce = KlipProtocol.makeNonce(nonceCounter.getAndIncrement())
 
-        val header = KlipProtocol.WireHeader(
-            magic = KlipProtocol.MAGIC_BYTES,
-            version = KlipProtocol.CURRENT_VERSION,
-            msgType = KlipProtocol.MSG_HANDSHAKE_ACK,
-            flags = KlipProtocol.FLAG_ENCRYPTED,
-            senderNodeId = localNodeId,
-            nonce = nonce,
-            hlcPhysical = System.currentTimeMillis(),
-            hlcLogical = 0,
-            hlcNodeSeed = 0,
-            payloadLen = payload.size
-        )
+            val header = KlipProtocol.WireHeader(
+                magic = KlipProtocol.MAGIC_BYTES,
+                version = KlipProtocol.CURRENT_VERSION,
+                msgType = KlipProtocol.MSG_HANDSHAKE_ACK,
+                flags = KlipProtocol.FLAG_ENCRYPTED,
+                senderNodeId = localNodeId,
+                nonce = nonce,
+                hlcPhysical = System.currentTimeMillis(),
+                hlcLogical = 0,
+                hlcNodeSeed = 0,
+                payloadLen = payload.size
+            )
 
-        val (ciphertext, tag) = KlipProtocol.encryptWithAad(
-            key = key,
-            nonce = nonce,
-            aad = header.toBytes(),
-            plaintext = payload
-        )
+            val (ciphertext, tag) = KlipProtocol.encryptWithAad(
+                key = key,
+                nonce = nonce,
+                aad = header.toBytes(),
+                plaintext = payload
+            )
 
-        val wirePacket = KlipProtocol.WirePacket(header, ciphertext, tag)
-        sendDirect(wirePacket.encode(), addr, port)
+            val wirePacket = KlipProtocol.WirePacket(header, ciphertext, tag)
+            sendDirect(wirePacket.encode(), addr, port)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed sending handshake ACK: ${e.message}", e)
+        }
     }
 
     private fun sendHeartbeatPong(addr: InetAddress, port: Int) {
@@ -555,10 +567,13 @@ class KlipSyncService : Service() {
     }
 
     private fun buildForegroundNotification(statusText: String): Notification {
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, MainActivity::class.java),
+            launchIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 

@@ -24,6 +24,8 @@ local.properties
 
 # Local Reference & Transcripts
 Klip_Full_Chat_Transcript.txt
+Klip_Full_Chat_Transcript_Part_2.txt
+*Transcript*.txt
 *.bak
 *.tmp
 
