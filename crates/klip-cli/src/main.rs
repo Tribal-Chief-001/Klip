@@ -85,6 +85,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt;
+                    cmd.process_group(0);
+                }
 
                 match cmd.spawn() {
                     Ok(child) => {
