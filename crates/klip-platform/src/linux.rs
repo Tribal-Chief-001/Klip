@@ -17,6 +17,54 @@ pub struct LinuxClipboardDriver {
     env: PlatformEnvironment,
     echo_shield: EchoShield,
     local_node: NodeId,
+    changes: Option<tokio::sync::watch::Receiver<u64>>,
+}
+
+/// Watch the X11 CLIPBOARD selection owner with XFIXES: the X server pushes an event whenever any
+/// application takes over the clipboard, so no polling is needed. Returns `None` when there is
+/// no X server (pure Wayland) or XFIXES is unavailable; the caller then falls back to polling.
+fn spawn_x11_change_watcher() -> Option<tokio::sync::watch::Receiver<u64>> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xfixes::{self, ConnectionExt as _};
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    use x11rb::protocol::Event;
+    use x11rb::rust_connection::RustConnection;
+
+    env::var_os("DISPLAY")?;
+    let (conn, screen) = RustConnection::connect(None).ok()?;
+    let root = conn.setup().roots.get(screen)?.root;
+    conn.xfixes_query_version(5, 0).ok()?.reply().ok()?;
+    let clipboard = conn
+        .intern_atom(false, b"CLIPBOARD")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    conn.xfixes_select_selection_input(
+        root,
+        clipboard,
+        xfixes::SelectionEventMask::SET_SELECTION_OWNER
+            | xfixes::SelectionEventMask::SELECTION_WINDOW_DESTROY
+            | xfixes::SelectionEventMask::SELECTION_CLIENT_CLOSE,
+    )
+    .ok()?
+    .check()
+    .ok()?;
+    conn.flush().ok()?;
+
+    let (tx, rx) = tokio::sync::watch::channel(0u64);
+    std::thread::Builder::new()
+        .name("klip-x11-watch".into())
+        .spawn(move || {
+            // Blocks inside the kernel until the X server sends something: zero idle cost.
+            while let Ok(event) = conn.wait_for_event() {
+                if matches!(event, Event::XfixesSelectionNotify(_)) {
+                    tx.send_modify(|n| *n = n.wrapping_add(1));
+                }
+            }
+        })
+        .ok()?;
+    Some(rx)
 }
 
 impl LinuxClipboardDriver {
@@ -50,6 +98,7 @@ impl LinuxClipboardDriver {
             env,
             echo_shield,
             local_node,
+            changes: spawn_x11_change_watcher(),
         }
     }
 
@@ -193,5 +242,9 @@ impl ClipboardDriver for LinuxClipboardDriver {
 
     fn echo_shield(&self) -> &EchoShield {
         &self.echo_shield
+    }
+
+    fn change_signal(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.changes.clone()
     }
 }

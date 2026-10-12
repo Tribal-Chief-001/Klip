@@ -9,7 +9,11 @@ license.workspace = true
 klip-proto = { workspace = true }
 image = { workspace = true }
 klip-diff = { workspace = true }
+tokio = { workspace = true }
 
 # The OS clipboard crate only supports desktop targets; Android/iOS use the bridge drivers below.
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 arboard = { workspace = true }
+
+[target.'cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))'.dependencies]
+x11rb = { workspace = true }

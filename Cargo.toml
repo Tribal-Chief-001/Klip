@@ -43,6 +43,8 @@ unicode-width = "0.2"
 
 # Clipboard
 arboard = "3.4"
+# X11 selection-change events (no polling) for the Linux driver
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
 
 # Networking
 iroh = { version = "1", default-features = false, features = ["tls-ring", "portmapper"] }

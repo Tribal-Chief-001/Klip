@@ -2102,6 +2102,8 @@ dependencies = [
  "image",
  "klip-diff",
  "klip-proto",
+ "tokio",
+ "x11rb",
 ]
 
 [[package]]

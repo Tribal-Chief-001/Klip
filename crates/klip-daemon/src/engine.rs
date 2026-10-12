@@ -62,6 +62,13 @@ impl DaemonEngine {
         })
     }
 
+    fn capture_clipboard(&self) {
+        if let Ok(Some(captured)) = self.sync.driver.read_clip() {
+            self.sync
+                .spawn_local_clip(captured.content_type, captured.data);
+        }
+    }
+
     pub fn node_id(&self) -> NodeId {
         self.core.node_id()
     }
@@ -77,17 +84,32 @@ impl DaemonEngine {
         #[cfg(not(unix))]
         let ipc_task = tokio::spawn(async move { drop(ipc) });
 
-        let mut poll = interval(Duration::from_millis(self.config.poll_interval_ms));
+        // With an OS change notification (X11 XFIXES) the clipboard is read only when it changes;
+        // the slow timer is just a safety net. Without one, poll at the configured interval.
+        let mut changes = self.sync.driver.change_signal();
+        let poll_period = if changes.is_some() {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(self.config.poll_interval_ms)
+        };
+        let mut poll = interval(poll_period);
         poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut stop_signals = StopSignals::new();
 
         loop {
-            tokio::select! {
-                _ = poll.tick() => {
-                    if let Ok(Some(captured)) = self.sync.driver.read_clip() {
-                        self.sync.spawn_local_clip(captured.content_type, captured.data);
+            let notified = async {
+                match changes.as_mut() {
+                    Some(rx) => {
+                        if rx.changed().await.is_err() {
+                            std::future::pending::<()>().await; // watcher died: timer still polls
+                        }
                     }
+                    None => std::future::pending::<()>().await,
                 }
+            };
+            tokio::select! {
+                _ = poll.tick() => self.capture_clipboard(),
+                _ = notified => self.capture_clipboard(),
                 _ = self.shutdown.wait() => break,
                 _ = stop_signals.recv() => {
                     self.shutdown.trigger();

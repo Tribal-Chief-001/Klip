@@ -140,6 +140,13 @@ pub trait ClipboardDriver: Send + Sync {
         self.write_clip(content_type, data)
     }
     fn echo_shield(&self) -> &EchoShield;
+
+    /// If the OS can tell us when the clipboard changes, a receiver that ticks on every change.
+    /// Hosts then read the clipboard on demand instead of polling it every few milliseconds, which
+    /// is what keeps an idle daemon at ~zero wakeups. `None` means "you must poll".
+    fn change_signal(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        None
+    }
 }
 
 #[cfg(test)]
