@@ -27,17 +27,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - name: Setup Gradle & Generate Wrapper
+        working-directory: ./android
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          unzip -q gradle-8.7-bin.zip
+          ./gradle-8.7/bin/gradle wrapper
+          rm -rf gradle-8.7*
 
       - name: Build APK via Gradle
         working-directory: ./android
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
-          gradle wrapper
-          ./gradlew assembleDebug
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
 
       - name: Rename and Prepare APK
         run: |
