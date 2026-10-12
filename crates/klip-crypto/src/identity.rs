@@ -4,6 +4,7 @@ use klip_proto::hlc::NodeId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 /// Device Identity with Ed25519 keypair.
@@ -120,6 +121,8 @@ impl KeyStore {
     ) -> Result<(Self, DeviceIdentity), String> {
         let p = path.as_ref();
         if p.exists() {
+            // Older versions wrote this file world/group readable; tighten on every load.
+            restrict_to_owner(p, 0o600);
             let data = fs::read_to_string(p).map_err(|e| e.to_string())?;
             let store: KeyStore = serde_json::from_str(&data).map_err(|e| e.to_string())?;
             let seed = hex_decode(&store.identity_seed_hex)?;
@@ -133,6 +136,7 @@ impl KeyStore {
         } else {
             if let Some(parent) = p.parent() {
                 let _ = fs::create_dir_all(parent);
+                restrict_to_owner(parent, 0o700);
             }
             let (store, identity) = Self::new(default_name.to_string());
             store.save(p)?;
@@ -142,7 +146,7 @@ impl KeyStore {
 
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), String> {
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        fs::write(path, json).map_err(|e| e.to_string())
+        write_private_file(path.as_ref(), json.as_bytes())
     }
 
     pub fn add_peer(&mut self, peer: PairedPeer) {
@@ -152,6 +156,39 @@ impl KeyStore {
     pub fn get_peer(&self, node_id: &NodeId) -> Option<&PairedPeer> {
         self.peers.get(&node_id.to_hex())
     }
+}
+
+/// Restrict a file or directory to the owner (no-op on non-Unix targets).
+pub fn restrict_to_owner(path: &Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, mode);
+    }
+}
+
+/// Atomically write a secret file that is created with mode 0600 (never briefly world-readable).
+fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    let tmp = path.with_extension("tmp");
+    {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp).map_err(|e| e.to_string())?;
+        // A pre-existing temp file keeps its old mode; force it.
+        restrict_to_owner(&tmp, 0o600);
+        f.write_all(data).map_err(|e| e.to_string())?;
+        f.sync_all().map_err(|e| e.to_string())?;
+    }
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 fn hex_decode(hex: &str) -> Result<Vec<u8>, String> {
@@ -195,5 +232,31 @@ mod tests {
             .get_symmetric_key()
             .unwrap();
         assert_eq!(loaded_key.as_bytes(), sym_key.as_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_keystore_is_private_and_tightens_existing_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("klip-ks-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("keystore.json");
+
+        // Fresh store: file 0600, directory 0700.
+        let (store, _id) = KeyStore::load_or_create(&path, "T").unwrap();
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir), 0o700);
+
+        // Simulate the legacy world/group-readable file; loading must repair it.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o664)).unwrap();
+        let (_s2, _i2) = KeyStore::load_or_create(&path, "T").unwrap();
+        assert_eq!(mode(&path), 0o600);
+
+        // Saving again must keep it private and leave no temp file behind.
+        store.save(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert!(!path.with_extension("tmp").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

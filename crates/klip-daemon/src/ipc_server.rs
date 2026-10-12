@@ -35,6 +35,8 @@ impl IpcServer {
         {
             let _ = fs::remove_file(&sock_path);
             let listener = UnixListener::bind(&sock_path)?;
+            // The IPC socket can read clipboard history and stop the daemon: owner only.
+            klip_crypto::identity::restrict_to_owner(&sock_path, 0o600);
 
             while !self.shutdown_flag.load(Ordering::SeqCst) {
                 match listener.accept().await {

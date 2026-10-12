@@ -44,10 +44,12 @@ pub fn get_klip_dir() -> PathBuf {
     if let Some(proj_dirs) = ProjectDirs::from("com", "klip", "klip") {
         let config_dir = proj_dirs.config_dir().to_path_buf();
         let _ = fs::create_dir_all(&config_dir);
+        klip_crypto::identity::restrict_to_owner(&config_dir, 0o700);
         config_dir
     } else {
         let fallback = PathBuf::from(".klip");
         let _ = fs::create_dir_all(&fallback);
+        klip_crypto::identity::restrict_to_owner(&fallback, 0o700);
         fallback
     }
 }
