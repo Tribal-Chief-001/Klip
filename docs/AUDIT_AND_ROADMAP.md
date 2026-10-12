@@ -134,3 +134,32 @@ With focused work (and verification at each step) P0+P1 is ~2–3 weeks of part-
 - One rule: no feature is "done" until a test fails when the feature is removed, and there is a recorded manual run on real devices. Keep `docs/STATUS.md` with a table Feature | Implemented | Tested where | Date.
 - Don't ask a model for "100% production hardened" — ask for one small verifiable step, and require evidence (command output) for each claim.
 - Keep README = what works today; keep the vision in `docs/ARCHITECTURE_AND_RESEARCH.md` clearly labelled "target design".
+
+
+---
+
+## 9. Progress since this audit (updated 2026-10-13)
+
+Everything below was done and verified with command output (tests, real X11, Android emulator,
+release build, CI). Evidence and numbers: `docs/RESEARCH_2026.md` sections 12-14.
+
+**Fixed / replaced**
+- C1 nonce reuse + C2 no key exchange: the whole UDP/PSK transport was removed; iroh QUIC/TLS 1.3 with mutual Ed25519 authentication.
+- C3 keystore mode 664: atomic 0600 writes, legacy files tightened, config dir 0700, control socket 0600.
+- H1/H2 pairing: single-use 128-bit secret, expiry, lockout after 5 wrong guesses, mandatory host approval, fingerprints shown.
+- H3 unauthenticated address updates, H4 replay: gone with the transport (QUIC); clocks bounded; origin == authenticated sender enforced.
+- H5 control socket: size cap, timeouts, owner-only, errors reported.
+- Fake mailbox/relay/PQ module, fake latency, fake labels, delta sync, Accessibility service, Kotlin protocol clone: removed.
+- WAN: devices find each other through relays/discovery (verified on an emulator through an n0 relay).
+- Idle cost: event-driven X11 capture; release build ~14 MB, ~3 wakeups/s, 0 CPU ticks.
+- Entropy detector math: rewritten and tested on realistic samples.
+- Android: shares the Rust engine (UniFFI); stable APK signing key; background clipboard *write* verified on Android 14.
+- systemd unit memory cap and hardening; CI compile-checks macOS/Windows; Cargo.lock tracked.
+
+**Still open (ranked)**
+1. Test the Android app on a physical phone: camera QR, tile, notification action, boot restart, Doze/battery, OEM behaviour; optional READ_LOGS mode.
+2. Post-quantum key exchange (enable aws-lc-rs + `prefer-post-quantum`) and say exactly what it protects; external review of the pairing design.
+3. Security tooling in CI: cargo-deny, cargo-audit, fuzz targets (ticket/clip decode), signed binaries (cosign/minisign).
+4. Desktop drivers: Wayland (ext-data-control), GNOME extension, Windows (listener + history/cloud-exclude formats + IPC without Unix sockets), macOS (changeCount, concealed types); real-machine tests.
+5. Keystore at rest (OS keyring), relay self-hosting guide, measured relay-on idle cost and real WAN latency/hole-punch success.
+6. Product: images/HTML on Android, secret-handling policy engine (per class: sync or not, history flags), tray/GUI, iOS.
