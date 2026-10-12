@@ -58,7 +58,9 @@ class KlipSyncService : Service() {
     private var peerNodeId: ByteArray? = null
     private var peerKey: ByteArray? = null
     private var peerEndpoints: List<String> = emptyList()
+    private var activePeerAddress: Pair<InetAddress, Int>? = null
     private val localNodeId: ByteArray = ByteArray(32)
+
 
     override fun onCreate() {
         super.onCreate()
@@ -224,14 +226,16 @@ class KlipSyncService : Service() {
 
             when (header.msgType) {
                 KlipProtocol.MSG_HANDSHAKE -> {
+                    activePeerAddress = Pair(remoteAddr, remotePort)
                     val peerName = String(decryptedBytes, Charsets.UTF_8)
-                    Log.i(TAG, "Handshake received from: $peerName")
+                    Log.i(TAG, "Handshake received from: $peerName at $remoteAddr:$remotePort")
                     sendHandshakeAck(remoteAddr, remotePort)
                     updateNotification("Connected to $peerName (P2P)")
                 }
                 KlipProtocol.MSG_HANDSHAKE_ACK -> {
+                    activePeerAddress = Pair(remoteAddr, remotePort)
                     val peerName = String(decryptedBytes, Charsets.UTF_8)
-                    Log.i(TAG, "HandshakeAck received from: $peerName")
+                    Log.i(TAG, "HandshakeAck received from: $peerName at $remoteAddr:$remotePort")
                     updateNotification("Linked with $peerName (P2P)")
                 }
                 KlipProtocol.MSG_CLIP_FULL_PAYLOAD -> {
@@ -335,7 +339,16 @@ class KlipSyncService : Service() {
     private fun sendToPeers(data: ByteArray) {
         serviceScope.launch {
             val s = socket ?: return@launch
-            // 1. Send to all known endpoints from pairing invitation
+            // 1. Send to dynamically discovered peer address
+            activePeerAddress?.let { (addr, port) ->
+                try {
+                    s.send(DatagramPacket(data, data.size, addr, port))
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed sending to active peer $addr:$port: ${e.message}")
+                }
+            }
+
+            // 2. Send to all known endpoints from pairing invitation
             for (endpoint in peerEndpoints) {
                 try {
                     val parts = endpoint.split(":")

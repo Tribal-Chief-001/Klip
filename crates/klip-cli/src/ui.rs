@@ -112,10 +112,16 @@ pub fn print_pair_card(token: &str, sas_code: &str) {
     ));
     print_border_line("                    ╰──────────────╯");
     print_border_line("");
-    print_border_line(&format!("  Token: {}", token));
+    print_border_line("  Pairing Token:");
+    // Wrap token nicely across lines of 68 chars so it never breaks borders
+    for chunk in token.as_bytes().chunks(68) {
+        if let Ok(chunk_str) = std::str::from_utf8(chunk) {
+            print_border_line(&format!("    {}", chunk_str.cyan()));
+        }
+    }
     print_border_line("");
-    print_border_line("  ⚡ Waiting for peer connection via Iroh P2P mesh...");
-    println!("{}", format!("╰{}╯", "─".repeat(71)).dimmed());
+    print_border_line("  ⚡ Waiting for peer connection via P2P mesh...");
+    println!("{}", format!("╰{}╯", "─".repeat(73)).dimmed());
 }
 
 pub fn print_history(items: &[HistoryItem]) {
