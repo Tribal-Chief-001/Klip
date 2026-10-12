@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#090D16"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="📎 Klip"
+        android:textColor="#FFFFFF"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        android:layout_marginTop="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Universal E2EE Clipboard Companion"
+        android:textColor="#8B5CF6"
+        android:textSize="14sp"
+        android:layout_marginBottom="24dp" />
+
+    <!-- Status Card -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#131B2E"
+        android:padding="16dp"
+        android:layout_marginBottom="16dp">
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="● Mesh Status: Waiting for pairing..."
+            android:textColor="#10B981"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvAccessibilityNotice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Checking Accessibility Service..."
+            android:textColor="#94A3B8"
+            android:textSize="12sp"
+            android:layout_marginTop="8dp" />
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/btnEnableAccessibility"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="⚡ Enable Silent Auto-Sync"
+        android:backgroundTint="#F59E0B"
+        android:textColor="#000000"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <Button
+        android:id="@+id/btnPair"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🔑 Link Device (Enter Token / Scan)"
+        android:backgroundTint="#8B5CF6"
+        android:textColor="#FFFFFF"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <Button
+        android:id="@+id/btnSimulatePaste"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="📋 Test Clipboard Inject"
+        android:backgroundTint="#1E293B"
+        android:textColor="#E2E8F0"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Zero-Cloud • Post-Quantum RFC 10024 • ChaCha20-Poly1305"
+        android:textColor="#475569"
+        android:textSize="11sp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="auto" />
+
+</LinearLayout>

@@ -126,6 +126,13 @@ klip install-service
 klip start
 ```
 
+### Method 4: Android Companion App (APK)
+1. Download **`Klip-Android.apk`** from [GitHub Releases](https://github.com/Tribal-Chief-001/Klip/releases).
+2. Install the APK on your Android device (Android 10–15+).
+3. Open the app and tap **"Enable Silent Auto-Sync"** (one-time toggle in Accessibility settings for zero-click sync).
+4. Tap **"Link Device"** and paste the token from `klip pair` on your PC!
+
+
 ---
 
 ## 🔑 Pairing Workflow (One-Time Setup)
