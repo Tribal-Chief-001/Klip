@@ -254,3 +254,28 @@ Key point: **one Rust core shared by desktop and Android** so the protocol can't
 - [macOS pasteboard privacy](https://mjtsai.com/blog/2025/05/12/pasteboard-privacy-preview-in-macos-15-4) · [iOS paste prompt](https://developer.apple.com/forums/thread/715328)
 - [Phone Link clipboard](https://9to5google.com/2025/09/03/microsoft-preparing-clipboard-sync-between-windows-and-android-with-gboard-support/) · [Quick Share/AirDrop](https://www.androidauthority.com/google-pixel-9-quick-share-airdrop-support-rollout-3641846)
 - [TruffleHog vs Gitleaks](https://www.jit.io/blog/trufflehog-vs-gitleaks-a-detailed-comparison-of-secret-scanning-tools) · [FCM priority](https://firebase.google.com/docs/cloud-messaging/android/message-priority) · [ntfy/UnifiedPush](https://docs.ntfy.sh/subscribe/phone)
+
+---
+
+## 14. Experiment results (measured on the owner's machine)
+
+### E2 — minimal iroh 1.3.0 endpoint, footprint and idle cost (2026-10-12)
+Setup: Linux Mint 22.3, i5-10210U, rustc 1.99.0, `iroh = "1"` default features (`tls-ring`, `portmapper`, `metrics`), `presets::Minimal`, `RelayMode::Disabled` (no third-party server contacted), default tokio multi-thread runtime, plain `cargo build --release -j2` (no LTO/strip/opt-level tuning). Build took 4m17s with 362 crates.
+
+| Metric | Result |
+|---|---|
+| Release binary (unstripped, default profile) | 21.7 MB (tuning with `opt-level="z"`, LTO, strip not yet tried) |
+| RSS before bind | 5.1 MB |
+| RSS right after `Endpoint::bind` | **14.0 MB** |
+| RSS after 30 s idle | **16.8 MB** |
+| RSS with 1 live connection (2 endpoints in one process) | 18.6 MB |
+| Idle, 9 threads, all threads summed | ~13 voluntary context switches / 20 s (**~0.65 wakeups/s**), **0 CPU ticks / 20 s** |
+| Cold connect, same host (direct) | 1.8 ms |
+| Warm stream round trip, same host, 200 samples | p50 88 µs, p95 180 µs, max 1.0 ms |
+
+Reading the numbers honestly:
+- The old "3.5 MB RSS" belongs to a build with no network stack. **A realistic budget with iroh is ~15–20 MB RSS** before tuning (current-thread runtime, fewer worker threads, allocator settings may reduce it; not yet measured). That is still far below the 60–120 MB the unsourced competitor table claimed for KDE Connect, but that comparison remains unverified.
+- Idle wakeups/CPU are excellent *in this configuration* (no relay, no peers, no address lookup). A relay connection and keepalives will add wakeups; **must be re-measured with relay on** (requires contacting n0's public relay → ask owner first).
+- Latency figures are same-host and say nothing about the network; real WAN numbers still need E3.
+- Measurement lesson: `/proc/<pid>/status` shows only the main thread's context switches; a first reading of "1 per 30 s" was wrong for a multi-thread runtime. Always sum `/proc/<pid>/task/*/status`.
+- iroh 1.3 ships useful hooks for Klip: `Router`, `IncomingFilter` (reject unknown peers before doing handshake work), `hooks`/auth example, `crypto_provider` (PQ via aws-lc-rs), `presets::Minimal` (no relay, no discovery).
