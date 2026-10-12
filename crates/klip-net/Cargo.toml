@@ -2,6 +2,7 @@
 name = "klip-net"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "Klip networking: iroh QUIC endpoint, pairing and authenticated clipboard sync"

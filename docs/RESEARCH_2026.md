@@ -279,3 +279,22 @@ Reading the numbers honestly:
 - Latency figures are same-host and say nothing about the network; real WAN numbers still need E3.
 - Measurement lesson: `/proc/<pid>/status` shows only the main thread's context switches; a first reading of "1 per 30 s" was wrong for a multi-thread runtime. Always sum `/proc/<pid>/task/*/status`.
 - iroh 1.3 ships useful hooks for Klip: `Router`, `IncomingFilter` (reject unknown peers before doing handshake work), `hooks`/auth example, `crypto_provider` (PQ via aws-lc-rs), `presets::Minimal` (no relay, no discovery).
+
+### E4/E5 — Linux daemon, release build, real X11 (2026-10-13)
+Setup: owner's machine (Linux Mint 22.3, X11/Cinnamon), `cargo build --release -p klip-cli` (workspace release profile: opt-level z, fat LTO, strip, panic=abort), two daemons paired over LAN (`relay: lan`, mDNS off); daemon A on the **real X11 clipboard** (XFIXES event-driven), daemon B with `KLIP_CLIPBOARD=memory` (polling). 30 s idle after pairing, thread wakeups summed over `/proc/<pid>/task/*`.
+
+| Metric | Result |
+|---|---|
+| Release binary | **7,776,880 bytes** (CI measured 7,742,576 on its runner) |
+| Daemon A (X11, event-driven): RSS / peak | **14.0 MB / 14.0 MB** |
+| Daemon A wakeups / CPU | **~3 per second / 0 CPU ticks in 30 s** |
+| Daemon B (polling at 100 ms): RSS | 14.1 MB |
+| Daemon B wakeups / CPU | ~41 per second / 3 ticks in 30 s (the 100 ms poll alone is ~10/s) |
+
+Notes: the same X11 setup in a **debug** build showed ~70 wakeups/s; the polling-vs-event difference and debug overhead both matter, so only release numbers should be quoted. Before this work the old daemon measured ~60 wakeups/s and ~0.4% CPU idle. The earlier probe (`klip-net --example idle_probe`, debug) attributed most remaining wakeups to iroh's connection machinery; in release it is ~3/s per daemon.
+
+### E1 — background clipboard write on Android (emulator, 2026-10-13)
+Pixel 5 profile, Android 14 (API 34, google_apis x86_64), app targetSdk 34, KlipSyncService (foreground, dataSync) running. With the launcher in front, a clip sent from the host was acknowledged by the app and, after bringing Klip forward, was found on the system clipboard (read back by Klip's own focused trampoline and re-sent to the host). Conclusion: **background clipboard write from a foreground service works on Android 14**; an Accessibility service is not needed. Not yet confirmed on physical OEM devices or Android 15/16.
+
+### Android relay connectivity (emulator)
+iroh's DNS, TLS and relay worked inside the Android app: status showed "relay connected (https://aps1-1.relay.n0.iroh.link./)"; pairing by pasted ticket completed through the relay; host -> phone delivery with receiver acknowledgement took ~70 ms end to end including a cold connection. A SELinux denial for netlink route reads (`nlmsg_readpriv`, Android 11+ restriction) is logged but harmless in this run.

@@ -2,509 +2,233 @@
 
 # 📎 Klip
 
-### State-of-the-Art, Cross-Platform, Zero-Knowledge End-to-End Encrypted Universal Clipboard Engine written in Rust.
+### Copy on one of your devices, paste on another. End-to-end encrypted, no account, no cloud.
 
-[![GitHub Release](https://img.shields.io/github/v/release/Tribal-Chief-001/Klip?style=flat-square&color=8B5CF6&logo=github)](https://github.com/Tribal-Chief-001/Klip/releases/latest)
-[![CI Matrix](https://img.shields.io/github/actions/workflow/status/Tribal-Chief-001/Klip/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=CI%20Verified)](https://github.com/Tribal-Chief-001/Klip/actions/workflows/ci.yml)
-[![Android APK Pipeline](https://img.shields.io/github/actions/workflow/status/Tribal-Chief-001/Klip/android.yml?branch=main&style=flat-square&logo=android&logoColor=white&label=Android%20APK)](https://github.com/Tribal-Chief-001/Klip/actions/workflows/android.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue.svg?style=flat-square)](LICENSE-MIT)
-[![Memory RSS](https://img.shields.io/badge/Memory%20RSS-%3C%204.0%20MB-10B981.svg?style=flat-square&logo=speedtest&logoColor=white)](docs/ARCHITECTURE_AND_RESEARCH.md)
-[![Idle CPU](https://img.shields.io/badge/Idle%20CPU-0.0%25-10B981.svg?style=flat-square)](docs/ARCHITECTURE_AND_RESEARCH.md)
-[![E2EE Post-Quantum](https://img.shields.io/badge/Security-Post--Quantum%20RFC%2010024-purple.svg?style=flat-square&logo=shield&logoColor=white)](docs/ARCHITECTURE_AND_RESEARCH.md)
-
-<p align="center">
-  <a href="#-what-is-klip-the-30-second-summary">What is Klip?</a> •
-  <a href="#-quick-download-pre-compiled-assets">Downloads</a> •
-  <a href="#-architecture--data-flow">Architecture</a> •
-  <a href="#-step-by-step-setup-guides-spoonfeeding">Setup Guides</a> •
-  <a href="#-background-persistence--auto-start-on-boot">Auto-Start Guide</a> •
-  <a href="#-pairing-guide-5-second-setup">Pairing</a> •
-  <a href="#-cli-command-reference">CLI Reference</a> •
-  <a href="#-competitor-benchmark">Comparison</a> •
-  <a href="#-troubleshooting--faq">FAQ</a>
-</p>
-
----
+[![CI](https://img.shields.io/github/actions/workflow/status/Tribal-Chief-001/Klip/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Tribal-Chief-001/Klip/actions/workflows/ci.yml)
+[![Android build](https://img.shields.io/github/actions/workflow/status/Tribal-Chief-001/Klip/android.yml?branch=main&style=flat-square&label=Android%20build)](https://github.com/Tribal-Chief-001/Klip/actions/workflows/android.yml)
+[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
+![Status](https://img.shields.io/badge/status-alpha-orange?style=flat-square)
 
 </div>
 
+> **Alpha software.** The Linux ↔ Android path works and has been tested (details in [Status](#status--what-is-actually-tested)), but it has had **no independent security review**, has not yet run on a physical phone, and macOS/Windows are only compile-checked. Read [Limits & honesty](#limits--honesty) before relying on it.
+
 ```text
-╭── 📎 Klip Engine ──────────────────────────────────────────────────────────╮
+╭── 📎 Klip ───────────────────────────────────────────────────────────────╮
 │                                                                          │
-│   ● STATUS: Active (Wayland/X11)      ⚡ MESH: Connected (QUIC Direct)     │
-│   ● MEMORY: 3.9 MB RSS                ⏱ LATENCY: 14ms (P2P Mesh)          │
+│ ● STATE    Active                                                        │
+│ ● SYSTEM   Linux (X11)                                                   │
+│ ● NETWORK  n0 public relays + discovery                                  │
+│ ● RELAY    relay connected (https://aps1-1.relay.n0.iroh.link./)         │
+│ ● DEVICE   VCUU-LBYY-ES2H                                                │
 │                                                                          │
-│   Linked Peers:                                                          │
-│   ├─ Pixel-8-Pro           🟢 Online (5G Cellular)         18ms          │
-│   └─ MacBook-Air-M3        🟢 Online (Home Wi-Fi)          11ms          │
+│ Linked devices                                                           │
+│   └─ 🟢 Pixel 8  [75A6-H66R-SQDW]  connected                            │
 │                                                                          │
-│   Last Sync: 8s ago  •  "https://github.com/..." (48 B, Encrypted)       │
+│ Last sync  4s ago · "https://github.com/…" (38 B)                        │
 ╰──────────────────────────────────────────────────────────────────────────╯
 ```
 
----
+## What it does
 
-## 💡 What is Klip? (The 30-Second Summary)
+- Copy text on your laptop → it is on your phone's clipboard (and the other way round).
+- Works **across networks** (phone on mobile data, laptop at home) — and on the same Wi-Fi without internet.
+- **No account, no server of ours.** Devices find each other by cryptographic device ID.
+- You decide what is linked: pairing needs a one-time QR/ticket **and** your approval on the other device.
+- Honest feedback: when you send something, Klip tells you whether the other device really put it on its clipboard, or why not.
 
-Apple users enjoy **Universal Clipboard**—copy on a MacBook, paste instantly on an iPhone. But the moment you use **Linux, Windows, or Android**, you are left emailing yourself links, spamming WhatsApp *"Message Yourself"*, or fighting clunky, battery-draining apps.
+## Status — what is actually tested
 
-**Klip** is a single, featherweight native Rust daemon that restores seamless clipboard synchronization across **all your devices**:
+| Part | State | Evidence |
+|---|---|---|
+| Core engine (pairing, sync, conflict resolution) | ✅ working | 51 automated tests (real network endpoints, two full daemons, pairing, unpair, pause, bad input) run in CI |
+| **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
+| **Android app** | 🟡 tested on an emulator (Android 14) only | pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect. **Not yet tried on a physical phone**, not the camera QR scan, not the tile |
+| Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
+| macOS, Windows | 🔴 compile-checked in CI only | never run; the Windows CLI cannot control the daemon yet |
+| iOS | ⚪ not started | Apple does not allow background clipboard access |
 
-1. **Copy on Device A (`Ctrl+C`)** ➔ **Paste on Device B (`Ctrl+V`) in under 15ms**.
-2. **Works Everywhere**: Doesn't care if your phone is on **5G cellular** and your laptop is on **office Wi-Fi**.
-3. **Zero Accounts, Zero Cloud**: No email signup, no servers storing your clipboard, no telemetry.
-4. **Post-Quantum End-to-End Encrypted**: All clips are encrypted locally using **RFC 10024 `X25519MLKEM768`** and in-place **ChaCha20-Poly1305 AEAD**.
-5. **Ghost Footprint**: Idles at **< 4 MB RAM** and **0.0% CPU**. You will never notice it running.
-6. **Zero History Suppression**: Works seamlessly with **CopyQ**, **Win+V History**, and **Raycast/Maccy**—your copied passwords, tokens, and history are never deleted.
+## How it works
 
----
-
-## 📦 Quick Download (Pre-Compiled Assets)
-
-| Platform | Download | Format | Description |
-|---|---|---|---|
-| 🐧 **Linux (x86_64)** | [**`klip-linux-x86_64`**](https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/klip-linux-x86_64) | Standalone Binary (1.5 MB) | Wayland & X11 native; zero external dependencies |
-| 📱 **Android (10–15+)** | [**`Klip-Android.apk`**](https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/Klip-Android.apk) | Companion APK (5.3 MB) | KDE Connect-grade silent auto-sync via Accessibility |
-| 🍎 **macOS (Apple Silicon)** | [**`klip-macos-arm64`**](https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/klip-macos-arm64) | Standalone Binary (869 KB) | M1/M2/M3/M4 native; `NSPasteboard` integration |
-| 🪟 **Windows (x86_64)** | [**`klip-windows-x86_64.exe`**](https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/klip-windows-x86_64.exe) | Portable `.exe` (867 KB) | Win32 native; compatible with Win+V history |
-
-> All assets are verified, signed, and published on the [**Official v0.1.0 Release Page**](https://github.com/Tribal-Chief-001/Klip/releases/tag/v0.1.0).
-
----
-
-## 🏛️ Architecture & Data Flow
-
-### 1. End-to-End Clipboard Pipeline
 ```mermaid
 flowchart LR
-    A["Host Device A<br/>(Ctrl + C)"] --> B["EchoShield<br/>(BLAKE3 Hash)"]
-    B --> C["Codec Engine<br/>(FastCDC / WebP)"]
-    C --> D["Crypto Core<br/>(ChaCha20-Poly1305 + AAD)"]
-    D --> E["Mesh Transport<br/>(Iroh QUIC P2P)"]
-    E --> F["Device B<br/>(Decrypt in-place)"]
-    F --> G["Target Clipboard<br/>(Android / Win / Linux / Mac)"]
-    G --> H["Paste<br/>(Ctrl + V)"]
-
-    style A fill:#1E293B,stroke:#8B5CF6,stroke-width:2px,color:#fff
-    style D fill:#3B0764,stroke:#A855F7,stroke-width:2px,color:#fff
-    style E fill:#064E3B,stroke:#10B981,stroke-width:2px,color:#fff
-    style H fill:#1E293B,stroke:#8B5CF6,stroke-width:2px,color:#fff
+    A["💻 Laptop<br/>Klip daemon"] <== "QUIC, end-to-end encrypted<br/>direct when possible" ==> B["📱 Phone<br/>Klip app"]
+    A -. "only if a direct path fails" .-> R["relay server<br/>(sees metadata, not content)"]
+    B -. " " .-> R
 ```
 
-### 2. Network Mesh & WAN Penetration Flow
-```mermaid
-flowchart TD
-    NodeA["Device A (e.g. Linux Mint)"]
-    NodeB["Device B (e.g. Android 5G)"]
+- Every device has an Ed25519 key; its public half is the device ID (`klip status` shows a short fingerprint like `VCUU-LBYY-ES2H`).
+- Connections use QUIC/TLS 1.3 via [iroh](https://iroh.computer), which authenticates **both** sides by device key and tries to connect directly (hole punching); relays are the fallback.
+- Only devices you paired are accepted. A clip is accepted only if the sender is the device that claims to have copied it.
+- Conflicts: the newest copy wins (hybrid logical clock); clocks too far in the future are rejected.
 
-    NodeA -->|"1. Local Subnet Check"| LAN{"Same Wi-Fi?"}
-    LAN -- Yes --> DirectLAN["Direct QUIC UDP (< 15ms)"]
-    LAN -- No --> STUN{"STUN / Magicsock<br/>Hole-Punching"}
-    
-    STUN -- Success --> DirectWAN["P2P WAN QUIC (< 45ms)"]
-    STUN -- Symmetric NAT --> ZKRelay["Stateless Zero-Knowledge Relay<br/>(Relay cannot decrypt clips)"]
-    
-    NodeB -.->|"Device Asleep?"| Mailbox["Ephemeral Sealed Mailbox<br/>(10-minute TTL Buffer)"]
-    Mailbox -.->|"Device Wakes Up"| DirectWAN
+## Install
 
-    DirectLAN --> NodeB
-    DirectWAN --> NodeB
-    ZKRelay --> NodeB
+### Linux (from source, ~5 min)
 
-    style NodeA fill:#1E293B,stroke:#8B5CF6,stroke-width:2px,color:#fff
-    style NodeB fill:#1E293B,stroke:#8B5CF6,stroke-width:2px,color:#fff
-    style DirectLAN fill:#064E3B,stroke:#10B981,stroke-width:2px,color:#fff
-    style DirectWAN fill:#064E3B,stroke:#10B981,stroke-width:2px,color:#fff
-    style ZKRelay fill:#78350F,stroke:#F59E0B,stroke-width:2px,color:#fff
-    style Mailbox fill:#4C1D95,stroke:#8B5CF6,stroke-width:2px,color:#fff
-```
+You need Rust 1.91 or newer: <https://rustup.rs>
 
----
-
-## 🚀 Step-by-Step Setup Guides (Spoonfeeding)
-
-Pick your operating system below for a complete, beginner-friendly walkthrough:
-
-### 🐧 Linux (Ubuntu, Linux Mint, Debian, Fedora, Arch)
-
-Klip natively supports both **Wayland** (via `ext-data-control` & GNOME extension) and **X11** (with large-payload `INCR` support).
-
-#### Option A: Quick 1-Liner Binary Install
-```bash
-# 1. Download precompiled binary
-curl -L -o /tmp/klip https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/klip-linux-x86_64
-chmod +x /tmp/klip
-sudo mv /tmp/klip /usr/local/bin/klip
-
-# 2. Register and start background service (starts automatically on login)
-klip install-service
-systemctl --user enable --now klip.service
-```
-
-#### Option B: Build From Source via Cargo
 ```bash
 git clone https://github.com/Tribal-Chief-001/Klip.git
 cd Klip
-cargo build --release --bin klip
-sudo cp target/release/klip /usr/local/bin/
-klip install-service
-systemctl --user enable --now klip.service
+cargo build --release -p klip-cli
+install -Dm755 target/release/klip ~/.local/bin/klip     # make sure ~/.local/bin is in your PATH
+klip start
+klip status
 ```
 
-#### Wayland GNOME Note
-If you are using GNOME on Wayland (Ubuntu 22.04+, Fedora 38+), Mutter restricts background clipboard polling. Install the included 1-click helper extension in `extra/gnome-shell-extension/` or use standard X11 / Sway / Hyprland where Klip works out of the box.
+Pre-built binaries and the Android APK will be attached to the [Releases](https://github.com/Tribal-Chief-001/Klip/releases) page once a tested alpha is tagged. Until then the latest APK is the **artifact of the newest green run** of the [Android workflow](https://github.com/Tribal-Chief-001/Klip/actions/workflows/android.yml).
 
----
+### Android
 
-### 📱 Android Phone (Samsung, Pixel, OnePlus, Xiaomi)
+1. Download the APK (see above), open it, allow “install unknown apps” for your browser/file manager.
+2. Open **Klip**. Allow notifications (Android 13+) — the small notification shows Klip is running.
+3. Optional but recommended: tap **Allow background activity (battery)**.
 
-Android 10+ restricts background apps from reading and writing to the clipboard. Klip offers **two distinct ways** to test:
+Needs Android 8.0 or newer.
 
-#### Method 1: The Native Companion App (Recommended — Zero-Click Paste)
-1. **Download APK**: Open your phone browser and download [**`Klip-Android.apk`**](https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/Klip-Android.apk).
-2. **Install**: Tap the downloaded file and install it (allow *"Install unknown apps"* if prompted).
-3. **Turn On Silent Auto-Sync**:
-   - Open the **Klip** app.
-   - Tap **"⚡ Enable Silent Auto-Sync"** (this takes you to Android Accessibility Settings).
-   - Tap **Downloaded Apps / Services** ➔ Select **Klip Clipboard Auto-Sync** ➔ Toggle **ON**.
-   *(This gives Klip the exact same system-level privilege that KDE Connect uses to silently paste clips into your clipboard).*
-4. **Link to PC**:
-   - On your PC terminal, run: `klip pair`.
-   - On your phone app, tap **"🔑 Link Device"**, paste the token from your PC, and tap **Link**.
-5. **Battery Optimization (Important)**:
-   - Go to phone **Settings ➔ Apps ➔ Klip ➔ Battery**.
-   - Set to **"Unrestricted"** (prevents Android OEM battery managers from putting Klip to sleep in the background).
+## Link your devices (once)
 
-#### Method 2: Termux CLI (For Developers & Terminal Enthusiasts)
-You can run the full Rust engine directly inside Android Termux:
-```bash
-# 1. Update and install prerequisites inside Termux
-pkg update && pkg install -y git rust clang termux-api
+**On the computer**
 
-# 2. Clone and build Klip
-git clone https://github.com/Tribal-Chief-001/Klip.git
-cd Klip
-cargo build --release --bin klip
-
-# 3. Start daemon and pair with PC
-./target/release/klip start
-./target/release/klip pair "<TOKEN_FROM_PC>"
-```
-
----
-
-### 🍎 macOS (Apple Silicon M1/M2/M3/M4 & Intel)
-
-1. **Download Binary**:
-   ```bash
-   curl -L -o /usr/local/bin/klip https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/klip-macos-arm64
-   chmod +x /usr/local/bin/klip
-   ```
-2. **Install Auto-Start Service**:
-   ```bash
-   klip install-service
-   ```
-   *(Creates a native `~/Library/LaunchAgents/com.klip.daemon.plist` that quietly starts Klip when you log in).*
-3. **Raycast / Maccy Compatibility**:
-   Clips received by Klip are written to `NSPasteboard.general` and immediately show up in your Raycast or Maccy history!
-
----
-
-### 🪟 Windows (Windows 10 & 11)
-
-1. **Download**: Download [**`klip-windows-x86_64.exe`**](https://github.com/Tribal-Chief-001/Klip/releases/download/v0.1.0/klip-windows-x86_64.exe) and place it in `C:\Program Files\Klip\` (or add to your user `PATH`).
-2. **Auto-Start**:
-   Open PowerShell and run:
-   ```powershell
-   .\klip.exe install-service
-   ```
-   *(Registers Klip in the Windows Startup registry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).*
-3. **Win+V History**:
-   Klip injects clips using native Win32 `OpenClipboard`/`SetClipboardData`. Pressing `Win + V` shows all remote clips cleanly in your Windows clipboard timeline!
-
----
-
-## 🔄 Background Persistence & Auto-Start on Boot (Set-and-Forget Guide)
-
-Once your devices are paired, you should never have to manually open a terminal or type `klip start` again. Here is exactly how to set up silent, background persistence on each platform:
-
-### 🐧 Linux (Ubuntu, Mint, Arch, Fedora) — `systemd` User Unit
-Klip integrates natively with `systemd --user` session management:
-
-1. **Install unit file**:
-   ```bash
-   klip install-service
-   ```
-   *Creates: `~/.config/systemd/user/klip.service`*
-
-2. **Enable and start immediately**:
-   ```bash
-   systemctl --user enable --now klip.service
-   ```
-
-3. **Verify it is active**:
-   ```bash
-   systemctl --user status klip.service
-   ```
-   *(You will see `Active: active (running)` consuming only ~2.1 MB RAM and 0.0% CPU).*
-
-4. **To stop or disable anytime**:
-   ```bash
-   systemctl --user disable --now klip.service
-   ```
-
----
-
-### 📱 Android Phone (Samsung, Pixel, OnePlus, Xiaomi)
-Android companion persistence is built into the architecture:
-
-1. **Auto-Start on Phone Boot**:
-   The Klip Android app includes a native `BootReceiver` listening for `BOOT_COMPLETED`. Whenever you reboot or turn on your phone, the background worker launches automatically.
-2. **Persistent Accessibility Privilege**:
-   Once you toggle **"Klip Clipboard Auto-Sync"** in Android Accessibility Settings, Android preserves this system privilege permanently across reboots.
-3. **Crucial Step (Disable Battery Killing)**:
-   Modern Android manufacturers aggressively kill background sync processes. To prevent this:
-   - Go to: **Settings ➔ Apps ➔ Klip ➔ Battery** (or *App Battery Usage*).
-   - Change from *Optimized* to **"Unrestricted"**.
-   - *(Optional on Xiaomi/MIUI: Enable "Autostart" in App Permissions).*
-
----
-
-### 🍎 macOS (Apple Silicon & Intel) — `launchd` Agent
-Klip integrates with macOS native `launchd`:
-
-1. **Install LaunchAgent**:
-   ```bash
-   klip install-service
-   ```
-   *Creates: `~/Library/LaunchAgents/com.klip.daemon.plist`*
-
-2. **Load and start service**:
-   ```bash
-   launchctl load ~/Library/LaunchAgents/com.klip.daemon.plist
-   ```
-
-3. **Verify running**:
-   ```bash
-   launchctl list | grep com.klip.daemon
-   ```
-
-4. **To stop or unload anytime**:
-   ```bash
-   launchctl unload ~/Library/LaunchAgents/com.klip.daemon.plist
-   ```
-
----
-
-### 🪟 Windows (10 & 11) — Task Scheduler Automation
-Klip generates a native PowerShell script to register with Windows Task Scheduler:
-
-1. **Generate script**:
-   ```powershell
-   .\klip.exe install-service
-   ```
-   *Creates: `$HOME\.klip\register-service.ps1`*
-
-2. **Register task (Run in PowerShell as Administrator)**:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File "$HOME\.klip\register-service.ps1"
-   ```
-   *Registers `KlipDaemon` in Task Scheduler to launch silently on user logon (`AtLogOn`), with battery resilience enabled.*
-
-3. **Verify task**:
-   Open Windows Task Scheduler (`taskschd.msc`) ➔ Find `KlipDaemon` (Status: *Ready*).
-
-4. **To remove task anytime**:
-   ```powershell
-   Unregister-ScheduledTask -TaskName "KlipDaemon" -Confirm:$false
-   ```
-
----
-
-## 🔑 Pairing Guide (5-Second Setup)
-
-Pairing is **out-of-band, zero-cloud, and takes 5 seconds**:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Alice as 💻 Device A (PC)
-    actor Bob as 📱 Device B (Phone)
-    
-    Alice->>Alice: Runs `klip pair`
-    Alice-->>Alice: Generates ephemeral token & 6-digit SAS
-    Note over Alice: Short Auth String: 742 • 109
-    
-    Bob->>Alice: Enters token / scans QR
-    Bob->>Bob: Computes matching SAS code
-    Note over Bob: Verifies 742 • 109
-    
-    Alice->>Bob: Post-Quantum X25519MLKEM768 Handshake
-    Bob->>Alice: Ed25519 Identity Exchange
-    Note over Alice, Bob: Shared ChaCha20 Key Established in Memory
-    Alice-->>Bob: ⚡ Instant P2P Sync Active (< 15ms)
-```
-
-### Step 1: On Device A (e.g., Linux Mint Workstation):
 ```bash
 klip pair
 ```
-A sleek Unicode box will render with an ANSI QR code and a 6-digit **Short Authentication String (SAS)**:
 
-```text
-╭── 🔑 Pair New Device ──────────────────────────────────────────────────╮
-│                                                                          │
-│   Scan this QR or copy the pairing token into target device:             │
-│                                                                          │
-│   Short Auth Code:  ╭──────────────╮                                     │
-│                     │  742 • 109   │                                     │
-│                     ╰──────────────╯                                     │
-│                                                                          │
-│   Token: 7b22686f73745f6e6f64...                                         │
-│                                                                          │
-│   ⚡ Waiting for peer connection via Iroh P2P mesh...                     │
-╰──────────────────────────────────────────────────────────────────────────╯
+A QR code and a text ticket appear. **Keep this window open.**
+
+**On the phone**
+
+1. Open Klip → **Scan a QR code to link a device** → point it at the QR.
+   (No camera? **Paste a ticket instead**.)
+2. Back on the computer a question appears: *“<phone> wants to pair [fingerprint] — Approve?”* → type `y`.
+
+Done. Test it: copy something on one device, paste on the other.
+
+The ticket works **once** and expires after 2 minutes. Pairing a second phone? Run `klip pair` again.
+Phone is the one showing the code? In the app tap **Show a QR code for another device**, then on the computer run `klip pair <ticket>`.
+
+## Everyday use
+
+| I want to… | Do this |
+|---|---|
+| Copy on the computer, paste on the phone | Just copy. It arrives on the phone's clipboard by itself. |
+| Copy on the phone, paste on the computer | See [Phone → computer](#phone--computer-android-limits) below. |
+| See what happened | `klip status`, `klip history` |
+| Send text without copying | `klip send "text"` |
+| Stop syncing for a while | `klip pause 600` … `klip resume` |
+| Remove a device | `klip unpair "Pixel 8"` (name or start of its fingerprint) |
+
+### Phone → computer (Android limits)
+
+Android only lets the app **in front** read the clipboard, so a copy made in another app can't be noticed in the background. This is an Android rule, not a Klip bug. Options, easiest first:
+
+1. **Quick Settings tile** “Klip” (swipe down, edit tiles, add Klip): tap it after copying.
+2. **“Send clipboard”** button inside Klip's notification.
+3. **“Send to Klip”** in the text-selection menu of any app.
+4. **Automatic mode** (what KDE Connect does): needs a computer once — details in the app under *Automatic copy from this phone (setup)*:
+   ```bash
+   adb shell pm grant com.klip.app android.permission.READ_LOGS
+   ```
+   plus allowing “Display over other apps” for Klip. Klip then reads only its own “clipboard access denied” line from the system log. Undo with `adb shell pm revoke com.klip.app android.permission.READ_LOGS`.
+
+Writing *to* the phone's clipboard from the background works without any special permission (tested on Android 14: the clip was there after Klip was in the background). If some phone brand blocks it, Klip shows a “tap to copy” notification instead of dropping the clip.
+
+## Start automatically
+
+```bash
+klip install-service
+systemctl --user enable --now klip.service
+systemctl --user status klip.service
 ```
 
-### Step 2: On Device B (Phone or Second Laptop):
-- **On Phone**: Open the Klip app ➔ Tap **"Link Device"** ➔ Paste the token.
-- **On Terminal**: Run `klip pair "<TOKEN>"`.
-- **Done!** Both devices confirm matching SAS PIN `742 • 109` and establish an authenticated, encrypted channel.
+On Android the background service is set up to restart after a reboot (this part is not tested yet).
 
----
+## Settings
 
-## 💻 CLI Command Reference
+`~/.config/klip/config.json` (all keys optional; a typo is an error, never silently ignored):
 
-| Command | Description | Example |
-|---|---|---|
-| `klip start` | Spawns the background daemon detached from terminal | `klip start` or `klip start --foreground` |
-| `klip stop` | Gracefully shuts down the active daemon | `klip stop` |
-| `klip status` | Live terminal HUD showing peers, latency, and memory | `klip status` |
-| `klip pair` | Displays pairing invitation with QR code and SAS PIN | `klip pair` |
-| `klip pair <token>` | Connects to an existing peer group using token | `klip pair "7b22..."` |
-| `klip send "<text>"` | Explicitly broadcasts a text snippet to all linked peers | `klip send "https://github.com"` |
-| `klip history` | Inspects recent clipboard history ring buffer | `klip history --limit 5` |
-| `klip pause [sec]` | Temporarily suspends sync (default: 600s / 10m) | `klip pause 300` |
-| `klip resume` | Resumes active clipboard synchronization | `klip resume` |
-| `klip install-service` | Configures auto-start on boot (`systemd`/`launchd`/PowerShell) | `klip install-service` |
-
----
-
-## 🥊 Competitor Benchmark
-
-| Feature | 📎 Klip | KDE Connect | LocalSend | Apple Universal Clipboard | Tailscale Taildrop |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Supported Platforms** | **Linux, macOS, Win, Android, iOS** | Linux & Android (Win/Mac unstable) | Desktop & Mobile | ❌ Apple Only | Desktop & Mobile |
-| **Autonomous Background Sync** | **Yes (< 15ms latency)** | Yes (LAN only) | ❌ Manual Send/Accept | Autonomous (Proximity) | ❌ Manual File Drop |
-| **5G / Global WAN Sync** | **Yes (P2P QUIC + ZK Relay)** | ❌ LAN Only (fails on 5G) | ❌ LAN Only | ❌ BLE Proximity Only | Yes (via WireGuard) |
-| **Idle Memory (RSS)** | **3.9 MB** | 60–120 MB (Qt/QML) | 45–85 MB (Flutter) | Built-in | 35–60 MB (Go Runtime) |
-| **Idle CPU** | **0.0% (Kernel epoll)** | 0.5% – 2.0% | 0.2% – 1.0% | 0.0% | 0.1% – 0.5% |
-| **Encryption Standard** | **Post-Quantum + ChaCha20** | TLS 1.3 self-signed | HTTPS self-signed | iCloud Keychain | WireGuard Noise |
-| **Driver / Admin Privileges** | **None (Pure User-Space)** | None | None | None | ❌ TUN/TAP driver + Admin |
-| **Sleeping Device Mailbox** | **Yes (Ephemeral Sealed)** | ❌ Drops packet | ❌ Drops packet | ❌ Drops packet | ❌ Drops packet |
-| **Preserves History (CopyQ/Win+V)** | **Yes (Zero Suppression)** | Yes | N/A | Yes | N/A |
-
----
-
-## ⚡ Breakthrough Innovations Under the Hood
-
-### 1. 🔄 Content-Aware Differential Sync (FastCDC + Fossil Delta)
-Copying large source files, SQL dumps, or JSON blobs (> 32 KB)? Klip doesn't blast entire megabytes over the network. It calculates content-defined chunks (FastCDC) and transmits a **Fossil Delta patch**. A 2 MB document modification transmits as **~200 bytes**—achieving **95%+ bandwidth reduction** and sub-10ms delivery.
-
-### 2. 🖼️ Lossless WebP On-the-Fly Screenshot Transcoding
-A 4K desktop screenshot on Windows or Linux consumes **~33.1 MB** of uncompressed DIB bitmap memory. Klip detects image payloads and transcodes them in memory to lossless WebP in **< 14 ms**:
-$$\text{33.1 MB (BMP)} \longrightarrow \text{1.2 MB (WebP)} \quad (96.4\% \text{ reduction})$$
-Receiving devices unpack the image back into host-native representations (`image/png` on Linux, `NSImage` on macOS, `CF_DIBV5` on Windows).
-
-### 3. 🛡️ Anti-Echo Loop Shield (No Ghost Pastes)
-Prevents infinite feedback loops across devices using cryptographic origin fingerprinting:
-$$\text{Fingerprint} = \text{BLAKE3}(\text{Content} \mathbin{\Vert} \text{OriginNodeId})$$
-When Klip updates the host clipboard, the local watcher detects the change, matches the cached fingerprint, and suppresses rebroadcasting.
-
-### 4. 📬 Ephemeral Store-and-Forward Mailbox
-Copied a 2FA OTP on your phone while your laptop was asleep in your backpack? Traditional P2P tools drop the packet. Klip encrypts the payload and deposits it into an **Ephemeral Mailbox** with a 10-minute TTL. The moment your laptop lid opens and connects to Wi-Fi, it drains its mailbox queue and syncs the clip automatically.
-
----
-
-## ❓ Troubleshooting & FAQ
-
-<details>
-<summary><b>1. Do my devices need to be on the same Wi-Fi network?</b></summary>
-<br>
-<b>No!</b> This is Klip's superpower. Klip uses <b>Iroh QUIC</b> networking with STUN/Magicsock hole-punching. Your phone can be on 5G carrier mobile data and your laptop on home or office Wi-Fi. If strict corporate firewalls prevent direct P2P UDP, traffic seamlessly routes through high-speed, stateless, zero-knowledge relays. Relays only inspect 32-byte public keys and cannot decrypt your data.
-</details>
-
-<details>
-<summary><b>2. How does Android silent auto-sync work without tapping notifications?</b></summary>
-<br>
-On Android 10+, background apps cannot read or write to the clipboard by default. Like <b>KDE Connect</b>, Klip provides an optional <b>Klip Accessibility Service</b>. Once enabled in Android Settings (a one-time 5-second toggle), Klip gains system privileges to silently call <code>ClipboardManager.setPrimaryClip()</code>. When you press <code>Ctrl+C</code> on Linux, it is immediately in your phone's clipboard—zero notification clicks required!
-</details>
-
-<details>
-<summary><b>3. Why did Android stop syncing when the phone was locked?</b></summary>
-<br>
-Aggressive battery optimizations from manufacturers (Samsung OneUI, Xiaomi MIUI, OnePlus OxygenOS) kill background apps. To fix this: Go to <b>Phone Settings ➔ Apps ➔ Klip ➔ Battery</b> and select <b>"Unrestricted"</b>. This allows Klip's persistent foreground worker to keep the QUIC connection alive without being killed.
-</details>
-
-<details>
-<summary><b>4. Does Klip delete or suppress my CopyQ / Win+V clipboard history?</b></summary>
-<br>
-<b>Never!</b> Developers frequently copy API keys, tokens, and passwords specifically to paste them into multiple files or tools (Postman, terminal, configs), relying on <b>CopyQ</b> or <b>Win+V</b> history to find them. Klip writes to the host clipboard in standard native formats without suppressing history. Cryptographic security is enforced strictly on-the-wire and inside Klip's internal memory buffers.
-</details>
-
-<details>
-<summary><b>5. What happens if two devices copy something at the exact same millisecond?</b></summary>
-<br>
-Klip resolves concurrent write conflicts using <b>Hybrid Logical Clocks (HLC)</b>:
-$$\text{Clock} = \left\langle \text{physical\_time\_ms}, \text{logical\_counter}, \text{node\_id} \right\rangle$$
-Last-Write-Wins (LWW) determines the active clipboard winner, while the concurrent clip is safely preserved in the local history ring buffer (<code>klip history</code>)—ensuring <b>Zero Data Loss</b>.
-</details>
-
-<details>
-<summary><b>6. How is memory usage kept under 4 MB RAM?</b></summary>
-<br>
-Klip avoids heavy runtimes like Electron, Node.js, Flutter, and Go. It is written in pure Rust using:
-1. The standard system allocator (<code>std::alloc::System</code>), eliminating <code>jemalloc</code> multi-arena cache bloat.
-2. A single-threaded cooperative Tokio runtime (<code>Builder::new_current_thread()</code>).
-3. Zero-allocation in-place AEAD decryption (<code>decrypt_in_place_detached</code>).
-</details>
-
----
-
-## 🏛️ Project Structure
-
-The Klip codebase is organized into 7 focused, decoupled Rust crates:
-
-```text
-Klip/
-├── Cargo.toml                  # Master workspace configuration & release profile
-├── docs/
-│   └── ARCHITECTURE_AND_RESEARCH.md  # Exhaustive 2026 Technical Specification
-├── android/                    # Native Android companion application (Kotlin)
-│   ├── app/src/main/           # AccessibilityService, ForegroundSync, MainActivity
-│   └── build.gradle.kts        # Android Gradle build configuration
-├── crates/
-│   ├── klip-proto/             # Wire framing, packet enums, HLC causality, BLAKE3 fingerprint
-│   ├── klip-crypto/            # ChaCha20-Poly1305 AEAD with AAD, Ed25519, SAS pairing, zeroize
-│   ├── klip-diff/              # FastCDC chunking, Fossil Delta patches, WebP image transcoder
-│   ├── klip-platform/          # Native clipboard drivers (Wayland, X11 INCR, macOS, Win32, Android)
-│   ├── klip-transport/         # Iroh QUIC UDP mesh, stateless ZK relay, Ephemeral Mailbox
-│   ├── klip-daemon/            # Core sync state machine, IPC Unix socket, persistence generators
-│   └── klip-cli/               # Modern Linear-grade CLI (klip start, pair, status, send)
-└── extra/
-    └── gnome-shell-extension/  # Mutter Wayland background clipboard bridge
+```json
+{
+  "device_name": "ThinkPad",
+  "relay": "n0",
+  "lan_discovery": true,
+  "max_clip_bytes": 33554432,
+  "max_history_items": 50,
+  "poll_interval_ms": 100
+}
 ```
 
----
+- `"relay": "n0"` (default) uses n0's public relay and discovery servers so devices on different networks can find each other. `"relay": "lan"` uses **no third-party servers at all**, but then both devices must be on the same network.
+- `lan_discovery` announces the device ID on your local network (mDNS) so same-Wi-Fi devices connect without internet.
+- Environment: `KLIP_CONFIG_DIR` (separate instance), `KLIP_CLIPBOARD=memory` (don't touch the OS clipboard — servers/demos).
 
-## 📄 License
+## Command reference
 
-Dual-licensed under either:
-- **MIT License** ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
+| Command | What it does |
+|---|---|
+| `klip start [--foreground]` | start the background service |
+| `klip stop` | stop it |
+| `klip status` | devices, connection, relay state, last sync |
+| `klip pair [--lan] [--ttl 120]` | show QR + ticket and wait for a device |
+| `klip pair <ticket>` | join the device that showed a ticket |
+| `klip unpair <name\|fingerprint>` | forget a device |
+| `klip pause [seconds]` / `klip resume` | pause or resume syncing |
+| `klip history [-l N]` | recent clips (secrets are masked) |
+| `klip send "<text>"` | send text now, with per-device result |
+| `klip install-service` | create the auto-start unit for your OS |
 
----
+## Limits & honesty
 
-<div align="center">
-  <b>Built with 🦀 Rust & Obsessive Systems Craftsmanship.</b>
-</div>
+**Security — what you can and cannot expect**
+
+- Clip contents are end-to-end encrypted between your devices. Relays and network observers see **metadata** (that two device IDs talk, when, and how much), never contents.
+- With `"relay": "n0"`, your device ID and its network addresses are published to n0's discovery service so peers can find you. Use `"relay": "lan"` if that matters to you.
+- Keys are classical (X25519 + Ed25519). **Post-quantum key exchange is not enabled yet** (planned; the library supports it as an option).
+- Not independently audited. Do not rely on it for anything where a bug would be dangerous.
+- The “secret” detector (patterns + entropy) is a heuristic: it hides previews in history and asks Android to hide keyboard previews. It does **not** stop secrets from syncing and will miss some.
+- The keystore (`~/.config/klip/keystore.json`) holds the device key in a private (0600) file; it is not encrypted with a password or the OS keyring yet.
+- Anyone who can run commands as you can read your clipboard history through the local control socket. A stolen or lost device stays trusted until you `klip unpair` it from another one.
+
+**Behaviour**
+
+- **Both devices must be online at the same time.** There is no mailbox or push service: a clip copied while the other device is off is not delivered later. (A deliberate choice: no server of ours.)
+- Text only on Android for now. The desktop engine understands images, but the phone app does not yet.
+- Clips are limited to 32 MiB by default.
+- Idle cost (measured on a release build, one linked device, Linux/X11): about **14 MB** resident memory, ~**3 wakeups per second**, no measurable CPU. Capture is event-driven (the X server tells Klip when the clipboard changes); the remaining wakeups are iroh's connection upkeep. Without X11 events (headless / `KLIP_CLIPBOARD=memory`) Klip falls back to polling and uses more.
+- Release binary: 7.8 MB (stripped, size-optimised).
+- Debug-signed Android builds change signature between CI runs; installing a newer build over an older one may require uninstalling first (re-pair afterwards). A stable release key is planned.
+
+## Troubleshooting
+
+| Symptom | Try |
+|---|---|
+| `klip status` says *relay unreachable* | no internet / blocked UDP & HTTPS to n0; use `"relay": "lan"` on the same Wi-Fi |
+| Devices linked but **not connected** | wait ~10 s (it retries); check both have internet or the same network; `klip status` shows the last error |
+| “could not reach any linked device” on `klip send` | other device is off/asleep/offline — see *both devices online* above |
+| “the other device could not write its clipboard” | the phone/desktop clipboard was unavailable; try again |
+| Pairing: “invalid or expired pairing code” | tickets work once and expire; run `klip pair` again |
+| `klip start` says it did not come up | read `~/.config/klip/daemon.log` |
+| Nothing syncs on Wayland | Klip currently uses the X11 clipboard (XWayland); GNOME/Wayland needs an extension that is not finished |
+| Banking/UPI app complains about Klip | Klip no longer uses an Accessibility service; if you enabled the old one, remove it in Android settings |
+
+## Build & test from source
+
+```bash
+cargo test --workspace                      # 51 tests
+cargo clippy --workspace --all-targets -- -D warnings
+android/build-core.sh arm64-v8a             # Rust engine + Kotlin bindings (needs cargo-ndk, NDK r28+)
+cd android && ./gradlew assembleDebug
+```
+
+Layout: `klip-proto` (clip/clock/IPC types) · `klip-crypto` (identity, keystore) · `klip-net` (QUIC node, pairing) · `klip-core` (engine) · `klip-platform` (clipboard drivers) · `klip-daemon` + `klip-cli` (desktop) · `klip-android` (FFI) · `android/` (app).
+
+## More documents
+
+- [`docs/AUDIT_AND_ROADMAP.md`](docs/AUDIT_AND_ROADMAP.md) — frank audit of the earlier code and the roadmap
+- [`docs/RESEARCH_2026.md`](docs/RESEARCH_2026.md) — sourced research, decisions and measurements
+- [`docs/ARCHITECTURE_AND_RESEARCH.md`](docs/ARCHITECTURE_AND_RESEARCH.md) — the original (unverified, aspirational) design brief
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

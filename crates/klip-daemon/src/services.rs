@@ -9,10 +9,16 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 ExecStart=klip start --foreground
-Restart=always
+Restart=on-failure
 RestartSec=3
 KillMode=process
-MemoryMax=32M
+# Generous ceiling (the daemon uses a few tens of MB); a leak is stopped instead of eating the machine.
+MemoryMax=256M
+# Cheap hardening that works in the per-user manager without namespaces.
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
 
 [Install]
 WantedBy=graphical-session.target
