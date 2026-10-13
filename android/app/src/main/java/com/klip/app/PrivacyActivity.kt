@@ -64,6 +64,27 @@ class PrivacyActivity : Activity() {
         )
         b.add(relay, bottom = 22)
 
+        // Restart after Android's "Stop" button.
+        val keep = card(this, pal)
+        val krow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val kt = column(this)
+        kt.add(tv("Restart by itself if stopped", 16f, pal.text, 1))
+        kt.add(tv("Checks every 15 minutes or so.", 13.5f, pal.dim), top = 3)
+        krow.addView(kt, LinearLayout.LayoutParams(0, -2, 1f))
+        krow.addView(Switch(this).apply {
+            isChecked = Watchdog.enabled(this@PrivacyActivity)
+            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(pal.signal, pal.faint))
+            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(withAlpha(pal.signal, 0.35f), pal.line))
+            setOnCheckedChangeListener { _, on -> Watchdog.setEnabled(this@PrivacyActivity, on) }
+        })
+        keep.addView(krow)
+        keep.add(
+            tv("Android's list of active apps has a Stop button that removes Klip from memory. With this on, Klip starts itself again " +
+                "within about 15 minutes, provided Unrestricted battery use is allowed in Setup. A Force stop in App info cannot be " +
+                "undone by any app: open Klip once to start it again. Turn this off if you want Stop to mean stop.", 13.5f, pal.dim), top = 12
+        )
+        b.add(keep, bottom = 22)
+
         section(b, "What Klip reads",
             "The clipboard, and only when you ask (Send button, Share menu, the tile, the notification button) or while Klip is on screen. " +
                 "Android does not allow more. Text that arrives from your other devices is written to the clipboard.")

@@ -185,6 +185,8 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        KlipSyncService.start(this) // idempotent; also restores the notification if it went missing
+        noticeIfStopped()
         poll = scope.launch {
             while (isActive) {
                 refresh()
@@ -211,6 +213,19 @@ class MainActivity : Activity() {
         when (resultCode) {
             RESULT_OK -> data?.getStringExtra(QrScannerActivity.EXTRA_SCANNED_TICKET)?.let { pairing.join(it) }
             QrScannerActivity.RESULT_PASTE -> pairing.showPaste(null)
+        }
+    }
+
+    /** Tell the person once if Android's active-apps "Stop" (or Force stop) had ended Klip. */
+    private fun noticeIfStopped() {
+        if (android.os.Build.VERSION.SDK_INT < 30) return
+        val last = runCatching {
+            getSystemService(android.app.ActivityManager::class.java).getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()
+        }.getOrNull() ?: return
+        val prefs = getSharedPreferences("klip_ui", MODE_PRIVATE)
+        if (last.reason == android.app.ApplicationExitInfo.REASON_USER_REQUESTED && last.timestamp > prefs.getLong("stop_seen", 0)) {
+            prefs.edit().putLong("stop_seen", last.timestamp).apply()
+            android.widget.Toast.makeText(this, "Klip had been stopped from Android's app list. It is running again.", android.widget.Toast.LENGTH_LONG).show()
         }
     }
 

@@ -50,6 +50,9 @@ class KlipSyncService : Service() {
         const val CHANNEL_CLIP = "klip_clip"
         const val NOTIFICATION_ID = 40401
         const val NOTIFICATION_CLIP_ID = 40402
+
+        /** True while this process has the service running (a fresh process after a stop starts as false). */
+        @Volatile var running = false
         private const val TAG = "KlipSyncService"
 
         /** Stop and start again, e.g. after the relay setting changed. */
@@ -120,6 +123,8 @@ class KlipSyncService : Service() {
             addAction(Intent.ACTION_SCREEN_OFF)
         })
         if (power.isInteractive) main.post(ticker)
+        Watchdog.schedule(this)
+        running = true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -130,7 +135,10 @@ class KlipSyncService : Service() {
             }
             ACTION_TEST_BG_WRITE -> scheduleBackgroundWriteTest()
             ACTION_REPOST -> refreshNotification(force = true)
-            else -> if (!started) startEngine()
+            else -> {
+                if (!started) startEngine()
+                refreshNotification() // e.g. notifications were switched back on while Klip was running
+            }
         }
         return START_STICKY
     }
@@ -285,8 +293,12 @@ class KlipSyncService : Service() {
             .build()
     }
 
-    private fun showForeground(text: String) {
-        val n = buildNotification(StatusText.Summary("Klip", "Klip", text, text, false, null))
+    private fun showForeground(text: String) =
+        postForeground(StatusText.Summary("Klip", "Klip", text, text, false, null))
+
+    /** (Re)attach the notification to the foreground service. Also puts it back when it was removed. */
+    private fun postForeground(summary: StatusText.Summary) {
+        val n = buildNotification(summary)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // dataSync has a 6 h/24 h limit and cannot start from BOOT_COMPLETED once an app targets
             // Android 15; an always-on peer connection is what specialUse is for.
@@ -305,20 +317,29 @@ class KlipSyncService : Service() {
         refreshNotification(force = true)
     }
 
-    /** Recompute the status off the main thread and update the notification only when it changed. */
+    /**
+     * Recompute the status off the main thread and update the notification when it changed. It is also put
+     * back when it has vanished without us touching it: the person switched notifications off and on in
+     * Settings, blocked and unblocked the channel, or swiped it away. (Android does not bring it back by itself.)
+     */
     private fun refreshNotification(force: Boolean = false) {
         scope.launch {
             val summary = withContext(Dispatchers.IO) { runCatching { StatusText.compute() }.getOrNull() } ?: return@launch
             val key = summary.key + (note?.takeIf { System.currentTimeMillis() < noteUntil } ?: "")
-            if (!force && key == lastShown) return@launch
+            val nm = getSystemService(NotificationManager::class.java)
+            val missing = nm.areNotificationsEnabled() &&
+                runCatching { nm.activeNotifications.none { it.id == NOTIFICATION_ID } }.getOrDefault(false)
+            if (!force && !missing && key == lastShown) return@launch
             lastShown = key
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-                .notify(NOTIFICATION_ID, buildNotification(summary))
+            withContext(Dispatchers.Main) {
+                if (missing) postForeground(summary) else nm.notify(NOTIFICATION_ID, buildNotification(summary))
+            }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        running = false
         main.removeCallbacks(ticker)
         runCatching { unregisterReceiver(screenReceiver) }
         runCatching { clipboard.removePrimaryClipChangedListener(clipListener) }

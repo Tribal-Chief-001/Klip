@@ -122,11 +122,18 @@
                 android:value="Keeps a peer-to-peer connection open to the user's own paired devices so clipboard text can be exchanged in real time" />
         </service>
 
+        <!-- Periodic check that brings the service back after Android's "Stop" button removed the app. -->
+        <service
+            android:name=".WatchdogJobService"
+            android:exported="true"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
 
