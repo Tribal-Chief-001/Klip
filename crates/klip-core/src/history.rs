@@ -1,3 +1,4 @@
+use klip_proto::clip::ClipContentType;
 use klip_proto::hlc::NodeId;
 use klip_proto::ipc::HistoryItem;
 use std::collections::VecDeque;
@@ -8,6 +9,29 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const MAX_STORED_ITEM_BYTES: usize = 256 * 1024;
 /// Total bytes of stored content across all items; the oldest content is dropped first.
 pub const MAX_STORED_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+
+/// What a stored clip is, judged from its bytes (the history keeps no content type). Text is the
+/// default; images are recognised only by their real magic bytes.
+pub fn sniff_content_type(content: &[u8]) -> ClipContentType {
+    if content.starts_with(b"\x89PNG\r\n\x1a\n") {
+        ClipContentType::ImagePng
+    } else if content.len() >= 12 && &content[0..4] == b"RIFF" && &content[8..12] == b"WEBP" {
+        ClipContentType::ImageWebP
+    } else {
+        ClipContentType::PlainTextUtf8
+    }
+}
+
+/// A Windows bitmap: `BM`, then a 14-byte file header, then a DIB header whose size field (u32 LE at
+/// offset 14) is one of the known header sizes. Text that merely starts with "BM" does not match.
+fn is_bitmap(content: &[u8]) -> bool {
+    content.len() >= 26
+        && content.starts_with(b"BM")
+        && matches!(
+            u32::from_le_bytes([content[14], content[15], content[16], content[17]]),
+            12 | 40 | 52 | 56 | 64 | 108 | 124
+        )
+}
 
 #[derive(Clone)]
 pub struct HistoryBuffer {
@@ -38,7 +62,7 @@ impl HistoryBuffer {
             format!("[Image: PNG ({} B)]", size_bytes)
         } else if content.len() >= 12 && &content[0..4] == b"RIFF" && &content[8..12] == b"WEBP" {
             format!("[Image: WebP ({} B)]", size_bytes)
-        } else if content.starts_with(b"BM") {
+        } else if is_bitmap(&content) {
             format!("[Image: Bitmap ({} B)]", size_bytes)
         } else {
             let s = String::from_utf8_lossy(&content);
@@ -90,6 +114,16 @@ impl HistoryBuffer {
     pub fn get_recent(&self, limit: usize) -> Vec<HistoryItem> {
         let lock = self.items.lock().unwrap();
         lock.iter().take(limit).cloned().collect()
+    }
+
+    pub fn get_by_id(&self, id: [u8; 16]) -> Option<HistoryItem> {
+        let lock = self.items.lock().unwrap();
+        lock.iter().find(|i| i.id == id).cloned()
+    }
+
+    /// Forget everything kept in history (local only; nothing is sent to other devices).
+    pub fn clear(&self) {
+        self.items.lock().unwrap().clear();
     }
 
     pub fn last_item(&self) -> Option<HistoryItem> {
@@ -154,5 +188,64 @@ mod tests {
             items[49].full_content.is_empty(),
             "oldest content evicted first"
         );
+    }
+
+    #[test]
+    fn text_that_starts_with_bm_is_text_not_a_bitmap() {
+        let buf = HistoryBuffer::new(3);
+        let node = NodeId::new([1u8; 32]);
+        buf.push(
+            [1; 16],
+            node,
+            "n".into(),
+            b"BMW M3 is a fast car indeed".to_vec(),
+            false,
+        );
+        let items = buf.get_recent(1);
+        assert_eq!(items[0].content_preview, "BMW M3 is a fast car indeed");
+        assert_eq!(
+            sniff_content_type(b"BMW M3 is a fast car indeed"),
+            klip_proto::clip::ClipContentType::PlainTextUtf8
+        );
+    }
+
+    #[test]
+    fn a_real_bitmap_header_is_still_recognised() {
+        let mut bmp = vec![b'B', b'M'];
+        bmp.extend_from_slice(&[54, 0, 0, 0]); // file size
+        bmp.extend_from_slice(&[0, 0, 0, 0]); // reserved
+        bmp.extend_from_slice(&[54, 0, 0, 0]); // pixel data offset
+        bmp.extend_from_slice(&[40, 0, 0, 0]); // DIB header size = BITMAPINFOHEADER
+        bmp.extend_from_slice(&[0u8; 36]);
+        let buf = HistoryBuffer::new(3);
+        buf.push([2; 16], NodeId::new([1u8; 32]), "n".into(), bmp, false);
+        assert!(buf.get_recent(1)[0]
+            .content_preview
+            .starts_with("[Image: Bitmap ("));
+    }
+
+    #[test]
+    fn items_can_be_found_by_id_and_history_can_be_cleared() {
+        let buf = HistoryBuffer::new(3);
+        let node = NodeId::new([1u8; 32]);
+        buf.push([7; 16], node, "n".into(), b"seven".to_vec(), false);
+        buf.push([8; 16], node, "n".into(), b"eight".to_vec(), false);
+        assert_eq!(buf.get_by_id([7; 16]).unwrap().full_content, b"seven");
+        assert!(buf.get_by_id([9; 16]).is_none());
+        buf.clear();
+        assert!(buf.get_recent(10).is_empty());
+        assert!(buf.get_by_id([7; 16]).is_none());
+    }
+
+    #[test]
+    fn sniffing_recognises_png_and_webp_only_by_their_magic_bytes() {
+        use klip_proto::clip::ClipContentType as T;
+        assert_eq!(sniff_content_type(b"\x89PNG\r\n\x1a\nrest"), T::ImagePng);
+        assert_eq!(
+            sniff_content_type(b"RIFF\x00\x00\x00\x00WEBPVP8 "),
+            T::ImageWebP
+        );
+        assert_eq!(sniff_content_type(b"RIFF is also a word"), T::PlainTextUtf8);
+        assert_eq!(sniff_content_type(b""), T::PlainTextUtf8);
     }
 }
