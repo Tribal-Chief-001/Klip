@@ -385,3 +385,85 @@ async fn a_wrong_client_clock_cannot_invalidate_or_extend_a_ticket() {
         Err(NetError::PairingRejected(_))
     ));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn simultaneous_dials_settle_on_one_connection_per_peer() {
+    for round in 0..10 {
+        let mut a = spawn_node("Alpha", true, None).await;
+        let mut b = spawn_node("Beta", true, None).await;
+        pair(&a, &b).await;
+
+        // Both sides send at the same instant, so each dials the other at the same time.
+        let (ca, cb) = (
+            clip_from(&a.node, "from alpha"),
+            clip_from(&b.node, "from beta"),
+        );
+        let (ra, rb) = tokio::join!(a.node.send_clip(&ca), b.node.send_clip(&cb));
+        assert!(ra.iter().all(|(_, r)| r.is_ok()), "round {round}: {ra:?}");
+        assert!(rb.iter().all(|(_, r)| r.is_ok()), "round {round}: {rb:?}");
+        assert_eq!(
+            expect_clip(&mut b, 5).await.unwrap().1.content,
+            b"from alpha"
+        );
+        assert_eq!(
+            expect_clip(&mut a, 5).await.unwrap().1.content,
+            b"from beta"
+        );
+
+        // The duplicate is closed by both ends: exactly one reader per node remains.
+        let settled = async {
+            while a.node.open_connection_count() != 1 || b.node.open_connection_count() != 1 {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), settled)
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "round {round}: connections did not settle: a={} b={}",
+                    a.node.open_connection_count(),
+                    b.node.open_connection_count()
+                )
+            });
+
+        // And the surviving connection works both ways.
+        let r = a.node.send_clip(&clip_from(&a.node, "again")).await;
+        assert!(r.iter().all(|(_, r)| r.is_ok()), "{r:?}");
+        assert_eq!(expect_clip(&mut b, 5).await.unwrap().1.content, b"again");
+        let r = b.node.send_clip(&clip_from(&b.node, "back")).await;
+        assert!(r.iter().all(|(_, r)| r.is_ok()), "{r:?}");
+        assert_eq!(expect_clip(&mut a, 5).await.unwrap().1.content, b"back");
+        assert!(a.node.peer_statuses()[0].connected && b.node.peer_statuses()[0].connected);
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_was_unpaired_by_the_other_side_is_told() {
+    let mut host = spawn_node("Laptop", true, None).await;
+    let phone = spawn_node("Phone", true, None).await;
+    pair(&host, &phone).await;
+    // Establish a live connection first.
+    let r = phone.node.send_clip(&clip_from(&phone.node, "hi")).await;
+    assert!(r.iter().all(|(_, r)| r.is_ok()), "{r:?}");
+    assert!(expect_clip(&mut host, 5).await.is_some());
+    assert!(phone.node.peer_statuses()[0].problem.is_none());
+
+    // The laptop removes the phone. The phone still lists the laptop, but must say what is wrong.
+    assert!(host.node.unpair(&phone.node.id()));
+    let told = async {
+        loop {
+            if let Some(p) = phone.node.peer_statuses()[0].problem.clone() {
+                return p;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    };
+    let problem = tokio::time::timeout(Duration::from_secs(5), told)
+        .await
+        .expect("the phone was never told");
+    assert!(
+        problem.contains("no longer has this device paired"),
+        "{problem}"
+    );
+    assert!(!phone.node.peer_statuses()[0].connected);
+}

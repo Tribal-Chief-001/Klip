@@ -531,7 +531,7 @@ impl SyncCoordinator {
                     node_id: node,
                     name: p.name,
                     is_online: p.connected,
-                    last_error: errors.get(&node).cloned(),
+                    last_error: errors.get(&node).cloned().or(p.problem),
                 }
             })
             .collect()

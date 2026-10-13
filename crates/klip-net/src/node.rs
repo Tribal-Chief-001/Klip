@@ -3,7 +3,9 @@ use crate::proto::{
     sanitize_name, PairReply, PairRequest, MAX_CONTROL_BYTES, PAIR_ALPN, SYNC_ALPN,
 };
 use crate::ticket::{now_unix, PairingTicket};
-use iroh::endpoint::{presets, Connection, IdleTimeout, Incoming, QuicTransportConfig, VarInt};
+use iroh::endpoint::{
+    presets, Connection, ConnectionError, IdleTimeout, Incoming, QuicTransportConfig, Side, VarInt,
+};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, Watcher};
 use klip_proto::clip::ClipPayload;
 use std::collections::HashMap;
@@ -44,6 +46,11 @@ const ACK_NO_CLIPBOARD: u8 = 3;
 const APPLY_TIMEOUT: Duration = Duration::from_secs(5);
 const CODE_UNPAIRED: u32 = 1;
 const CODE_DONE: u32 = 0;
+/// Closed because a duplicate connection to the same peer won the tie-break.
+const CODE_SUPERSEDED: u32 = 2;
+/// Shown in peer status when the other device closed with `CODE_UNPAIRED` on a sync connection.
+const REMOVED_BY_PEER: &str =
+    "the other device no longer has this device paired - unpair it here and pair again";
 
 /// How the endpoint finds and reaches peers beyond the local network.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +99,8 @@ pub struct PeerStatus {
     pub id: EndpointId,
     pub name: String,
     pub connected: bool,
+    /// A standing problem with this peer that retrying cannot fix (for example, it unpaired us).
+    pub problem: Option<String>,
 }
 
 /// What the receiving application did with a clip; this is what the sender is told.
@@ -145,6 +154,9 @@ struct Inner {
     cfg: NetConfig,
     peers: Mutex<HashMap<EndpointId, PeerRecord>>,
     conns: Mutex<HashMap<EndpointId, Connection>>,
+    problems: Mutex<HashMap<EndpointId, String>>,
+    /// Connections with a running reader task (diagnostics and leak tests).
+    readers: std::sync::atomic::AtomicUsize,
     pairing: Mutex<Option<PairingWindow>>,
     events: mpsc::Sender<NetEvent>,
     pair_handlers: Semaphore,
@@ -207,6 +219,8 @@ impl KlipNode {
             cfg,
             peers: Mutex::new(peers.into_iter().map(|p| (p.id, p)).collect()),
             conns: Mutex::new(HashMap::new()),
+            problems: Mutex::new(HashMap::new()),
+            readers: std::sync::atomic::AtomicUsize::new(0),
             pairing: Mutex::new(None),
             events: tx,
             pair_handlers: Semaphore::new(MAX_CONCURRENT_PAIR_HANDLERS),
@@ -233,6 +247,7 @@ impl KlipNode {
 
     pub fn peer_statuses(&self) -> Vec<PeerStatus> {
         let conns = self.inner.conns.lock().unwrap();
+        let problems = self.inner.problems.lock().unwrap();
         self.peers()
             .into_iter()
             .map(|p| PeerStatus {
@@ -240,6 +255,7 @@ impl KlipNode {
                     .get(&p.id)
                     .map(|c| c.close_reason().is_none())
                     .unwrap_or(false),
+                problem: problems.get(&p.id).cloned(),
                 id: p.id,
                 name: p.name,
             })
@@ -263,6 +279,11 @@ impl KlipNode {
         }
     }
 
+    /// Number of sync connections currently being read (should be at most one per paired peer).
+    pub fn open_connection_count(&self) -> usize {
+        self.inner.readers.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn is_paired(&self, id: &EndpointId) -> bool {
         self.inner.peers.lock().unwrap().contains_key(id)
     }
@@ -270,6 +291,7 @@ impl KlipNode {
     /// Remove a device from the trusted set and drop its connection.
     pub fn unpair(&self, id: &EndpointId) -> bool {
         let removed = self.inner.peers.lock().unwrap().remove(id).is_some();
+        self.inner.problems.lock().unwrap().remove(id);
         if let Some(conn) = self.inner.conns.lock().unwrap().remove(id) {
             conn.close(CODE_UNPAIRED.into(), b"unpaired");
         }
@@ -495,8 +517,7 @@ impl KlipNode {
         .await
         .map_err(|_| NetError::Connect("timed out".into()))?
         .map_err(|e| NetError::Connect(e.to_string()))?;
-        self.register_connection(conn.clone());
-        Ok(conn)
+        Ok(self.register_connection(conn))
     }
 
     // ---------------------------------------------------------------------- sync (receive)
@@ -570,7 +591,7 @@ impl KlipNode {
             a if a == PAIR_ALPN => self.handle_pair(conn, remote).await,
             a if a == SYNC_ALPN => {
                 if self.is_paired(&remote) {
-                    self.register_connection(conn);
+                    let _ = self.register_connection(conn);
                 } else {
                     conn.close(CODE_UNPAIRED.into(), b"not paired");
                 }
@@ -580,21 +601,49 @@ impl KlipNode {
     }
 
     /// Remember the connection and spawn its reader. Called for dialed and accepted connections.
-    fn register_connection(&self, conn: Connection) {
+    ///
+    /// When both devices dial each other at the same moment there are two connections. They would
+    /// both stay open (double keep-alive traffic, and each side sending on a different one), so
+    /// both ends apply the same rule: keep the connection dialed by the device with the lower id.
+    /// Returns the connection to use, which is the other one if this one lost.
+    fn register_connection(&self, conn: Connection) -> Connection {
         let remote = conn.remote_id();
         let stable = conn.stable_id();
-        let previous = self
-            .inner
-            .conns
-            .lock()
-            .unwrap()
-            .insert(remote, conn.clone());
-        if previous.map(|p| p.close_reason().is_some()).unwrap_or(true) {
+        let i_am_preferred_dialer = self.endpoint.id().as_bytes() < remote.as_bytes();
+        let dialed_by_me = conn.side() == Side::Client;
+
+        let mut conns = self.inner.conns.lock().unwrap();
+        let live_previous = conns.get(&remote).filter(|c| c.close_reason().is_none());
+        if let Some(old) = live_previous {
+            let old_dialed_by_me = old.side() == Side::Client;
+            let new_wins = old_dialed_by_me == dialed_by_me // same dialer: the newer one is fresher
+                || dialed_by_me == i_am_preferred_dialer;
+            if !new_wins {
+                let winner = old.clone();
+                drop(conns);
+                conn.close(CODE_SUPERSEDED.into(), b"duplicate connection");
+                return winner;
+            }
+            old.close(CODE_SUPERSEDED.into(), b"duplicate connection");
+        }
+        let was_connected = live_previous.is_some();
+        conns.insert(remote, conn.clone());
+        drop(conns);
+        // A fresh attempt may succeed where the last one was refused; a refusal sets it again.
+        self.inner.problems.lock().unwrap().remove(&remote);
+        if !was_connected {
             let _ = self.inner.events.try_send(NetEvent::PeerConnected(remote));
         }
         let node = self.clone();
+        let reader = conn.clone();
+        self.inner
+            .readers
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tokio::spawn(async move {
-            node.read_loop(conn.clone(), remote).await;
+            node.read_loop(reader, remote).await;
+            node.inner
+                .readers
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             let mut conns = node.inner.conns.lock().unwrap();
             let still_current = conns.get(&remote).map(|c| c.stable_id() == stable) == Some(true);
             if still_current {
@@ -606,13 +655,29 @@ impl KlipNode {
                     .try_send(NetEvent::PeerDisconnected(remote));
             }
         });
+        conn
     }
 
     async fn read_loop(&self, conn: Connection, remote: EndpointId) {
         let limit = self.inner.cfg.max_clip_bytes + ENVELOPE_SLACK;
         loop {
-            let Ok((mut tx, mut rx)) = conn.accept_bi().await else {
-                return;
+            let (mut tx, mut rx) = match conn.accept_bi().await {
+                Ok(streams) => streams,
+                Err(ConnectionError::ApplicationClosed(close))
+                    if close.error_code == VarInt::from_u32(CODE_UNPAIRED) =>
+                {
+                    // The other device deliberately closed on us: it does not have us paired.
+                    // Reconnecting cannot fix that, so say so instead of failing silently.
+                    if self.is_paired(&remote) {
+                        self.inner
+                            .problems
+                            .lock()
+                            .unwrap()
+                            .insert(remote, REMOVED_BY_PEER.to_string());
+                    }
+                    return;
+                }
+                Err(_) => return,
             };
             if !self.is_paired(&remote) {
                 conn.close(CODE_UNPAIRED.into(), b"unpaired");
