@@ -142,8 +142,8 @@ Out of the box Klip uses **no Accessibility service** (the earlier prototype did
 
 | Platform | Status |
 |---|---|
-| **Linux** | `klip install-service` + `systemctl --user enable --now klip.service` starts it at every login (systemd user unit, enabled on the author's machine; a full reboot cycle has not been exercised yet). |
-| **Android** | The background service is set up to restart after a reboot and to reconnect by itself; **boot restart is not tested yet**. Some phone brands (Xiaomi, Oppo, Vivo, Samsung…) additionally kill background apps: allow background activity / auto-start for Klip in the phone's battery settings. If you force-stop Klip, open it once to start it again. |
+| **Linux** | `klip install-service` + `systemctl --user enable --now klip.service` starts it at every login (systemd user unit). Verified: after `kill -9` systemd restarts the daemon in about 3 s and the phone reconnects. A full reboot of the author's machine has not been exercised. |
+| **Android** | A foreground service (type *specialUse*, so Android 15's 6-hour limit and boot restrictions for *dataSync* do not apply) restarts after a reboot and reconnects by itself. Verified on an Android 14 emulator: after killing the app process Android restarted the service within 5 s and the laptop saw the device again; after a full emulator reboot, without opening the app, the service came back and the laptop could deliver a clip to it. After a reboot Android only delivers the boot event after the first unlock. **Not verified:** swiping the app out of recents, Android 15/16, and real phones' battery managers (Xiaomi, Oppo, Vivo, Samsung… may kill background apps: allow background activity / auto-start for Klip in the phone's settings). If you force-stop Klip, open it once to start it again (Android's rule). |
 | **macOS** | `klip install-service` writes a launchd agent — never run, untested. |
 | **Windows** | `klip install-service` writes a Task Scheduler script — never run; the Windows CLI also cannot control the daemon yet. |
 
