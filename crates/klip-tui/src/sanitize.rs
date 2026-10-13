@@ -78,6 +78,43 @@ pub fn pad_to(s: &str, cols: usize) -> String {
     format!("{t}{}", " ".repeat(pad))
 }
 
+/// The last `max_cols` columns of `s`, whole grapheme clusters only.
+pub fn tail(s: &str, max_cols: usize) -> String {
+    let mut cols = 0;
+    let mut parts: Vec<&str> = Vec::new();
+    for g in s.graphemes(true).rev() {
+        let w = width(g);
+        if cols + w > max_cols {
+            break;
+        }
+        cols += w;
+        parts.push(g);
+    }
+    parts.reverse();
+    parts.concat()
+}
+
+/// Hard-wrap `s` (already cleaned) into rows of at most `cols` columns; a newline starts a new row.
+pub fn wrap_rows(s: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(1);
+    let mut rows = Vec::new();
+    for line in s.split('\n') {
+        let mut cur = String::new();
+        let mut used = 0;
+        for g in line.graphemes(true) {
+            let w = width(g);
+            if used + w > cols && used > 0 {
+                rows.push(std::mem::take(&mut cur));
+                used = 0;
+            }
+            cur.push_str(g);
+            used += w;
+        }
+        rows.push(cur);
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +189,26 @@ mod tests {
             assert!(no_control(&clean(&s)));
             let max = rng.gen_range(0..30);
             assert!(width(&truncate(&one_line(&s), max)) <= max);
+        }
+    }
+
+    #[test]
+    fn tail_keeps_the_last_columns_whole_clusters_only() {
+        assert_eq!(tail("abcdef", 3), "def");
+        assert_eq!(tail("ab", 5), "ab");
+        assert_eq!(tail("日本語", 5), "本語");
+        assert_eq!(tail("ae\u{301}", 1), "e\u{301}");
+        assert_eq!(tail("abc", 0), "");
+    }
+
+    #[test]
+    fn wrap_rows_breaks_long_lines_and_keeps_newlines() {
+        assert_eq!(wrap_rows("abcdef", 4), ["abcd", "ef"]);
+        assert_eq!(wrap_rows("ab\ncd", 4), ["ab", "cd"]);
+        assert_eq!(wrap_rows("", 4), [""]);
+        assert_eq!(wrap_rows("日本語", 4), ["日本", "語"]);
+        for row in wrap_rows(&"x".repeat(1000), 37) {
+            assert!(width(&row) <= 37);
         }
     }
 }

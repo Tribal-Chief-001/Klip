@@ -144,3 +144,71 @@ async fn a_failed_call_is_shown_as_a_toast() {
         h.screen()
     );
 }
+
+#[tokio::test]
+async fn pairing_through_the_screen_shows_the_code_asks_before_linking_and_confirms() {
+    use klip_tui::api::PendingPairInfo;
+    let fake = FakeDaemon::new();
+    let mut h = harness(&fake, "pair");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("3");
+    assert!(h.wait_for("klip1TESTTICKET", 3000).await, "{}", h.screen());
+    assert!(h.screen().contains("Ticket (single use):"));
+    fake.with(|s| {
+        s.poll.pending = Some(PendingPairInfo {
+            device_name: "Pixel 8".into(),
+            fingerprint: "DDDD-EEEE-FFFF".into(),
+        });
+    });
+    assert!(h.wait_for("Link “Pixel 8”?", 3000).await, "{}", h.screen());
+    assert!(h.screen().contains("DDDD-EEEE-FFFF"));
+    h.text("y");
+    h.pump(200).await; // effects run as tasks: let the call happen
+    assert!(fake.calls().iter().any(|c| c == "pair_decide true"));
+    fake.with(|s| s.poll.paired = Some("Pixel 8".into()));
+    assert!(
+        h.wait_for("Linked with Pixel 8", 3000).await,
+        "{}",
+        h.screen()
+    );
+}
+
+#[tokio::test]
+async fn leaving_the_pair_screen_closes_the_window() {
+    let fake = FakeDaemon::new();
+    let mut h = harness(&fake, "pairleave");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("3");
+    assert!(h.wait_for("klip1TESTTICKET", 3000).await);
+    h.text("1");
+    h.pump(300).await;
+    assert!(
+        fake.calls().iter().any(|c| c == "pair_cancel"),
+        "{:?}",
+        fake.calls()
+    );
+}
+
+#[tokio::test]
+async fn joining_with_a_pasted_ticket_reports_success_and_failure() {
+    let fake = FakeDaemon::new();
+    let mut h = harness(&fake, "join");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("3");
+    h.text("j");
+    h.paste("klip1JOINJOINJOIN\n");
+    h.key(KeyCode::Enter);
+    assert!(
+        h.wait_for("Linked with Pixel 8", 3000).await,
+        "{}",
+        h.screen()
+    );
+    fake.with(|s| s.join_reply = Err(ApiError::Refused("invalid or expired pairing code".into())));
+    h.paste("klip1AGAIN");
+    h.key(KeyCode::Enter);
+    assert!(
+        h.wait_for("invalid or expired pairing code", 3000).await,
+        "{}",
+        h.screen()
+    );
+}

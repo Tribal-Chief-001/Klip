@@ -1,0 +1,16 @@
+●─● klip   1  2  3 Pair  4  5  6  7                 ● ACTIVE
+┌ Pair a device ───────────────────────────────────────────┐
+│ c  Show a code    j  Join with a ticket                  │
+│                                                          │
+│The QR code does not fit this window: use the ticket below│
+│Ticket (single use):                                      │
+│  klip1ABCDEFGHJKLMNPQRSTUVWXYZ23456789ABCDEFGHJKLMNPQRSTU│
+│  VWXYZ23456789ABCDEFGHJKLMNPQRSTUVWXYZ23456789ABCDEFGHJKL│
+│  MNPQRSTUVWXYZ23456789                                   │
+│This device AAAA-BBBB-CCCC · expires in 2:00 · LAN addres…│
+│n new code · l LAN on · t validity 120 s                  │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+n new code · l LAN · t validity · j join · 1-7 screens · p …

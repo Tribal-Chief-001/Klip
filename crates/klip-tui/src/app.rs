@@ -1,8 +1,11 @@
 //! The pure core of the TUI: state, events, effects and `update`. No I/O, no terminal, no clock
 //! (time arrives as `Msg::Tick`). Everything here is unit-tested without a terminal.
-use crate::api::{ApiError, DaemonStatusInfo, HelloInfo, UnpairReport};
+use crate::api::{
+    ApiError, DaemonStatusInfo, HelloInfo, PairPollInfo, PairTicket, Paired, UnpairReport,
+};
 use crate::fmt;
 use crate::screens::devices::DevicesState;
+use crate::screens::pair::PairState;
 use crate::textbuf::TextBuf;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -155,6 +158,11 @@ pub enum Modal {
         title: String,
         body: String,
     },
+    /// A device is asking to pair; answered with y/n on any screen.
+    PairApproval {
+        name: String,
+        fingerprint: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +224,9 @@ pub struct AppState {
     pub inflight: Inflight,
     pub clock: Clock,
     pub devices: DevicesState,
+    pub pair: PairState,
+    /// Draw QR codes with light modules as blocks (right for light-on-dark terminals).
+    pub invert_qr: bool,
 }
 
 impl AppState {
@@ -238,6 +249,8 @@ impl AppState {
             inflight: Inflight::default(),
             clock: Clock::default(),
             devices: DevicesState::default(),
+            pair: PairState::default(),
+            invert_qr: true,
         }
     }
 
@@ -313,10 +326,30 @@ pub enum Effect {
     Status,
     Pause(u64),
     Resume,
-    Unpair { selector: String },
+    Unpair {
+        selector: String,
+    },
     UnpairAll,
     StopDaemon,
     StartDaemon,
+    PairStart {
+        ttl_secs: u64,
+        lan: bool,
+        session: u64,
+        restart: bool,
+    },
+    PairPoll {
+        session: u64,
+    },
+    PairDecide {
+        accept: bool,
+        session: u64,
+    },
+    PairCancel,
+    PairJoin {
+        ticket: String,
+        session: u64,
+    },
 }
 
 /// The result of an effect, delivered back as `Msg::Reply`.
@@ -330,6 +363,23 @@ pub enum Reply {
     UnpairedAll(Result<UnpairReport, ApiError>),
     DaemonStopped(Result<(), ApiError>),
     DaemonStarted(Result<u32, ApiError>),
+    PairStarted {
+        session: u64,
+        result: Result<PairTicket, ApiError>,
+    },
+    PairPolled {
+        session: u64,
+        result: Result<PairPollInfo, ApiError>,
+    },
+    PairDecided {
+        session: u64,
+        result: Result<PairPollInfo, ApiError>,
+    },
+    PairCancelled(Result<(), ApiError>),
+    PairJoined {
+        session: u64,
+        result: Result<Paired, ApiError>,
+    },
 }
 
 /// Effects to run when the app starts.
@@ -373,7 +423,9 @@ fn go(app: &mut AppState, to: Screen, fx: &mut Vec<Effect>) {
         return;
     }
     let from = app.screen;
-    app.modal = None;
+    if !matches!(app.modal, Some(Modal::PairApproval { .. })) {
+        app.modal = None; // a pairing request waiting for an answer stays on top of every screen
+    }
     app.screen = to;
     app.dirty = true;
     crate::screens::on_leave(app, from, fx);
@@ -524,6 +576,17 @@ fn on_modal_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
             }
         }
         Modal::Pause { selected, custom } => pause_key(app, selected, custom, k, fx),
+        Modal::PairApproval { .. } => match k.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                crate::screens::pair::decide(app, true, fx);
+                None
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                crate::screens::pair::decide(app, false, fx);
+                None
+            }
+            _ => Some(modal),
+        },
     };
 }
 
@@ -694,6 +757,19 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
         Reply::DaemonStarted(Ok(pid)) => {
             app.toast(ToastKind::Ok, format!("Klip started (PID {pid})"))
         }
+        Reply::PairStarted { session, result } => {
+            crate::screens::pair::on_started(app, session, result)
+        }
+        Reply::PairPolled { session, result } => {
+            crate::screens::pair::on_polled(app, session, result)
+        }
+        Reply::PairDecided { session, result } => {
+            crate::screens::pair::on_decided(app, session, result)
+        }
+        Reply::PairCancelled(_) => {}
+        Reply::PairJoined { session, result } => {
+            crate::screens::pair::on_joined(app, session, result)
+        }
         Reply::DaemonStarted(Err(e)) => {
             app.modal = Some(Modal::Notice {
                 title: "Could not start Klip".to_string(),
@@ -729,7 +805,7 @@ fn on_down(app: &mut AppState, e: ApiError) {
     }
     if matches!(
         app.modal,
-        Some(Modal::Confirm { .. }) | Some(Modal::Pause { .. })
+        Some(Modal::Confirm { .. }) | Some(Modal::Pause { .. }) | Some(Modal::PairApproval { .. })
     ) {
         app.modal = Some(Modal::Notice {
             title: "Klip stopped answering".to_string(),

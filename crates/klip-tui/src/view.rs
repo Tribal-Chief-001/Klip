@@ -236,6 +236,39 @@ fn modal(app: &AppState, m: &Modal, theme: &Theme, f: &mut Frame, area: Rect) {
             plain.push("Enter  close".to_string());
             boxed(f, area, &one_line(title), theme, lines, &plain, 62);
         }
+        Modal::PairApproval { name, fingerprint } => {
+            let plain = vec![
+                "A device is asking to pair with this computer.".to_string(),
+                "Compare this fingerprint with the one on that device:".to_string(),
+                format!("    {fingerprint}"),
+                String::new(),
+                "y  approve        n  decline".to_string(),
+            ];
+            let lines: Vec<Line<'static>> = vec![
+                Line::from(Span::styled(plain[0].clone(), theme.st_text())),
+                Line::from(Span::styled(plain[1].clone(), theme.st_dim())),
+                Line::from(Span::styled(
+                    plain[2].clone(),
+                    theme.st_signal().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("y", theme.st_signal()),
+                    Span::styled("  approve        ", theme.st_text()),
+                    Span::styled("n", theme.st_signal()),
+                    Span::styled("  decline", theme.st_text()),
+                ]),
+            ];
+            boxed(
+                f,
+                area,
+                &format!("Link “{name}”?"),
+                theme,
+                lines,
+                &plain,
+                62,
+            );
+        }
         Modal::Pause { selected, custom } => {
             let choices = pause_choices(app.paused());
             let mut lines: Vec<Line<'static>> = Vec::new();

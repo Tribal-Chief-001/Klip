@@ -136,6 +136,15 @@ fn number_keys_open_screens_and_the_help_overlay_lists_keys() {
     assert!(p.wait_for("ACTIVE", 15));
     p.send(b"2");
     assert!(p.wait_for("Devices (0)", 5), "{}", p.screen());
+    p.send(b"3");
+    assert!(p.wait_for("Pair a device", 5), "{}", p.screen());
+    assert!(
+        p.wait_for("Ticket (single use):", 10),
+        "the real daemon issues a real ticket: {}",
+        p.screen()
+    );
+    p.send(b"2");
+    assert!(p.wait_for("Devices (0)", 5), "{}", p.screen());
     p.send(b"?");
     assert!(p.wait_for("quit (Klip keeps running)", 5), "{}", p.screen());
     p.send(b"q"); // closes the help

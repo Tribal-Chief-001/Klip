@@ -45,6 +45,7 @@ where
         let (tx, rx) = unbounded_channel();
         let mut app = AppState::new(size);
         app.mouse_on = env.mouse;
+        app.invert_qr = !env.light;
         let first = boot(&mut app);
         let rt = Self {
             app,
@@ -126,6 +127,33 @@ async fn run_effect(api: Arc<dyn DaemonApi>, fx: Effect) -> Reply {
         Effect::UnpairAll => Reply::UnpairedAll(api.unpair_all().await),
         Effect::StopDaemon => Reply::DaemonStopped(api.stop_daemon().await),
         Effect::StartDaemon => Reply::DaemonStarted(api.start_daemon().await),
+        Effect::PairStart {
+            ttl_secs,
+            lan,
+            session,
+            restart,
+        } => {
+            if restart {
+                let _ = api.pair_cancel().await; // one task, so the cancel always happens before the start
+            }
+            Reply::PairStarted {
+                session,
+                result: api.pair_start(ttl_secs, lan).await,
+            }
+        }
+        Effect::PairPoll { session } => Reply::PairPolled {
+            session,
+            result: api.pair_poll().await,
+        },
+        Effect::PairDecide { accept, session } => Reply::PairDecided {
+            session,
+            result: api.pair_decide(accept).await,
+        },
+        Effect::PairCancel => Reply::PairCancelled(api.pair_cancel().await),
+        Effect::PairJoin { ticket, session } => Reply::PairJoined {
+            session,
+            result: api.pair_join(ticket).await,
+        },
     }
 }
 
@@ -140,6 +168,23 @@ fn failed_reply(fx: &Effect, e: ApiError) -> Reply {
         Effect::UnpairAll => Reply::UnpairedAll(Err(e)),
         Effect::StopDaemon => Reply::DaemonStopped(Err(e)),
         Effect::StartDaemon => Reply::DaemonStarted(Err(e)),
+        Effect::PairStart { session, .. } => Reply::PairStarted {
+            session: *session,
+            result: Err(e),
+        },
+        Effect::PairPoll { session } => Reply::PairPolled {
+            session: *session,
+            result: Err(e),
+        },
+        Effect::PairDecide { session, .. } => Reply::PairDecided {
+            session: *session,
+            result: Err(e),
+        },
+        Effect::PairCancel => Reply::PairCancelled(Err(e)),
+        Effect::PairJoin { session, .. } => Reply::PairJoined {
+            session: *session,
+            result: Err(e),
+        },
     }
 }
 

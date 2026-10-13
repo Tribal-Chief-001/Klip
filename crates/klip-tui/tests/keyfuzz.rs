@@ -81,7 +81,7 @@ fn random_reply(rng: &mut StdRng) -> Reply {
             )
         })
         .collect();
-    match rng.gen_range(0..12) {
+    match rng.gen_range(0..17) {
         0..=2 => Reply::Status(Ok(sample_status(peers))),
         3 => Reply::Status(Err(ApiError::DaemonDown)),
         4 => Reply::Status(Err(ApiError::Timeout(15))),
@@ -91,7 +91,36 @@ fn random_reply(rng: &mut StdRng) -> Reply {
         8 => Reply::Resumed(Err(ApiError::Refused("no".into()))),
         9 => Reply::Unpaired(Ok("x\x1b".into())),
         10 => Reply::UnpairedAll(Ok((vec!["a".into()], vec![("b".into(), "\x1b[2J".into())]))),
-        _ => Reply::DaemonStarted(Err(ApiError::Refused("boom\nmore".into()))),
+        11 => Reply::DaemonStarted(Err(ApiError::Refused("boom\nmore".into()))),
+        12 => Reply::PairStarted {
+            session: rng.gen_range(0..6),
+            result: Ok(klip_tui::api::PairTicket {
+                ticket: "klip1ABC".into(),
+                expires_in_secs: 120,
+                host_fingerprint: "A-B-C".into(),
+            }),
+        },
+        13 => Reply::PairPolled {
+            session: rng.gen_range(0..6),
+            result: Ok(klip_tui::api::PairPollInfo {
+                window_open: rng.gen_bool(0.5),
+                seconds_left: 5,
+                pending: rng.gen_bool(0.5).then(|| klip_tui::api::PendingPairInfo {
+                    device_name: "dev\x1b[2J".into(),
+                    fingerprint: "AAAA".into(),
+                }),
+                paired: rng.gen_bool(0.2).then(|| "Pixel".to_string()),
+            }),
+        },
+        14 => Reply::PairDecided {
+            session: rng.gen_range(0..6),
+            result: Err(ApiError::Refused("no pairing request is waiting".into())),
+        },
+        15 => Reply::PairJoined {
+            session: rng.gen_range(0..6),
+            result: Err(ApiError::Refused("invalid".into())),
+        },
+        _ => Reply::PairCancelled(Ok(())),
     }
 }
 

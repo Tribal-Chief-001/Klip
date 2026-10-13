@@ -111,3 +111,46 @@ fn the_tab_bar_fits_at_the_minimum_width() {
     assert!(first.contains("PAUSED"), "{first}");
     assert!(first.contains("2 Devices"), "{first}");
 }
+
+#[test]
+fn pair_screen_with_a_code_and_in_join_mode() {
+    use klip_tui::api::PairTicket;
+    let mut a = up(100, 60, two_peers());
+    a.screen = Screen::Pair;
+    a.pair.ticket = Some(PairTicket {
+        ticket: format!("klip1{}", "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".repeat(4)),
+        expires_in_secs: 120,
+        host_fingerprint: "AAAA-BBBB-CCCC".into(),
+    });
+    a.pair.qr = klip_tui::screens::pair::qr_lines(&a.pair.ticket.as_ref().unwrap().ticket, true);
+    a.pair.ours = true;
+    snap("pair_show", &a, 100, 60);
+    a.size = (100, 30);
+    snap("pair_show_small", &a, 100, 30);
+    a.size = (60, 16);
+    snap("pair_show_min", &a, 60, 16);
+    a.size = (100, 30);
+    a.pair.mode = klip_tui::screens::pair::PairMode::Join;
+    a.pair.join_focus = true;
+    a.pair.join.insert_str("klip1PASTEDTICKET");
+    snap("pair_join", &a, 100, 30);
+    a.pair.joining = true;
+    snap("pair_join_waiting", &a, 100, 30);
+}
+
+#[test]
+fn pairing_approval_and_results() {
+    use klip_tui::screens::pair::PairResult;
+    let mut a = up(100, 30, two_peers());
+    a.screen = Screen::Pair;
+    a.modal = Some(Modal::PairApproval {
+        name: "Pixel 8".into(),
+        fingerprint: "DDDD-EEEE-FFFF".into(),
+    });
+    snap("pair_approval", &a, 100, 30);
+    a.modal = None;
+    a.pair.result = Some(PairResult::Linked("Pixel 8".into()));
+    snap("pair_linked", &a, 100, 30);
+    a.pair.result = Some(PairResult::Expired);
+    snap("pair_expired", &a, 100, 30);
+}

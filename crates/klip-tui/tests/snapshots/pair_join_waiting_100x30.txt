@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ Pair a device ───────────────────────────────────────────────────────────────────────────────────┐
+│ c  Show a code    j  Join with a ticket                                                          │
+│                                                                                                  │
+│Run `klip pair` on the other computer (or open “Show my code” in the app), then paste the klip1…  │
+│ticket here.                                                                                      │
+│┌────────────────────────────────────────────────────────────────────────────────────────────────┐│
+││klip1PASTEDTICKET                                                                               ││
+│└────────────────────────────────────────────────────────────────────────────────────────────────┘│
+│Waiting for the other device to approve… (Esc only stops waiting here; the other device may still │
+│link)                                                                                             │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Esc leave the field · Alt+1-7 screens · Ctrl+C quit

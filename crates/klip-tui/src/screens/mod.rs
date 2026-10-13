@@ -1,6 +1,7 @@
 //! One module per screen; each has its own state, key handling and drawing. This module routes.
 pub mod devices;
 pub mod home;
+pub mod pair;
 
 use crate::app::{AppState, Effect, Screen};
 use crate::theme::Theme;
@@ -44,11 +45,16 @@ pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
     match app.screen {
         Screen::Home => home::key(app, k, fx),
         Screen::Devices => devices::key(app, k, fx),
+        Screen::Pair => pair::key(app, k, fx),
         _ => {}
     }
 }
 
-pub fn paste(_app: &mut AppState, _text: &str, _fx: &mut Vec<Effect>) {}
+pub fn paste(app: &mut AppState, text: &str, _fx: &mut Vec<Effect>) {
+    if app.screen == Screen::Pair {
+        pair::paste(app, text);
+    }
+}
 
 pub fn scroll(app: &mut AppState, delta: i32) {
     if app.screen == Screen::Devices {
@@ -56,19 +62,38 @@ pub fn scroll(app: &mut AppState, delta: i32) {
     }
 }
 
-pub fn text_focus(_app: &AppState) -> bool {
-    false
+pub fn text_focus(app: &AppState) -> bool {
+    match app.screen {
+        Screen::Pair => pair::text_focus(app),
+        _ => false,
+    }
 }
 
-pub fn on_enter(_app: &mut AppState, _to: Screen, _fx: &mut Vec<Effect>) {}
-pub fn on_leave(_app: &mut AppState, _from: Screen, _fx: &mut Vec<Effect>) {}
-pub fn on_tick(_app: &mut AppState, _fx: &mut Vec<Effect>) {}
-pub fn on_daemon_down(_app: &mut AppState) {}
+pub fn on_enter(app: &mut AppState, to: Screen, fx: &mut Vec<Effect>) {
+    if to == Screen::Pair {
+        pair::on_enter(app, fx);
+    }
+}
+
+pub fn on_leave(app: &mut AppState, from: Screen, fx: &mut Vec<Effect>) {
+    if from == Screen::Pair {
+        pair::on_leave(app, fx);
+    }
+}
+
+pub fn on_tick(app: &mut AppState, fx: &mut Vec<Effect>) {
+    pair::on_tick(app, fx);
+}
+
+pub fn on_daemon_down(app: &mut AppState) {
+    pair::on_daemon_down(app);
+}
 
 pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
     match app.screen {
         Screen::Home => home::view(app, theme, f, area),
         Screen::Devices => devices::view(app, theme, f, area),
+        Screen::Pair => pair::view(app, theme, f, area),
         other => centered_text(
             f,
             area,
@@ -86,6 +111,13 @@ pub fn hints(app: &AppState) -> &'static str {
     match app.screen {
         Screen::Home => "s start · x stop · ",
         Screen::Devices => "↑↓ select · u unpair · U unpair all · ",
+        Screen::Pair => {
+            if app.pair.mode == pair::PairMode::Show {
+                "n new code · l LAN · t validity · j join · "
+            } else {
+                "Enter link · Esc leave field · c show code · "
+            }
+        }
         _ => "",
     }
 }
@@ -110,6 +142,14 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             v.push(("↑↓ / j k", "select a device"));
             v.push(("u", "unpair the selected device"));
             v.push(("U", "unpair all devices"));
+        }
+        Screen::Pair => {
+            v.push((
+                "n / l / t",
+                "new code / toggle LAN addresses / cycle validity",
+            ));
+            v.push(("c / j", "show a code / join with a ticket"));
+            v.push(("Enter", "link with the pasted ticket"));
         }
         _ => {}
     }
