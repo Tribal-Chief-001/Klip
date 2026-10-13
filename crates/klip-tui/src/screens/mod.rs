@@ -2,6 +2,7 @@
 pub mod devices;
 pub mod history;
 pub mod home;
+pub mod log;
 pub mod pair;
 pub mod send;
 
@@ -50,6 +51,7 @@ pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
         Screen::Pair => pair::key(app, k, fx),
         Screen::History => history::key(app, k, fx),
         Screen::Send => send::key(app, k, fx),
+        Screen::Log => log::key(app, k),
         _ => {}
     }
 }
@@ -66,6 +68,7 @@ pub fn scroll(app: &mut AppState, delta: i32) {
     match app.screen {
         Screen::Devices => devices::scroll(app, delta),
         Screen::History => history::scroll(app, delta),
+        Screen::Log => log::scroll(app, delta),
         _ => {}
     }
 }
@@ -75,6 +78,7 @@ pub fn text_focus(app: &AppState) -> bool {
         Screen::Pair => pair::text_focus(app),
         Screen::History => history::text_focus(app),
         Screen::Send => send::text_focus(app),
+        Screen::Log => log::text_focus(app),
         _ => false,
     }
 }
@@ -84,6 +88,7 @@ pub fn on_enter(app: &mut AppState, to: Screen, fx: &mut Vec<Effect>) {
         Screen::Pair => pair::on_enter(app, fx),
         Screen::History => history::on_enter(app, fx),
         Screen::Send => send::on_enter(app),
+        Screen::Log => log::on_enter(app, fx),
         _ => {}
     }
 }
@@ -100,6 +105,7 @@ pub fn on_leave(app: &mut AppState, from: Screen, fx: &mut Vec<Effect>) {
 pub fn on_tick(app: &mut AppState, fx: &mut Vec<Effect>) {
     pair::on_tick(app, fx);
     history::on_tick(app, fx);
+    log::on_tick(app, fx);
 }
 
 pub fn on_daemon_down(app: &mut AppState) {
@@ -114,6 +120,7 @@ pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
         Screen::Pair => pair::view(app, theme, f, area),
         Screen::History => history::view(app, theme, f, area),
         Screen::Send => send::view(app, theme, f, area),
+        Screen::Log => log::view(app, theme, f, area),
         other => centered_text(
             f,
             area,
@@ -142,6 +149,7 @@ pub fn hints(app: &AppState) -> &'static str {
             "↑↓ select · / search · Enter copy back · s send again · v reveal · C clear · "
         }
         Screen::Send => "Ctrl+S send · Ctrl+O file · Ctrl+U clear · Enter edit · ",
+        Screen::Log => "f follow · / search · PgUp PgDn scroll · G end · ",
         _ => "",
     }
 }
@@ -184,6 +192,12 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             v.push(("v", "show or hide a secret"));
             v.push(("C", "clear the history"));
             v.push(("r", "reload"));
+        }
+        Screen::Log => {
+            v.push(("f", "follow the end of the log, or stop following"));
+            v.push(("/", "search (Esc clears)"));
+            v.push(("↑↓ PgUp PgDn", "scroll"));
+            v.push(("G / g", "jump to the end / the start"));
         }
         Screen::Send => {
             v.push(("Ctrl+S / F5", "send the text to all devices"));

@@ -296,3 +296,23 @@ fn send_screen_types_and_sends_against_a_real_daemon() {
     p.send(b"q");
     assert_eq!(p.wait_exit(5), Some(0), "{}", p.screen());
 }
+
+#[test]
+fn the_log_screen_shows_the_real_daemon_log_without_colour_codes() {
+    let (_d, mut p) = running();
+    assert!(p.wait_for("ACTIVE", 15));
+    p.send(b"6");
+    assert!(p.wait_for("Log ·", 5), "{}", p.screen());
+    assert!(
+        p.wait_for("device", 10),
+        "the daemon prints its device id at start: {}",
+        p.screen()
+    );
+    assert!(
+        !p.screen().contains("[32m") && !p.screen().contains("[0m"),
+        "{}",
+        p.screen()
+    );
+    p.send(b"q");
+    assert_eq!(p.wait_exit(5), Some(0));
+}

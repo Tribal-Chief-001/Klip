@@ -115,12 +115,46 @@ pub fn wrap_rows(s: &str, cols: usize) -> Vec<String> {
     rows
 }
 
+/// Remove ANSI "CSI" sequences (`ESC [ parameters final-byte`): colours and cursor moves that
+/// programs write into their logs. Everything else still goes through [`clean`].
+pub fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            while let Some(&n) = chars.peek() {
+                chars.next();
+                if ('\u{40}'..='\u{7e}').contains(&n) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn no_control(s: &str) -> bool {
         s.chars().all(|c| c == '\n' || !c.is_control())
+    }
+
+    #[test]
+    fn strip_ansi_removes_colour_and_cursor_sequences_but_nothing_else() {
+        assert_eq!(
+            strip_ansi("\x1b[32m✓\x1b[0m device \x1b[1;36mABCD\x1b[0m"),
+            "✓ device ABCD"
+        );
+        assert_eq!(strip_ansi("a\x1b[2Jb\x1b[?25lc"), "abc");
+        assert_eq!(strip_ansi("plain"), "plain");
+        // Other escapes are not touched here: `clean` turns them into visible markers afterwards.
+        assert_eq!(clean(&strip_ansi("x\x1b]0;t\x07y")), "x␛]0;t␇y");
+        assert_eq!(strip_ansi("trailing \x1b["), "trailing ");
     }
 
     #[test]

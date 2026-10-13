@@ -27,6 +27,7 @@ pub struct Runtime<B: Backend> {
     pub app: AppState,
     terminal: Terminal<B>,
     api: Arc<dyn DaemonApi>,
+    env: TuiEnv,
     theme: Theme,
     tx: UnboundedSender<Msg>,
 }
@@ -46,11 +47,13 @@ where
         let mut app = AppState::new(size);
         app.mouse_on = env.mouse;
         app.invert_qr = !env.light;
+        app.log_path = crate::files::log_path(&env.paths).display().to_string();
         let first = boot(&mut app);
         let rt = Self {
             app,
             terminal,
             api,
+            env: env.clone(),
             theme: Theme::from_env(&env),
             tx,
         };
@@ -103,11 +106,12 @@ where
 
     fn execute(&self, fx: Effect) {
         let api = Arc::clone(&self.api);
+        let env = self.env.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
             // Run in a child task: if the call panics, the poll must still get an answer, or its
             // "in flight" flag would never clear and polling would stop for good.
-            let inner = tokio::spawn(run_effect(api, fx.clone()));
+            let inner = tokio::spawn(run_effect(api, env, fx.clone()));
             let reply = match inner.await {
                 Ok(r) => r,
                 Err(e) => failed_reply(&fx, ApiError::Io(format!("internal error: {e}"))),
@@ -117,7 +121,7 @@ where
     }
 }
 
-async fn run_effect(api: Arc<dyn DaemonApi>, fx: Effect) -> Reply {
+async fn run_effect(api: Arc<dyn DaemonApi>, env: TuiEnv, fx: Effect) -> Reply {
     match fx {
         Effect::Hello => Reply::Hello(api.hello().await),
         Effect::Status => Reply::Status(api.status().await),
@@ -158,6 +162,14 @@ async fn run_effect(api: Arc<dyn DaemonApi>, fx: Effect) -> Reply {
         Effect::CopyItem(id) => Reply::Copied(api.copy_to_clipboard(id).await),
         Effect::ClearHistory => Reply::HistoryCleared(api.clear_history().await),
         Effect::Send(text) => Reply::Sent(api.send(text).await),
+        Effect::TailLog(offset) => {
+            let path = crate::files::log_path(&env.paths);
+            Reply::Log(
+                tokio::task::spawn_blocking(move || crate::files::read_log_chunk(&path, offset))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string())),
+            )
+        }
         Effect::LoadFile(path) => {
             let shown = path.clone();
             let result = tokio::task::spawn_blocking(move || {
@@ -205,6 +217,7 @@ fn failed_reply(fx: &Effect, e: ApiError) -> Reply {
         Effect::CopyItem(_) => Reply::Copied(Err(e)),
         Effect::ClearHistory => Reply::HistoryCleared(Err(e)),
         Effect::Send(_) => Reply::Sent(Err(e)),
+        Effect::TailLog(_) => Reply::Log(Err(e.plain())),
         Effect::LoadFile(p) => Reply::FileLoaded {
             path: p.clone(),
             result: Err(e.plain()),

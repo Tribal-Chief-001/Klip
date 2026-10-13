@@ -237,3 +237,29 @@ fn send_screen_states() {
     });
     snap("send_large", &a, 100, 30);
 }
+
+#[test]
+fn log_screen_states() {
+    let mut a = up(100, 30, two_peers());
+    a.screen = Screen::Log;
+    a.log_path = "/home/user/.config/klip/daemon.log".to_string();
+    let mut m = up(100, 30, two_peers());
+    m.screen = Screen::Log;
+    m.log.missing = true;
+    snap("log_missing", &m, 100, 30);
+    for l in [
+        "Starting Klip in the foreground…",
+        "✓ device VCUU-LBYY-ES2H  (n0 public relays + discovery)",
+        "WARN relay unreachable: dns error",
+        "ERROR send to Pixel 8 failed: timed out",
+        "hostile \x1b[2J\x1b]0;PWNED\x07 \u{202E}line",
+        "a very long line that does not fit in the box and has to be cut with an ellipsis at the right edge of the window, really",
+    ] {
+        a.log.lines.push_back(l.to_string());
+    }
+    snap("log", &a, 100, 30);
+    snap("log", &a, 60, 16);
+    a.log.filter.insert_str("warn");
+    a.log.filtering = true;
+    snap("log_search", &a, 100, 30);
+}

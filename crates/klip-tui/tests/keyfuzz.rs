@@ -23,7 +23,7 @@ const PASTES: [&str; 6] = [
 ];
 
 fn random_key(rng: &mut StdRng) -> KeyEvent {
-    let code = match rng.gen_range(0..24) {
+    let code = match rng.gen_range(0..27) {
         0..=11 => {
             let chars: Vec<char> = CHARS.chars().collect();
             KeyCode::Char(chars[rng.gen_range(0..chars.len())])
@@ -139,10 +139,23 @@ fn random_reply(rng: &mut StdRng) -> Reply {
             path: "q".into(),
             result: Err("no such file\x1b".into()),
         },
-        _ => Reply::FileLoaded {
+        23 => Reply::FileLoaded {
             path: "big".into(),
             result: Ok("y".repeat(klip_tui::screens::send::EDITOR_MAX_BYTES + 1)),
         },
+        24 => Reply::Log(Ok(klip_tui::files::LogChunk {
+            new_offset: rng.gen_range(0..1000),
+            text: "ERROR \x1b[31mboom\x1b]0;x\x07\nplain\n日本語\n".repeat(rng.gen_range(0..300)),
+            reset: rng.gen_bool(0.2),
+            missing: rng.gen_bool(0.2),
+        })),
+        25 => Reply::Log(Err("denied \x1b[2J".into())),
+        _ => Reply::Log(Ok(klip_tui::files::LogChunk {
+            new_offset: 0,
+            text: "x".repeat(70_000),
+            reset: false,
+            missing: false,
+        })),
     }
 }
 
@@ -195,6 +208,7 @@ fn run(seed: u64, mut app: AppState, messages: usize) {
             "selection out of range at message {i}"
         );
         assert!(app.toasts.len() <= 3);
+        assert!(app.log.lines.len() <= klip_tui::screens::log::MAX_LINES);
         let (r, c) = app.send.buf.cursor();
         assert!(r < app.send.buf.lines().len());
         assert!(c <= app.send.buf.lines()[r].chars().count());

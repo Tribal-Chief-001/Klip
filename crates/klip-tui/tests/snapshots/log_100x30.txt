@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ Log · /home/user/.config/klip/daemon.log · following ────────────────────────────────────────────┐
+│Starting Klip in the foreground…                                                                  │
+│✓ device VCUU-LBYY-ES2H  (n0 public relays + discovery)                                           │
+│WARN relay unreachable: dns error                                                                 │
+│ERROR send to Pixel 8 failed: timed out                                                           │
+│hostile ␛[2J␛]0;PWNED␇ ⟦U+202E⟧line                                                               │
+│a very long line that does not fit in the box and has to be cut with an ellipsis at the right edg…│
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+f follow · / search · PgUp PgDn scroll · G end · 1-7 screens · p pause · ? help · q quit

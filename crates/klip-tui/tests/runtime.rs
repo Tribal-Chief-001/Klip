@@ -393,3 +393,52 @@ async fn loading_a_real_file_from_disk_works_and_a_missing_one_is_reported() {
     assert!(h.wait_for("No such file", 3000).await, "{}", h.screen());
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn the_log_screen_follows_a_real_file_and_survives_truncation_and_absence() {
+    use std::io::Write;
+    let env = test_env("logscreen");
+    let log = klip_tui::files::log_path(&env.paths);
+    let fake = FakeDaemon::new();
+    let mut h = Harness::new(fake.clone(), env, 100, 30);
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("6");
+    assert!(h.wait_for("No log yet", 3000).await, "{}", h.screen());
+    std::fs::write(&log, "\x1b[32m✓\x1b[0m device ABCD\nsecond line\n").unwrap();
+    assert!(h.wait_for("✓ device ABCD", 3000).await, "{}", h.screen());
+    assert!(!h.screen().contains('\x1b'));
+    let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+    f.write_all(b"WARN relay slow\nERROR boom \x1b]0;PWNED\x07\n")
+        .unwrap();
+    assert!(h.wait_for("ERROR boom", 3000).await, "{}", h.screen());
+    assert!(
+        h.screen().contains("␛]0;PWNED"),
+        "hostile bytes are shown as text: {}",
+        h.screen()
+    );
+    std::fs::write(&log, "fresh start\n").unwrap();
+    assert!(h.wait_for("fresh start", 3000).await, "{}", h.screen());
+    assert!(
+        !h.screen().contains("second line"),
+        "a truncated log starts over"
+    );
+    std::fs::remove_file(&log).unwrap();
+    assert!(h.wait_for("No log yet", 3000).await, "{}", h.screen());
+}
+
+#[tokio::test]
+async fn the_log_is_readable_while_the_daemon_is_stopped() {
+    let env = test_env("logdown");
+    let log = klip_tui::files::log_path(&env.paths);
+    std::fs::write(&log, "Klip stopped right after starting (exit status: 1)\n").unwrap();
+    let fake = FakeDaemon::new();
+    fake.with(|s| s.up = false);
+    let mut h = Harness::new(fake.clone(), env, 100, 30);
+    assert!(h.wait_for("Klip is not running", 3000).await);
+    h.text("6");
+    assert!(
+        h.wait_for("stopped right after starting", 3000).await,
+        "{}",
+        h.screen()
+    );
+}

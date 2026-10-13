@@ -1,0 +1,16 @@
+●─● klip   1  2  3  4  5  6 Log  7                  ● ACTIVE
+┌ Log · /home/user/.config/klip/daemon.log · following ────┐
+│Starting Klip in the foreground…                          │
+│✓ device VCUU-LBYY-ES2H  (n0 public relays + discovery)   │
+│WARN relay unreachable: dns error                         │
+│ERROR send to Pixel 8 failed: timed out                   │
+│hostile ␛[2J␛]0;PWNED␇ ⟦U+202E⟧line                       │
+│a very long line that does not fit in the box and has to …│
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+f follow · / search · PgUp PgDn scroll · G end · 1-7 screen…

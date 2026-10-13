@@ -4,9 +4,11 @@ use crate::api::{
     ApiError, DaemonStatusInfo, HelloInfo, HistoryItem, PairPollInfo, PairTicket, Paired,
     SendReport, UnpairReport,
 };
+use crate::files::LogChunk;
 use crate::fmt;
 use crate::screens::devices::DevicesState;
 use crate::screens::history::HistoryState;
+use crate::screens::log::LogState;
 use crate::screens::pair::PairState;
 use crate::screens::send::SendState;
 use crate::textbuf::TextBuf;
@@ -231,6 +233,8 @@ pub struct AppState {
     pub pair: PairState,
     pub history: HistoryState,
     pub send: SendState,
+    pub log: LogState,
+    pub log_path: String,
     /// Draw QR codes with light modules as blocks (right for light-on-dark terminals).
     pub invert_qr: bool,
 }
@@ -258,6 +262,8 @@ impl AppState {
             pair: PairState::default(),
             history: HistoryState::default(),
             send: SendState::default(),
+            log: LogState::default(),
+            log_path: "daemon.log".to_string(),
             invert_qr: true,
         }
     }
@@ -365,6 +371,7 @@ pub enum Effect {
     ClearHistory,
     Send(String),
     LoadFile(String),
+    TailLog(Option<u64>),
 }
 
 /// The result of an effect, delivered back as `Msg::Reply`.
@@ -403,6 +410,7 @@ pub enum Reply {
         path: String,
         result: Result<String, String>,
     },
+    Log(Result<LogChunk, String>),
 }
 
 /// Effects to run when the app starts.
@@ -809,6 +817,7 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
             format!("Could not clear the history: {}", e.plain()),
         ),
         Reply::Sent(res) => on_sent(app, res),
+        Reply::Log(res) => crate::screens::log::on_chunk(app, res),
         Reply::FileLoaded { path, result } => {
             crate::screens::send::on_file_loaded(app, path, result)
         }
