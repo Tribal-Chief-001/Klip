@@ -320,3 +320,45 @@ fn the_log_screen_shows_the_real_daemon_log_without_colour_codes() {
     p.send(b"q");
     assert_eq!(p.wait_exit(5), Some(0));
 }
+
+#[test]
+#[ignore = "manual measurement: run in release mode, takes KLIP_IDLE_SECS (default 300)"]
+fn tui_idle_cost() {
+    let secs: u64 = std::env::var("KLIP_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    let (_d, mut p) = running();
+    assert!(p.wait_for("ACTIVE", 15));
+    let pid = p.child.process_id().expect("pid");
+    let read = |pid: u32| -> (u64, u64) {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        let rss_kib = status
+            .lines()
+            .find(|l| l.starts_with("VmRSS:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        let after = stat
+            .rsplit(')')
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        let ticks: u64 =
+            after[11].parse::<u64>().unwrap_or(0) + after[12].parse::<u64>().unwrap_or(0); // utime + stime
+        (rss_kib, ticks)
+    };
+    let (rss0, t0) = read(pid);
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    let (rss1, t1) = read(pid);
+    let hz = 100.0; // USER_HZ on Linux
+    println!(
+        "TUI idle for {secs} s: RSS {rss0} KiB -> {rss1} KiB, CPU {:.2} s ({:.3} % of one core)",
+        (t1 - t0) as f64 / hz,
+        (t1 - t0) as f64 / hz / secs as f64 * 100.0
+    );
+    p.send(b"q");
+    assert_eq!(p.wait_exit(5), Some(0));
+}

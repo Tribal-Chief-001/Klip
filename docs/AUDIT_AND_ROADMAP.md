@@ -170,7 +170,16 @@ release build, CI). Evidence and numbers: `docs/RESEARCH_2026.md` sections 12-14
 
 **Android automatic sending (2026-10-13):** the READ_LOGS + overlay trick was removed: AOSP's LogcatManagerService denies log access to background apps on Android 13+, so it can never work there. Replaced by an optional helper started as the shell user (adb command once, or through `su` on rooted phones) that watches the clipboard and talks to the app over authenticated loopback TCP; verified on the emulator only (shell, root-dropped-to-shell, R8 build).
 
+**Terminal app (2026-10-13/14)** - `klip` with no arguments opens a full-screen app (crate `klip-tui`). Verified with commands:
+- Pure core: `update(state, msg) -> effects`, drawing only reads state; a runtime executes effects against a `DaemonApi` trait (fake for tests, IPC for the binary).
+- Sanitize layer: escape sequences, bidi and zero-width characters from clips, device names and logs are shown as visible marks; secrets hidden until revealed; terminal restored on quit, SIGTERM, SIGHUP, panic and daemon death (pseudo-terminal tests).
+- Screens: Home, Devices, Pair (QR, join, approval from any screen), History (search, copy back, resend, clear), Send (editor, file loading, per-device result), Log, Settings (validated `config.json`, restart, auto-start); 60x16 and 100x30 text snapshots reviewed by eye.
+- Protocol additions (append-only, pinned by golden-bytes tests): Hello (version, capabilities, loaded config, request cap), UnpairAll, CopyToClipboard, ClearHistory; the request cap is now `max_clip_bytes` + 64 KiB (it was a fixed 8 MiB: a clip allowed by the limit could not be sent). A v0.3.6 daemon keeps working (stub-daemon test, and a read-only run against the real one).
+- Found on the way: a history bug that mis-detected bitmaps by the bytes `BM` at the start of text; a "Broken pipe" instead of the daemon's size error on 9 MB sends; the Pair screen showed an already-invalid code while a new one opened (found by the two-daemon test).
+- Tests: two real daemons driven through the TUI (pair, send byte-for-byte, copy back, pause, unpair all); 56,000 random events; idle cost measured (see README).
+
 **Still open (ranked)**
+0. Terminal app: emulator matrix (kitty, gnome-terminal, alacritty, tmux, SSH), macOS runtime, Windows (needs a Windows control channel first).
 1. Test the Android app on a physical phone: camera QR, tile, notification action, boot restart, Doze/battery, OEM behaviour; optional READ_LOGS mode.
 2. Post-quantum key exchange (enable aws-lc-rs + `prefer-post-quantum`) and say exactly what it protects; external review of the pairing design.
 3. Security tooling in CI: cargo-deny, coverage-guided fuzz targets (only random/mutation tests exist), signed binaries (cosign/minisign). cargo-audit is in CI now.

@@ -36,12 +36,37 @@
 - **No account, no server of ours.** Devices find each other by cryptographic device ID.
 - You decide what is linked: pairing needs a one-time QR/ticket **and** your approval on the other device.
 - Honest feedback: when you send something, Klip tells you whether the other device really put it on its clipboard, or why not.
+- **A full-screen app:** run `klip` on a terminal to see devices, pair, browse the history, send text, read the log and change settings without remembering commands.
+
+## The terminal app
+
+Run `klip` with no arguments on a terminal. Quitting (`q`) leaves Klip running in the background.
+
+| Key | Does |
+|---|---|
+| `1`-`7` / `Tab` | switch screen (Home, Devices, Pair, History, Send, Log, Settings); `Alt+1-7` also inside a text field |
+| `p` | pause or resume syncing |
+| `?` | help for the current screen |
+| `m` | mouse on/off (off lets you select text with the terminal) |
+| `Ctrl+L` | redraw |
+| `q` / `Ctrl+C` | quit |
+| Devices | `↑↓` select · `u` unpair · `U` unpair all |
+| Pair | `n` new code · `l` LAN addresses · `t` validity · `j` join with a ticket · `y`/`n` answer a request |
+| History | `↑↓` select · `/` search · `Enter` copy back to this computer · `s` send again · `v` show a secret · `C` clear |
+| Send | `Ctrl+S`/`F5` send · `Ctrl+O` load a file · `Ctrl+U` clear · `Esc` leave the editor |
+| Log | `f` follow · `/` search · `PgUp`/`PgDn` scroll · `G` end |
+| Settings | `↑↓` select · `Enter` edit/toggle · `s` save · `u` discard · `R` restart Klip |
+
+Colours: `NO_COLOR=1` switches to bold/reverse, `KLIP_THEME=light` for light terminals; meaning is never colour-only.
+
+*Clips shown on screen are sanitized: escape sequences and text-direction tricks appear as visible marks (`␛`, `⟦U+202E⟧`). Secrets are hidden until you press `v`. The pairing ticket is a secret: it is shown only on the Pair screen and the window closes when you leave it. Terminal scrollback and screen recorders can still capture what is on screen.*
 
 ## Status — what is actually tested
 
 | Part | State | Evidence |
 |---|---|---|
-| Core engine (pairing, sync, conflict resolution) | ✅ working | 70 automated tests (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
+| Core engine (pairing, sync, conflict resolution) | ✅ working | 276 automated tests in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
+| **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | 276 automated tests in the workspace, of which the terminal app has: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
 | **Android app** | 🟡 emulator (Android 14) + one real phone (Vivo, reported by the author) | Emulator: pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect, reboot, notification, setup screens. Real phone (author's report): laptop → phone arrives by itself; phone → laptop works with Share → Klip, the notification button or the app's Send button. **Not verified:** background persistence over hours, reboot, camera QR scan, the tile, battery cost on a real phone |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
@@ -213,9 +238,9 @@ systemctl --user status klip.service
 - Clips are limited to 32 MiB by default. **Android is stricter: a clip over about 0.9 MB cannot be put on the phone's clipboard** (Android passes it through one Binder transaction of about 1 MB). The sender is told "the other device could not write its clipboard"; nothing crashes (it did before 0.3.6: see the changelog).
 - **What is preserved.** Text is sent as UTF-8 bytes and written back unchanged: tabs, indentation, trailing spaces, blank lines, CRLF and bare CR, emoji, CJK, right-to-left text, combining and zero-width characters, a BOM, links with query strings, and very long lines. Tested between two desktop daemons with a 400 KB+ source-like file (byte for byte), and on an Android 14 emulator with 57 KB, 249 KB and 504 KB code files (accepted; a 504 KB clip made the round trip phone → laptop with the same size and the same start; no full byte-for-byte comparison on Android).
 - **What is not.** Only *plain text* is synced between phone and computer: rich formatting (bold, colours, syntax highlighting copied from a web page or an editor), HTML tables, files and clips that hold only an image or a content link are not carried over a phone. A copy that an app marks as sensitive (password managers) is not sent automatically by the optional helper.
-- Large text from the terminal: `cat main.rs | klip send -` (the argument form is limited to about 128 KB by Linux).
+- Large text from the terminal: `cat main.rs | klip send -` is limited by the daemon's clip limit (32 MiB by default) plus 64 KiB; text over the limit is refused before it is sent, with the limit in the message. (The argument form is limited to about 128 KB by Linux.)
 - Idle cost (measured on a release build, one linked device, Linux/X11): about **14 MB** resident memory, ~**3 wakeups per second**, no measurable CPU. Capture is event-driven (the X server tells Klip when the clipboard changes); the remaining wakeups are iroh's connection upkeep. Without X11 events (headless / `KLIP_CLIPBOARD=memory`) Klip falls back to polling and uses more.
-- Release binary: 7.8 MB (stripped, size-optimised).
+- Release binary: 8.2 MB (stripped, size-optimised; 7.8 MB before the terminal app). The terminal app idles at about 8 MB resident and 0.125 % of one core (measured over 120 s on a release build).
 - Debug-signed Android builds change signature between CI runs; installing a newer build over an older one may require uninstalling first (re-pair afterwards). A stable release key is planned.
 
 ## Troubleshooting
@@ -229,12 +254,13 @@ systemctl --user status klip.service
 | Pairing: “invalid or expired pairing code” | tickets work once and expire; run `klip pair` again |
 | `klip start` says it did not come up | read `~/.config/klip/daemon.log` |
 | Nothing syncs on Wayland | Klip currently uses the X11 clipboard (XWayland); GNOME/Wayland needs an extension that is not finished |
+| `klip` prints help instead of opening the app | it only opens on a terminal with a real `TERM` (not `dumb`) and no arguments; use `klip status` etc. in scripts |
 | Banking/UPI app complains about Klip | see [Banking / UPI apps](#banking--upi-apps); also remove the old prototype's Accessibility service if it is still enabled |
 
 ## Build & test from source
 
 ```bash
-cargo test --workspace                      # 70 tests
+cargo test --workspace                      # 276 tests
 cargo clippy --workspace --all-targets -- -D warnings
 android/build-core.sh arm64-v8a             # Rust engine + Kotlin bindings (needs cargo-ndk, NDK r28+)
 cd android && ./gradlew assembleDebug

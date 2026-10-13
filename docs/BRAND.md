@@ -11,6 +11,7 @@ drawing on the Android home screen (a pulse runs along the line while the device
 | Text | `#E8EDF0` on dark · `#12161A` on light; secondary `#8C979F` / `#5A646B` |
 | Wordmark | lowercase **klip**, drawn from strokes (no font); the dot of the *i* is the signal colour |
 | Shapes | 18 px cards with 1 px hairlines, no shadows; one filled button per screen |
+| Terminal | signal lime `#C8F25A` on dark, `#4D7A00` on light (`KLIP_THEME=light`); 256- and 16-colour fallbacks; `NO_COLOR` switches to bold/reverse; meaning is never colour-only (`●`/`○` plus words) |
 | Tone | short, plain, honest. Say what it does, what it cannot see, and what is not verified |
 
 Files in [`docs/assets`](assets): `logo-mark.svg/png` (app icon, 512 px), `wordmark.svg`, `banner.svg/png`
