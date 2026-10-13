@@ -29,3 +29,7 @@ rand = { workspace = true }
 [[test]]
 name = "snapshots"
 required-features = ["testkit"]
+
+[[test]]
+name = "runtime"
+required-features = ["testkit"]

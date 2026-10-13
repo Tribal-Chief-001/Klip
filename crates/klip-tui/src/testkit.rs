@@ -408,6 +408,98 @@ impl DaemonApi for FakeDaemon {
     }
 }
 
+use crate::app::Msg;
+use crate::runtime::{unix_ms, Runtime};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::Instant;
+use tokio::sync::mpsc::UnboundedReceiver;
+
+/// The real runtime on a `TestBackend`, with the clock driven by `pump`.
+pub struct Harness {
+    pub rt: Runtime<TestBackend>,
+    rx: UnboundedReceiver<Msg>,
+    start: Instant,
+}
+
+impl Harness {
+    pub fn new(api: Arc<dyn crate::api::DaemonApi>, env: TuiEnv, cols: u16, rows: u16) -> Self {
+        let (rt, rx) =
+            Runtime::new(api, TestBackend::new(cols, rows), env, (cols, rows)).expect("runtime");
+        Self {
+            rt,
+            rx,
+            start: Instant::now(),
+        }
+    }
+
+    fn now(&self) -> u64 {
+        self.start.elapsed().as_millis() as u64
+    }
+
+    pub fn key(&mut self, code: KeyCode) {
+        self.key_mod(code, KeyModifiers::NONE);
+    }
+
+    pub fn key_mod(&mut self, code: KeyCode, mods: KeyModifiers) {
+        self.rt.dispatch(Msg::Key(KeyEvent::new(code, mods)));
+    }
+
+    pub fn text(&mut self, s: &str) {
+        for c in s.chars() {
+            self.key(KeyCode::Char(c));
+        }
+    }
+
+    pub fn paste(&mut self, s: &str) {
+        self.rt.dispatch(Msg::Paste(s.to_string()));
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        self.rt.backend_mut().resize(cols, rows);
+        self.rt.dispatch(Msg::Resize(cols, rows));
+    }
+
+    async fn step(&mut self) {
+        let now = self.now();
+        self.rt.dispatch(Msg::Tick {
+            mono_ms: now,
+            wall_ms: unix_ms(),
+        });
+        while let Ok(m) = self.rx.try_recv() {
+            self.rt.dispatch(m);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    /// Let `ms` real milliseconds pass: ticks fire and replies are delivered.
+    pub async fn pump(&mut self, ms: u64) {
+        let end = Instant::now() + Duration::from_millis(ms);
+        while Instant::now() < end {
+            self.step().await;
+        }
+    }
+
+    /// Pump until the screen contains `needle` or `timeout_ms` passed.
+    pub async fn wait_for(&mut self, needle: &str, timeout_ms: u64) -> bool {
+        let end = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if self.screen().contains(needle) {
+                return true;
+            }
+            if Instant::now() >= end {
+                return false;
+            }
+            self.step().await;
+        }
+    }
+
+    /// The current screen as text (draws first if something changed).
+    pub fn screen(&mut self) -> String {
+        self.rt.draw().expect("draw");
+        dump(self.rt.backend().buffer())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

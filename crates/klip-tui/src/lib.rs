@@ -9,8 +9,10 @@ pub mod api;
 pub mod app;
 pub mod files;
 pub mod fmt;
+pub mod runtime;
 pub mod sanitize;
 pub mod screens;
+pub mod term;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 pub mod textbuf;
