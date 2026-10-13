@@ -55,6 +55,7 @@ class SetupActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()
+        window.decorView.postDelayed(statusTicker, 2_000)
     }
 
     @Deprecated("Deprecated in Java")
@@ -289,40 +290,78 @@ class SetupActivity : Activity() {
         block("What it can and can't see", "Klip receives only the text you chose to share.")
     }
 
+    private var helperStatus: TextView? = null
+    private val statusTicker = object : Runnable {
+        override fun run() {
+            helperStatus?.apply {
+                text = helperStatusText()
+                setTextColor(if (ClipHelperServer.connected) pal.signal else pal.dim)
+            }
+            window.decorView.postDelayed(this, 2_000)
+        }
+    }
+
+    private fun helperStatusText(): String = when {
+        ClipHelperServer.connected -> "Helper running: copies are sent automatically."
+        AutoCopy.rootEnabled(this) -> (AutoCopy.lastRootResult ?: "Waiting for root to start the helper…")
+        else -> "Helper not running."
+    }
+
+    override fun onPause() {
+        window.decorView.removeCallbacks(statusTicker)
+        super.onPause()
+    }
+
     private fun autoCopyCard(): View {
-        val logs = Setup.logsGranted(this)
-        val overlay = Setup.overlayAllowed(this)
-        val cmd = "adb shell pm grant $packageName android.permission.READ_LOGS"
-        return item("auto", "Automatic copy from this phone", "Experimental. Needs a computer once.", null, "Advanced") {
+        val running = ClipHelperServer.connected
+        return item("auto", "Automatic copy from this phone",
+            if (running) "Running." else "Optional. Needs a computer once, or a rooted phone.", null,
+            if (running) "Running" else "Advanced") {
             block("The problem",
-                "Android only lets the app you are looking at read the clipboard. So when you copy in another app, Klip can't notice. " +
-                    "That is Android's rule for every app, not something Klip can switch off. The tile, Share and the notification button all work without any setup.")
-            block("The workaround",
-                "KDE Connect uses a trick: with one extra permission the app notices Android's “clipboard blocked” log line, " +
-                    "then flashes an invisible window to read the clip. Klip has the same option, off by default. " +
-                    "Not verified by me on a real phone yet; on an emulator it did not work.")
-            add(sectionLabel(this@SetupActivity, pal, "Steps"), top = 16, bottom = 8)
+                "Since Android 10 only the app on screen may read the clipboard, so a copy made in another app can't be noticed by Klip. " +
+                    "The tile, Share and the notification button work without any setup. This is how to get fully automatic sending.")
+            block("The helper",
+                "A small helper process that runs with the same level of access as Android's adb shell, which is allowed to read the clipboard " +
+                    "in the background (scrcpy works the same way). It watches the clipboard and hands each copy to Klip. " +
+                    "No log reading, no “display over other apps”, no accessibility service. " +
+                    "(The older log-reading trick no longer works on Android 13 and newer.)")
+            block("What it costs",
+                "It is a separate Java process: about 60 MB of memory while it runs (measured on an emulator), on top of Klip. " +
+                    "Without root it stops when the phone restarts and has to be started again.")
+            block("What it can see",
+                "Everything you copy, while it runs, except what an app marks as sensitive (password managers do). It passes that only to Klip on " +
+                    "this phone, over a local connection that both sides prove a secret token for; it stores nothing.")
+
+            add(sectionLabel(this@SetupActivity, pal, "From a computer"), top = 16, bottom = 8)
             steps(listOf(
-                "Settings → About phone → tap Build number 7 times, then Developer options → USB debugging ON. Connect the phone to a computer.",
-                "On the computer run:  $cmd",
-                "Allow “Display over other apps” for Klip (button below).",
-                "Close and reopen Klip."
+                "Settings → About phone → tap Build number 7 times, then Developer options → USB debugging ON. Connect the phone to a computer with adb.",
+                "On the computer, run the command below (tap Copy). It starts the helper and returns at once.",
+                "Come back here: it says Helper running. Repeat after every restart of the phone."
             ))
-            add(tv("What it lets Klip do: read Android's system log. Klip only looks for its own clipboard-blocked line and ignores the rest. " +
-                "Undo any time:  adb shell pm revoke $packageName android.permission.READ_LOGS", 12.5f, pal.dim), top = 10)
-            val st = LinearLayout(this@SetupActivity)
-            st.addView(chip(this@SetupActivity, if (logs) "Log access: on" else "Log access: off", if (logs) pal.signal else pal.dim))
-            st.addView(chip(this@SetupActivity, if (overlay) "Overlay: allowed" else "Overlay: off", if (overlay) pal.signal else pal.dim),
-                LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
-            add(st, top = 12)
-            add(secondaryButton(this@SetupActivity, pal, "Allow display over other apps") {
-                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-            }, top = 12)
-            add(textButton(this@SetupActivity, pal, "Copy the command") {
+            add(tv(AutoCopy.adbCommand(this@SetupActivity), 11f, pal.dim, mono = true).apply { setTextIsSelectable(true) }, top = 12)
+            add(secondaryButton(this@SetupActivity, pal, "Copy the command") {
                 (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                    .setPrimaryClip(ClipData.newPlainText("adb", cmd))
-                Toast.makeText(this@SetupActivity, "Command copied", Toast.LENGTH_SHORT).show()
-            }, top = 4)
+                    .setPrimaryClip(ClipData.newPlainText("klip helper", AutoCopy.adbCommand(this@SetupActivity)))
+                Toast.makeText(this@SetupActivity, "Command copied. The text contains a secret: don't share it.", Toast.LENGTH_LONG).show()
+            }, top = 10)
+
+            add(sectionLabel(this@SetupActivity, pal, "Rooted phone"), top = 20, bottom = 8)
+            add(tv("Let Klip start the helper itself, now and at every start of the phone. Your root manager will ask once.", 14f, pal.text))
+            val rootOn = AutoCopy.rootEnabled(this@SetupActivity)
+            add(
+                if (rootOn) secondaryButton(this@SetupActivity, pal, "Turn off the root option") {
+                    Thread { AutoCopy.setRootEnabled(this@SetupActivity, false) }.start(); render()
+                } else primaryButton(this@SetupActivity, pal, "Start with root") {
+                    Thread { AutoCopy.setRootEnabled(this@SetupActivity, true) }.start(); render()
+                }, top = 10
+            )
+
+            val st = tv(helperStatusText(), 13.5f, if (running) pal.signal else pal.dim, 1)
+            helperStatus = st
+            add(st, top = 14)
+            add(textButton(this@SetupActivity, pal, "Stop the helper now", pal.dim) {
+                ClipHelperServer.stopHelper(); Toast.makeText(this@SetupActivity, "Asked the helper to stop.", Toast.LENGTH_SHORT).show()
+            }, top = 2)
         }
     }
 

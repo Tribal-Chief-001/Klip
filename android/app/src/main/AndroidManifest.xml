@@ -17,16 +17,6 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!--
-      Optional "background clipboard" mode (same technique KDE Connect uses). Android only lets the
-      app that has focus read the clipboard, and READ_LOGS can only be granted over adb:
-        adb shell pm grant com.klip.app android.permission.READ_LOGS
-      Klip then watches the system log for its own "clipboard access denied" line and briefly
-      brings a transparent window to the front (needs the overlay permission) to read the clip.
-      Nothing else is read from the log. Fully optional; the app works without it.
-    -->
-    <uses-permission android:name="android.permission.READ_LOGS" tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:allowBackup="false"

@@ -168,6 +168,8 @@ release build, CI). Evidence and numbers: `docs/RESEARCH_2026.md` sections 12-14
 - Real-binary chaos run (two release daemons, isolated dirs, memory clipboards, LAN+mDNS, loopback): pairing, both directions, 300 rapid sends, unicode, 100 KB text, 8 s SIGSTOP, `kill -9` + restart of each side, unpair while connected: 19/19 checks on 3 consecutive runs; resident memory ~12 MB, 10 threads, 16 fds after the run (no growth seen).
 - Not covered by that run: 30 MB clips through the real binary (a command-line argument cannot carry them; covered only by library tests), real X11/Android clipboards, WAN/relay conditions, runs longer than a few minutes.
 
+**Android automatic sending (2026-10-13):** the READ_LOGS + overlay trick was removed: AOSP's LogcatManagerService denies log access to background apps on Android 13+, so it can never work there. Replaced by an optional helper started as the shell user (adb command once, or through `su` on rooted phones) that watches the clipboard and talks to the app over authenticated loopback TCP; verified on the emulator only (shell, root-dropped-to-shell, R8 build).
+
 **Still open (ranked)**
 1. Test the Android app on a physical phone: camera QR, tile, notification action, boot restart, Doze/battery, OEM behaviour; optional READ_LOGS mode.
 2. Post-quantum key exchange (enable aws-lc-rs + `prefer-post-quantum`) and say exactly what it protects; external review of the pairing design.

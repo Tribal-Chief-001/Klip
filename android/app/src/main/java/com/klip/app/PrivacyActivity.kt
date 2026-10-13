@@ -87,7 +87,8 @@ class PrivacyActivity : Activity() {
 
         section(b, "What Klip reads",
             "The clipboard, and only when you ask (Send button, Share menu, the tile, the notification button) or while Klip is on screen. " +
-                "Android does not allow more. Text that arrives from your other devices is written to the clipboard.")
+                "Android does not allow more, unless you start the optional helper (Setup → Automatic copy), which then also sees what you copy in other apps, " +
+                "except what an app marks as sensitive. Text that arrives from your other devices is written to the clipboard.")
         section(b, "What Klip never does",
             "No account, no ads, no analytics, no tracking. No copy of your clips is kept anywhere except on your own devices. " +
                 "No access to your contacts, messages, photos or files. The camera is used only while the QR scanner is open.")
@@ -105,7 +106,7 @@ class PrivacyActivity : Activity() {
             "Camera" to "Scan the pairing QR code. Nothing is recorded or saved.",
             "Run at startup" to "Start Klip again after the phone restarts.",
             "Ignore battery optimisation" to "Only asks; you decide in Setup.",
-            "Read system log, Display over other apps" to "Off unless you set up Automatic copy (Setup → Optional)."
+            "Nothing else by default" to "No log access, no “display over other apps”, no accessibility service. The optional clipboard helper (Setup → Automatic copy) is a separate process you start yourself."
         )
         rows.forEachIndexed { i, (name, why) ->
             if (i > 0) perms.addView(divider(this, pal))

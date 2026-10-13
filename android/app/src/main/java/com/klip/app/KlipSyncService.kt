@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -34,7 +35,7 @@ import kotlinx.coroutines.launch
  *
  * Phone -> other devices: Android 10+ only lets the focused app read the clipboard, so the
  * automatic path works while Klip is in front; otherwise use the tile, the notification button,
- * "Send to Klip" in the text menu, or the optional background mode (see ClipboardLogWatcher).
+ * "Send to Klip" in the text menu, or the optional clipboard helper (see AutoCopy).
  * Other devices -> phone: written straight to the clipboard by [ClipboardWriter].
  */
 class KlipSyncService : Service() {
@@ -83,7 +84,6 @@ class KlipSyncService : Service() {
     private lateinit var clipboard: ClipboardManager
     private lateinit var writer: ClipboardWriter
     private var multicastLock: WifiManager.MulticastLock? = null
-    private var logWatcher: ClipboardLogWatcher? = null
     private var started = false
     private var lastShown = ""
     private var note: String? = null
@@ -94,6 +94,7 @@ class KlipSyncService : Service() {
     private val ticker = object : Runnable {
         override fun run() {
             refreshNotification()
+            scope.launch { AutoCopy.startWithRoot(this@KlipSyncService) }
             if (power.isInteractive) main.postDelayed(this, 8_000)
         }
     }
@@ -117,7 +118,8 @@ class KlipSyncService : Service() {
         clipboard.addPrimaryClipChangedListener(clipListener)
         acquireMulticastLock()
         startEngine()
-        startLogWatcher()
+        ClipHelperServer.start(this)
+        scope.launch { delay(3_000); AutoCopy.startWithRoot(this@KlipSyncService) }
         registerReceiver(screenReceiver, IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -154,41 +156,6 @@ class KlipSyncService : Service() {
                 started = false
                 Log.e(TAG, "Engine failed to start: ${e.message}", e)
                 setNote("Error: ${e.message}")
-            }
-        }
-    }
-
-    private fun startLogWatcher() {
-        val watcher = ClipboardLogWatcher(this) { launchClipboardReader() }
-        if (watcher.isPermitted()) {
-            watcher.start()
-            logWatcher = watcher
-        } else {
-            Log.i(TAG, "automatic copy mode off (READ_LOGS not granted)")
-        }
-    }
-
-    /** A background copy was refused by Android: bring up the transparent reader window. */
-    private fun launchClipboardReader() {
-        if (!Settings.canDrawOverlays(this)) {
-            Log.w(TAG, "automatic mode needs the 'display over other apps' permission")
-            return
-        }
-        // Our own write (a clip that just arrived) also triggers a refused read: nothing to send.
-        if (KlipRuntime.recentlyWroteClipboard()) {
-            Log.i(TAG, "ignoring refused read caused by Klip's own clipboard write")
-            return
-        }
-        main.post {
-            try {
-                startActivity(
-                    Intent(this, CopyTrampolineActivity::class.java)
-                        .setAction(CopyTrampolineActivity.ACTION_SEND_CLIPBOARD)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
-                        .putExtra(CopyTrampolineActivity.EXTRA_QUIET, true)
-                )
-            } catch (e: Throwable) {
-                Log.w(TAG, "Cannot open clipboard reader: ${e.message}")
             }
         }
     }
@@ -343,7 +310,6 @@ class KlipSyncService : Service() {
         main.removeCallbacks(ticker)
         runCatching { unregisterReceiver(screenReceiver) }
         runCatching { clipboard.removePrimaryClipChangedListener(clipListener) }
-        logWatcher?.stop()
         runCatching { multicastLock?.takeIf { it.isHeld }?.release() }
         scope.cancel()
         // Stopping the engine waits for the network to shut down; never block the main thread.

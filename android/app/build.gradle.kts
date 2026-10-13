@@ -11,8 +11,8 @@ android {
         applicationId = "com.klip.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "0.3.4-alpha"
+        versionCode = 9
+        versionName = "0.3.5-alpha"
     }
 
     // One APK per CPU type instead of one 39 MB universal file: phones get only their own native
@@ -45,6 +45,8 @@ android {
     buildTypes {
         release {
             if (keystoreFile != null) signingConfig = signingConfigs.getByName("release")
+            // For tests only: -Pklip.debuggableRelease lets `run-as` read the app's files in an R8 build.
+            isDebuggable = project.hasProperty("klip.debuggableRelease")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

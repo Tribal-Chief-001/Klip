@@ -60,12 +60,12 @@ class MainActivity : Activity() {
     private lateinit var setupBadge: View
     private lateinit var devices: LinearLayout
     private lateinit var recent: LinearLayout
-    private lateinit var pauseSwitch: Switch
+    private lateinit var pauseSub: TextView
+    private lateinit var pauseChip: TextView
     private lateinit var footer: TextView
     private lateinit var pairing: Pairing
     private var devicesKey = ""
     private var recentKey = ""
-    private var ignoreSwitch = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -153,28 +153,20 @@ class MainActivity : Activity() {
         recent = column(this)
         b.add(recent, bottom = 26)
 
-        // Pause.
-        val pauseRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        // Pause: tap to choose how long (or until you turn it back on).
+        val pauseRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+            isClickable = true
+            setOnClickListener { showPauseSheet() }
+        }
         val pauseText = column(this)
         pauseText.add(tv("Pause syncing", 15f, pal.text, 1))
-        pauseText.add(tv("Stops sending and receiving for an hour.", 12.5f, pal.dim), top = 2)
+        pauseSub = tv("", 12.5f, pal.dim)
+        pauseText.add(pauseSub, top = 2)
         pauseRow.addView(pauseText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        pauseSwitch = Switch(this).apply {
-            thumbTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(pal.signal, pal.faint)
-            )
-            trackTintList = ColorStateList(
-                arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
-                intArrayOf(withAlpha(pal.signal, 0.35f), pal.line)
-            )
-            setOnCheckedChangeListener { _, on ->
-                if (ignoreSwitch) return@setOnCheckedChangeListener
-                val e = KlipRuntime.engine ?: return@setOnCheckedChangeListener
-                scope.launch(Dispatchers.IO) { if (on) e.pause(3600UL) else e.resume() }
-            }
-        }
-        pauseRow.addView(pauseSwitch)
+        pauseChip = com.klip.app.ui.chip(this, "Off", pal.dim)
+        pauseRow.addView(pauseChip)
         b.add(pauseRow, bottom = 22)
 
         footer = tv("", 11.5f, pal.faint, mono = true)
@@ -253,14 +245,56 @@ class MainActivity : Activity() {
         renderHero(st)
         renderDevices(st)
         renderRecent(history)
-        ignoreSwitch = true
-        pauseSwitch.isChecked = st.paused
-        ignoreSwitch = false
+        renderPause(st.paused)
         footer.text = "klip ${versionName()} · ${st.deviceFingerprint}"
     }
 
     private fun versionName(): String =
         runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: ""
+
+    private fun renderPause(paused: Boolean) {
+        val until = KlipRuntime.pauseUntilMs(this)
+        if (!paused) {
+            pauseSub.text = "Tap to choose for how long."
+            pauseChip.text = "Off"
+            pauseChip.background = com.klip.app.ui.rounded(com.klip.app.ui.withAlpha(pal.dim, 0.14f), dpf(20f))
+            pauseChip.setTextColor(pal.dim)
+        } else {
+            pauseSub.text = when {
+                until == KlipRuntime.PAUSE_FOREVER -> "Paused until you turn it back on."
+                until > 0 -> "Paused until " + java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(java.util.Date(until)) + "."
+                else -> "Paused."
+            }
+            pauseChip.text = "Paused"
+            pauseChip.background = com.klip.app.ui.rounded(com.klip.app.ui.withAlpha(pal.warn, 0.14f), dpf(20f))
+            pauseChip.setTextColor(pal.warn)
+        }
+    }
+
+    private fun showPauseSheet() {
+        val paused = KlipRuntime.pauseUntilMs(this) != 0L
+        val s = Sheet(this, pal)
+        if (paused) {
+            s.title("Syncing is paused", "Nothing is sent or received until it ends.")
+            s.body.add(primaryButton(this, pal, "Resume now") {
+                s.dismiss()
+                scope.launch { withContext(Dispatchers.IO) { KlipRuntime.resume(this@MainActivity) }; refresh() }
+            }, bottom = 10)
+            s.body.add(sectionLabel(this, pal, "Or pause for"), top = 8, bottom = 8)
+        } else {
+            s.title("Pause syncing", "Nothing is sent or received while paused. Devices stay linked.")
+        }
+        val choices = listOf(
+            "15 minutes" to 15L * 60, "1 hour" to 3600L, "8 hours" to 8L * 3600, "Until I turn it back on" to null
+        )
+        for ((label, secs) in choices) {
+            s.body.add(secondaryButton(this, pal, label) {
+                s.dismiss()
+                scope.launch { withContext(Dispatchers.IO) { KlipRuntime.pause(this@MainActivity, secs) }; refresh() }
+            }, bottom = 8)
+        }
+        s.show()
+    }
 
     private fun renderHero(st: StatusInfo) {
         link.set(st.peers.map { LinkView.Node(it.name, it.online) })

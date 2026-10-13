@@ -132,13 +132,18 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 
 Both 1 and 2 were tested to reach the computer without opening Klip.
 
-**Experimental automatic mode (not verified).** KDE Connect watches Android's system log for the “clipboard access denied” line and then briefly shows a transparent window to read the clip. Klip has the same mechanism, off by default. It needs a computer once (`adb shell pm grant com.klip.app android.permission.READ_LOGS`) plus “Display over other apps”; the in-app *Automatic copy from this phone (setup)* screen explains it. **I could not verify it**: on the Android 14 emulator the app was not given other apps' log lines even with the permission granted; people report it working on real phones. Treat it as a try-it-yourself option; undo with `adb shell pm revoke com.klip.app android.permission.READ_LOGS`.
+**Automatic sending (optional helper).** Android only lets the app on screen read the clipboard, so by default a copy made in another app is not noticed. The old trick of watching the system log (what KDE Connect used) is closed on **Android 13 and newer**: the system denies log access to background apps (AOSP `LogcatManagerService`), so Klip no longer uses it. What works instead is a small helper process that runs with the Android *shell* identity, which may read the clipboard in the background (the way scrcpy does it):
+
+- **From a computer, once:** *Setup → Automatic copy from this phone* shows one `adb shell …` command (with a secret token) to run with USB debugging on; it starts the helper and returns. It stops when the phone restarts.
+- **Rooted phones:** *Start with root* makes Klip start the helper itself (through `su`) whenever its service starts, including after a restart; the helper drops to the shell user.
+
+The helper hands each copy to Klip over a loopback connection that both sides authenticate with the token (SELinux does not let the shell user use an app's Unix socket). Copies that apps mark as sensitive (password managers) are not sent automatically. **Cost:** a separate Java process, about **61 MB PSS** measured on an Android 14 emulator. **Verified (emulator):** with Klip in the background, a copy in another app reached a desktop daemon, started as the shell user and started as root (after dropping to shell); the in-app command, the live status and *Stop* work. **Not verified:** a real phone, Magisk's `su` prompt and the `su` call itself, Android 15/16, OEM restrictions on `app_process`.
 
 Writing *to* the phone's clipboard from the background works without any special permission (tested on Android 14). If some phone brand blocks it, Klip shows a “tap to copy” notification instead of dropping the clip.
 
 ### Banking / UPI apps
 
-Out of the box Klip uses **no Accessibility service** (the earlier prototype did, which is what made UPI apps complain) and none of the special permissions; “Display over other apps” and log access are *off* unless you turn them on yourself. I could not test real UPI apps (no Play Store on my test device), so this is unverified. If a payment app complains: make sure “Display over other apps” and (if you did the adb step) `READ_LOGS` are off for Klip, and stop Klip's notification service while paying if needed. Tell me which app and message it shows and I will build a lean variant without the optional permissions.
+Out of the box Klip uses **no Accessibility service** (the earlier prototype did, which is what made UPI apps complain), **no “display over other apps”** and **no log access**. The optional clipboard helper is a separate process you start yourself. I could not test real UPI apps (no Play Store on my test device), so this is unverified. If a payment app complains: stop the helper (Setup → Automatic copy → Stop) and tell me which app and message it shows; I will build a lean variant.
 
 ## Start automatically
 

@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
-import android.provider.Settings
 
 /** What has to be true for Klip to keep running in the background, and what we can check. */
 object Setup {
@@ -34,11 +33,6 @@ object Setup {
         c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean("confirmed_$id", v).remove("autostart_confirmed").apply()
     }
-
-    fun logsGranted(c: Context) =
-        c.checkSelfPermission(android.Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
-
-    fun overlayAllowed(c: Context) = Settings.canDrawOverlays(c)
 
     /** The required items, in the order the setup screen shows them. */
     fun required(c: Context): List<Item> {

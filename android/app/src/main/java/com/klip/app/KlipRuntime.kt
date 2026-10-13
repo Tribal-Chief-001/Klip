@@ -52,6 +52,47 @@ object KlipRuntime {
             .edit().putBoolean(KEY_RELAYS, enabled).apply()
     }
 
+    // ------------------------------------------------------------------------------------- pause
+    // The engine keeps its pause in memory only, so the deadline is also stored here: a pause then
+    // survives the process being restarted (by Android, by the watchdog, by an update). Long.MAX_VALUE
+    // means "until the person resumes".
+
+    private const val KEY_PAUSE_UNTIL = "pause_until_ms"
+    const val PAUSE_FOREVER = Long.MAX_VALUE
+    private const val TEN_YEARS_SECS = 10L * 365 * 24 * 3600
+
+    /** When the pause ends (epoch ms), [PAUSE_FOREVER], or 0 when sync is not paused. Clears an expired pause. */
+    fun pauseUntilMs(ctx: Context): Long {
+        val p = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val until = p.getLong(KEY_PAUSE_UNTIL, 0)
+        if (until != 0L && until != PAUSE_FOREVER && until <= System.currentTimeMillis()) {
+            p.edit().remove(KEY_PAUSE_UNTIL).apply()
+            return 0
+        }
+        return until
+    }
+
+    /** Pause for [seconds], or until resumed when null. Blocking (engine call): use a background thread. */
+    fun pause(ctx: Context, seconds: Long?) {
+        val until = if (seconds == null) PAUSE_FOREVER else System.currentTimeMillis() + seconds * 1000
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putLong(KEY_PAUSE_UNTIL, until).apply()
+        engine?.pause((seconds ?: TEN_YEARS_SECS).toULong())
+    }
+
+    fun resume(ctx: Context) {
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().remove(KEY_PAUSE_UNTIL).apply()
+        engine?.resume()
+    }
+
+    private fun applyStoredPause(ctx: Context, e: KlipEngine) {
+        val until = pauseUntilMs(ctx)
+        if (until == 0L) return
+        val secs = if (until == PAUSE_FOREVER) TEN_YEARS_SECS else (until - System.currentTimeMillis()) / 1000
+        if (secs > 0) e.pause(secs.toULong())
+    }
+
     /** Starts the engine once. Blocking: call from a background thread. */
     fun ensureStarted(ctx: Context, bridge: ClipboardBridge): KlipEngine = synchronized(lock) {
         installContextOnce(ctx)
@@ -60,7 +101,7 @@ object KlipRuntime {
             deviceName(),
             useRelays(ctx),
             bridge
-        ).also { engine = it }
+        ).also { engine = it; applyStoredPause(ctx, it) }
     }
 
     fun stop() = synchronized(lock) {
