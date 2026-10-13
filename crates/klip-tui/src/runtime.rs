@@ -154,6 +154,10 @@ async fn run_effect(api: Arc<dyn DaemonApi>, fx: Effect) -> Reply {
             session,
             result: api.pair_join(ticket).await,
         },
+        Effect::History { limit } => Reply::History(api.history(limit).await),
+        Effect::CopyItem(id) => Reply::Copied(api.copy_to_clipboard(id).await),
+        Effect::ClearHistory => Reply::HistoryCleared(api.clear_history().await),
+        Effect::Send(text) => Reply::Sent(api.send(text).await),
     }
 }
 
@@ -185,6 +189,10 @@ fn failed_reply(fx: &Effect, e: ApiError) -> Reply {
             session: *session,
             result: Err(e),
         },
+        Effect::History { .. } => Reply::History(Err(e)),
+        Effect::CopyItem(_) => Reply::Copied(Err(e)),
+        Effect::ClearHistory => Reply::HistoryCleared(Err(e)),
+        Effect::Send(_) => Reply::Sent(Err(e)),
     }
 }
 

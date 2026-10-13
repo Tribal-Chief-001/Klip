@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ History (1) ───────────────────────────────────────────┐┌ Clip ──────────────────────────────────┐
+│▸ 36s ago    Vivo V2253     293.0 KiB [too large to kee…││Vivo V2253 · 36s ago · 293.0 KiB        │
+│                                                        ││                                        │
+│                                                        ││[This clip is 293.0 KiB: too large to ke│
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+└────────────────────────────────────────────────────────┘└────────────────────────────────────────┘
+↑↓ select · / search · Enter copy back · s send again · v reveal · C clear · 1-7 screens · p pause …

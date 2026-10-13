@@ -1,5 +1,6 @@
 //! One module per screen; each has its own state, key handling and drawing. This module routes.
 pub mod devices;
+pub mod history;
 pub mod home;
 pub mod pair;
 
@@ -46,6 +47,7 @@ pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
         Screen::Home => home::key(app, k, fx),
         Screen::Devices => devices::key(app, k, fx),
         Screen::Pair => pair::key(app, k, fx),
+        Screen::History => history::key(app, k, fx),
         _ => {}
     }
 }
@@ -57,32 +59,40 @@ pub fn paste(app: &mut AppState, text: &str, _fx: &mut Vec<Effect>) {
 }
 
 pub fn scroll(app: &mut AppState, delta: i32) {
-    if app.screen == Screen::Devices {
-        devices::scroll(app, delta);
+    match app.screen {
+        Screen::Devices => devices::scroll(app, delta),
+        Screen::History => history::scroll(app, delta),
+        _ => {}
     }
 }
 
 pub fn text_focus(app: &AppState) -> bool {
     match app.screen {
         Screen::Pair => pair::text_focus(app),
+        Screen::History => history::text_focus(app),
         _ => false,
     }
 }
 
 pub fn on_enter(app: &mut AppState, to: Screen, fx: &mut Vec<Effect>) {
-    if to == Screen::Pair {
-        pair::on_enter(app, fx);
+    match to {
+        Screen::Pair => pair::on_enter(app, fx),
+        Screen::History => history::on_enter(app, fx),
+        _ => {}
     }
 }
 
 pub fn on_leave(app: &mut AppState, from: Screen, fx: &mut Vec<Effect>) {
-    if from == Screen::Pair {
-        pair::on_leave(app, fx);
+    match from {
+        Screen::Pair => pair::on_leave(app, fx),
+        Screen::History => history::on_leave(app),
+        _ => {}
     }
 }
 
 pub fn on_tick(app: &mut AppState, fx: &mut Vec<Effect>) {
     pair::on_tick(app, fx);
+    history::on_tick(app, fx);
 }
 
 pub fn on_daemon_down(app: &mut AppState) {
@@ -94,6 +104,7 @@ pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
         Screen::Home => home::view(app, theme, f, area),
         Screen::Devices => devices::view(app, theme, f, area),
         Screen::Pair => pair::view(app, theme, f, area),
+        Screen::History => history::view(app, theme, f, area),
         other => centered_text(
             f,
             area,
@@ -117,6 +128,9 @@ pub fn hints(app: &AppState) -> &'static str {
             } else {
                 "Enter link · Esc leave field · c show code · "
             }
+        }
+        Screen::History => {
+            "↑↓ select · / search · Enter copy back · s send again · v reveal · C clear · "
         }
         _ => "",
     }
@@ -150,6 +164,16 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             ));
             v.push(("c / j", "show a code / join with a ticket"));
             v.push(("Enter", "link with the pasted ticket"));
+        }
+        Screen::History => {
+            v.push(("↑↓ / j k", "select a clip"));
+            v.push(("PgUp PgDn", "scroll the clip"));
+            v.push(("/", "search (Esc clears)"));
+            v.push(("Enter", "copy the clip back to this computer"));
+            v.push(("s", "send it to your devices again"));
+            v.push(("v", "show or hide a secret"));
+            v.push(("C", "clear the history"));
+            v.push(("r", "reload"));
         }
         _ => {}
     }

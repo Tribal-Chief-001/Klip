@@ -212,3 +212,86 @@ async fn joining_with_a_pasted_ticket_reports_success_and_failure() {
         h.screen()
     );
 }
+
+#[tokio::test]
+async fn history_shows_clips_copies_back_and_clears() {
+    let fake = FakeDaemon::new();
+    fake.with(|s| {
+        s.history = vec![
+            sample_item(1, "https://example.com/Docs", false),
+            sample_item(2, "api_key_SECRET0123456789", true),
+        ];
+    });
+    let mut h = harness(&fake, "hist");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("4");
+    assert!(
+        h.wait_for("https://example.com/Docs", 3000).await,
+        "{}",
+        h.screen()
+    );
+    assert!(h.screen().contains("•••• secret"), "{}", h.screen());
+    assert!(
+        !h.screen().contains("SECRET0123"),
+        "a hidden secret must not appear on screen"
+    );
+    h.key(KeyCode::Enter);
+    h.pump(200).await;
+    assert!(fake.calls().iter().any(|c| c == "copy"));
+    assert!(
+        h.wait_for("Copied to this computer", 2000).await,
+        "{}",
+        h.screen()
+    );
+    h.text("j");
+    h.text("v");
+    assert!(h.wait_for("SECRET0123", 1000).await, "{}", h.screen());
+    h.text("C");
+    assert!(h.screen().contains("Clear the history?"));
+    h.text("y");
+    assert!(h.wait_for("History cleared", 3000).await, "{}", h.screen());
+    assert!(h.wait_for("No clips yet", 3000).await, "{}", h.screen());
+}
+
+#[tokio::test]
+async fn on_an_old_daemon_copy_and_clear_explain_themselves() {
+    let fake = FakeDaemon::old_daemon();
+    fake.with(|s| s.history = vec![sample_item(1, "hello", false)]);
+    let mut h = harness(&fake, "histold");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("4");
+    assert!(h.wait_for("hello", 3000).await);
+    h.key(KeyCode::Enter);
+    assert!(h.wait_for("is older", 1000).await, "{}", h.screen());
+    assert!(!fake.calls().iter().any(|c| c == "copy"));
+    h.text("s");
+    assert!(
+        h.wait_for("Sent", 3000).await || h.wait_for("Sending", 100).await,
+        "{}",
+        h.screen()
+    );
+}
+
+#[tokio::test]
+async fn a_huge_hostile_item_renders_quickly_and_safely() {
+    let fake = FakeDaemon::new();
+    let hostile = format!("\x1b]0;PWNED\x07\x1b[2J\x1b[?1049l{}", "A".repeat(250_000));
+    fake.with(|s| s.history = vec![sample_item(1, &hostile, false)]);
+    let mut h = harness(&fake, "histbig");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("4");
+    let started = std::time::Instant::now();
+    assert!(
+        h.wait_for("PWNED", 5000).await,
+        "the text is shown, not interpreted: {}",
+        h.screen()
+    );
+    let screen = h.screen();
+    assert!(!screen.contains('\x1b') && !screen.contains('\x07'));
+    assert!(screen.contains('␛'));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "drawing a 250 KB item took {:?}",
+        started.elapsed()
+    );
+}

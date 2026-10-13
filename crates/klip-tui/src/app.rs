@@ -1,10 +1,12 @@
 //! The pure core of the TUI: state, events, effects and `update`. No I/O, no terminal, no clock
 //! (time arrives as `Msg::Tick`). Everything here is unit-tested without a terminal.
 use crate::api::{
-    ApiError, DaemonStatusInfo, HelloInfo, PairPollInfo, PairTicket, Paired, UnpairReport,
+    ApiError, DaemonStatusInfo, HelloInfo, HistoryItem, PairPollInfo, PairTicket, Paired,
+    SendReport, UnpairReport,
 };
 use crate::fmt;
 use crate::screens::devices::DevicesState;
+use crate::screens::history::HistoryState;
 use crate::screens::pair::PairState;
 use crate::textbuf::TextBuf;
 use crossterm::event::{
@@ -139,6 +141,7 @@ pub struct Toast {
 pub enum ConfirmAction {
     Unpair { selector: String, name: String },
     UnpairAll { count: usize },
+    ClearHistory,
     StopDaemon,
 }
 
@@ -225,6 +228,7 @@ pub struct AppState {
     pub clock: Clock,
     pub devices: DevicesState,
     pub pair: PairState,
+    pub history: HistoryState,
     /// Draw QR codes with light modules as blocks (right for light-on-dark terminals).
     pub invert_qr: bool,
 }
@@ -250,6 +254,7 @@ impl AppState {
             clock: Clock::default(),
             devices: DevicesState::default(),
             pair: PairState::default(),
+            history: HistoryState::default(),
             invert_qr: true,
         }
     }
@@ -350,6 +355,12 @@ pub enum Effect {
         ticket: String,
         session: u64,
     },
+    History {
+        limit: usize,
+    },
+    CopyItem([u8; 16]),
+    ClearHistory,
+    Send(String),
 }
 
 /// The result of an effect, delivered back as `Msg::Reply`.
@@ -380,6 +391,10 @@ pub enum Reply {
         session: u64,
         result: Result<Paired, ApiError>,
     },
+    History(Result<Vec<HistoryItem>, ApiError>),
+    Copied(Result<(), ApiError>),
+    HistoryCleared(Result<(), ApiError>),
+    Sent(Result<SendReport, ApiError>),
 }
 
 /// Effects to run when the app starts.
@@ -594,6 +609,7 @@ fn run_confirmed(action: ConfirmAction, fx: &mut Vec<Effect>) {
     match action {
         ConfirmAction::Unpair { selector, .. } => fx.push(Effect::Unpair { selector }),
         ConfirmAction::UnpairAll { .. } => fx.push(Effect::UnpairAll),
+        ConfirmAction::ClearHistory => fx.push(Effect::ClearHistory),
         ConfirmAction::StopDaemon => fx.push(Effect::StopDaemon),
     }
 }
@@ -767,6 +783,20 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
             crate::screens::pair::on_decided(app, session, result)
         }
         Reply::PairCancelled(_) => {}
+        Reply::History(res) => crate::screens::history::on_items(app, res),
+        Reply::Copied(Ok(())) => app.toast(ToastKind::Ok, "Copied to this computer's clipboard"),
+        Reply::Copied(Err(e)) => {
+            app.toast(ToastKind::Error, format!("Could not copy: {}", e.plain()))
+        }
+        Reply::HistoryCleared(Ok(())) => {
+            crate::screens::history::on_cleared(app);
+            app.toast(ToastKind::Ok, "History cleared");
+        }
+        Reply::HistoryCleared(Err(e)) => app.toast(
+            ToastKind::Error,
+            format!("Could not clear the history: {}", e.plain()),
+        ),
+        Reply::Sent(res) => on_sent(app, res),
         Reply::PairJoined { session, result } => {
             crate::screens::pair::on_joined(app, session, result)
         }
@@ -776,6 +806,32 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
                 body: format!("{}\n\nThe Log screen (6) shows more.", e.plain()),
             });
         }
+    }
+}
+
+fn on_sent(app: &mut AppState, res: Result<SendReport, ApiError>) {
+    match res {
+        Ok(r) if r.delivered.is_empty() && r.failed.is_empty() => app.toast(
+            ToastKind::Warn,
+            "No linked devices: nothing was sent. Pair one first (3).",
+        ),
+        Ok(r) if r.failed.is_empty() => app.toast(
+            ToastKind::Ok,
+            format!(
+                "Sent {} to {} device(s)",
+                fmt::bytes(r.bytes),
+                r.delivered.len()
+            ),
+        ),
+        Ok(r) => app.toast(
+            ToastKind::Warn,
+            format!(
+                "Delivered to {}, failed for {}",
+                r.delivered.len(),
+                r.failed.len()
+            ),
+        ),
+        Err(e) => app.toast(ToastKind::Error, format!("Could not send: {}", e.plain())),
     }
 }
 

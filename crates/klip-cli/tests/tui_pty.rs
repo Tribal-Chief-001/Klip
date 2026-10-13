@@ -243,3 +243,30 @@ fn against_the_installed_daemon() {
     p.send(b"q");
     assert_eq!(p.wait_exit(5), Some(0));
 }
+
+#[test]
+fn hostile_clip_text_cannot_leave_the_alternate_screen_or_change_the_terminal() {
+    let d = Isolated::start("hostile", LAN_ONLY);
+    // A local send is recorded in the history, so no second device is needed.
+    let hostile = "\x1b]0;PWNED\x07\x1b[2J\x1b[?1049l\x1b[31mred\u{202E}evil";
+    assert!(d.run(&["send", hostile], None).status.success());
+    let mut p = Pty::spawn(&[], &d.env_pairs(), (100, 30));
+    assert!(p.wait_for("ACTIVE", 15));
+    p.send(b"4");
+    assert!(p.wait_for("Clip", 10), "{}", p.screen());
+    if p.wait_for("•••• secret", 2) {
+        p.send(b"v"); // the secret detector may flag odd text: reveal it, the safety question is the same
+    }
+    assert!(
+        p.wait_for("PWNED", 10),
+        "the text must be visible as text: {}",
+        p.screen()
+    );
+    assert!(
+        p.alt_screen(),
+        "an escape sequence in a clip must not take the terminal out of the alternate screen"
+    );
+    assert!(p.screen().contains("␛"), "{}", p.screen());
+    p.send(b"q");
+    assert_eq!(p.wait_exit(5), Some(0));
+}

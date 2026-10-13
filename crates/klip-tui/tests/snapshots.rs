@@ -154,3 +154,42 @@ fn pairing_approval_and_results() {
     a.pair.result = Some(PairResult::Expired);
     snap("pair_expired", &a, 100, 30);
 }
+
+#[test]
+fn history_screen() {
+    use klip_tui::testkit::sample_item;
+    let items = vec![
+        sample_item(
+            3,
+            "fn main() {\n    println!(\"日本語 hello\");\n}\n",
+            false,
+        ),
+        sample_item(2, "api_key_secret0123456789ABCDEF", true),
+        sample_item(1, "evil \x1b[2J\x1b]0;x\x07 \u{202E}text", false),
+    ];
+    let mut a = up(100, 30, two_peers());
+    a.screen = Screen::History;
+    a.wall_ms = 1_700_000_000_000 + 3 * 1000 + 42_000;
+    a.history.items = items;
+    a.history.loaded = true;
+    snap("history", &a, 100, 30);
+    snap("history", &a, 60, 16);
+    a.history.selected = 1;
+    snap("history_secret_hidden", &a, 100, 30);
+    a.history.revealed.insert([2; 16]);
+    snap("history_secret_revealed", &a, 100, 30);
+    a.history.revealed.clear();
+    a.history.selected = 0;
+    a.history.filter.insert_str("hello");
+    a.history.filtering = true;
+    snap("history_search", &a, 100, 30);
+    a.history.filter.clear();
+    a.history.filtering = false;
+    let mut big = sample_item(9, "x", false);
+    big.full_content.clear();
+    big.size_bytes = 300_000;
+    a.history.items = vec![big];
+    snap("history_too_large", &a, 100, 30);
+    a.history.items.clear();
+    snap("history_empty", &a, 100, 30);
+}

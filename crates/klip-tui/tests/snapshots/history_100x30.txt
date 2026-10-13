@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ History (3) ───────────────────────────────────────────┐┌ Clip ──────────────────────────────────┐
+│▸ 42s ago    Vivo V2253     47 B      fn main() {⏎    p…││Vivo V2253 · 42s ago · 47 B             │
+│  43s ago    Vivo V2253     30 B      •••• secret (30 B)││                                        │
+│  44s ago    Vivo V2253     23 B      evil ␛[2J␛]0;x␇ ⟦…││fn main() {                             │
+│                                                        ││    println!("日本語 hello");           │
+│                                                        ││}                                       │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+│                                                        ││                                        │
+└────────────────────────────────────────────────────────┘└────────────────────────────────────────┘
+↑↓ select · / search · Enter copy back · s send again · v reveal · C clear · 1-7 screens · p pause …

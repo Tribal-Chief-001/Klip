@@ -81,7 +81,7 @@ fn random_reply(rng: &mut StdRng) -> Reply {
             )
         })
         .collect();
-    match rng.gen_range(0..17) {
+    match rng.gen_range(0..20) {
         0..=2 => Reply::Status(Ok(sample_status(peers))),
         3 => Reply::Status(Err(ApiError::DaemonDown)),
         4 => Reply::Status(Err(ApiError::Timeout(15))),
@@ -120,7 +120,16 @@ fn random_reply(rng: &mut StdRng) -> Reply {
             session: rng.gen_range(0..6),
             result: Err(ApiError::Refused("invalid".into())),
         },
-        _ => Reply::PairCancelled(Ok(())),
+        16 => Reply::PairCancelled(Ok(())),
+        17 => Reply::History(Ok((0..rng.gen_range(0..6u8))
+            .map(|i| sample_item(i + 1, "clip \x1b[2J 日本\n\u{202e}x", i % 2 == 0))
+            .collect())),
+        18 => Reply::History(Err(ApiError::DaemonDown)),
+        _ => Reply::Sent(Ok(klip_tui::api::SendReport {
+            bytes: 3,
+            delivered: vec!["a".into()],
+            failed: vec![("b".into(), "\x1b".into())],
+        })),
     }
 }
 
@@ -173,6 +182,7 @@ fn run(seed: u64, mut app: AppState, messages: usize) {
             "selection out of range at message {i}"
         );
         assert!(app.toasts.len() <= 3);
+        assert!(app.history.selected <= app.history.visible().len().saturating_sub(1));
         // Drawing at every third message (and always after a resize) keeps the run affordable.
         if resized || i % 3 == 0 {
             terminal
