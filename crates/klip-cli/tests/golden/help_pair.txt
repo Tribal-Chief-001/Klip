@@ -1,0 +1,11 @@
+Link another device. Without an argument: show a QR/ticket for the other device. With a ticket: join the device that showed it
+
+Usage: klip pair [OPTIONS] [TICKET]
+
+Arguments:
+  [TICKET]  Ticket shown by the other device (starts with "klip1")
+
+Options:
+      --lan        Put this device's LAN addresses in the ticket (bigger QR, works without internet)
+      --ttl <TTL>  How long the ticket stays valid, in seconds (30-600) [default: 120]
+  -h, --help       Print help

@@ -1,0 +1,7 @@
+Show recently synced clips
+
+Usage: klip history [OPTIONS]
+
+Options:
+  -l, --limit <LIMIT>  Maximum number of items to show [default: 10]
+  -h, --help           Print help

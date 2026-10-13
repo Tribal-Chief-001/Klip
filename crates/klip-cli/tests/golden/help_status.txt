@@ -1,0 +1,6 @@
+Show linked devices, connection state and sync info
+
+Usage: klip status
+
+Options:
+  -h, --help  Print help

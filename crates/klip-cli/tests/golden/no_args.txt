@@ -1,0 +1,19 @@
+klip: end-to-end encrypted clipboard sync between your own devices
+
+Usage: klip <COMMAND>
+
+Commands:
+  start            Start the Klip background service
+  stop             Stop the background service
+  status           Show linked devices, connection state and sync info
+  pair             Link another device. Without an argument: show a QR/ticket for the other device. With a ticket: join the device that showed it
+  unpair           Remove a linked device (by name or by the start of its fingerprint)
+  pause            Pause synchronisation
+  resume           Resume synchronisation
+  history          Show recently synced clips
+  send             Send a text to all linked devices right now
+  install-service  Install the auto-start service for your OS
+  help             Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

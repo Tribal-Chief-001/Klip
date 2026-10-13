@@ -1,0 +1,9 @@
+Remove a linked device (by name or by the start of its fingerprint)
+
+Usage: klip unpair <DEVICE>
+
+Arguments:
+  <DEVICE>  
+
+Options:
+  -h, --help  Print help

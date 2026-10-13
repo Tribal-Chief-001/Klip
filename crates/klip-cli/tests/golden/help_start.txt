@@ -1,0 +1,7 @@
+Start the Klip background service
+
+Usage: klip start [OPTIONS]
+
+Options:
+  -f, --foreground  Run in the foreground (used by systemd/launchd; shows errors on the terminal)
+  -h, --help        Print help

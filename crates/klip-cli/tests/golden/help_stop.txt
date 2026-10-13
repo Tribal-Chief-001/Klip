@@ -1,0 +1,6 @@
+Stop the background service
+
+Usage: klip stop
+
+Options:
+  -h, --help  Print help

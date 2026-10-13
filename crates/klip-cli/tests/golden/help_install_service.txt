@@ -1,0 +1,6 @@
+Install the auto-start service for your OS
+
+Usage: klip install-service
+
+Options:
+  -h, --help  Print help

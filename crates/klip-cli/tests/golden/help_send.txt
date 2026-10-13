@@ -1,0 +1,9 @@
+Send a text to all linked devices right now
+
+Usage: klip send <TEXT>
+
+Arguments:
+  <TEXT>  Text to send, or `-` to read it from standard input (for big or multi-line text: `cat main.rs | klip send -`)
+
+Options:
+  -h, --help  Print help

@@ -1,0 +1,6 @@
+Resume synchronisation
+
+Usage: klip resume
+
+Options:
+  -h, --help  Print help

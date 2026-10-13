@@ -1,0 +1,9 @@
+Pause synchronisation
+
+Usage: klip pause [DURATION]
+
+Arguments:
+  [DURATION]  Pause duration in seconds (default: 600s / 10m) [default: 600]
+
+Options:
+  -h, --help  Print help
