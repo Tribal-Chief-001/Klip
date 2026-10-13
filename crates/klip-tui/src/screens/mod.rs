@@ -5,6 +5,7 @@ pub mod home;
 pub mod log;
 pub mod pair;
 pub mod send;
+pub mod settings;
 
 use crate::app::{AppState, Effect, Screen};
 use crate::theme::Theme;
@@ -52,7 +53,7 @@ pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
         Screen::History => history::key(app, k, fx),
         Screen::Send => send::key(app, k, fx),
         Screen::Log => log::key(app, k),
-        _ => {}
+        Screen::Settings => settings::key(app, k, fx),
     }
 }
 
@@ -60,6 +61,7 @@ pub fn paste(app: &mut AppState, text: &str, _fx: &mut Vec<Effect>) {
     match app.screen {
         Screen::Pair => pair::paste(app, text),
         Screen::Send => send::paste(app, text),
+        Screen::Settings => settings::paste(app, text),
         _ => {}
     }
 }
@@ -69,6 +71,7 @@ pub fn scroll(app: &mut AppState, delta: i32) {
         Screen::Devices => devices::scroll(app, delta),
         Screen::History => history::scroll(app, delta),
         Screen::Log => log::scroll(app, delta),
+        Screen::Settings => settings::scroll(app, delta),
         _ => {}
     }
 }
@@ -79,6 +82,7 @@ pub fn text_focus(app: &AppState) -> bool {
         Screen::History => history::text_focus(app),
         Screen::Send => send::text_focus(app),
         Screen::Log => log::text_focus(app),
+        Screen::Settings => settings::text_focus(app),
         _ => false,
     }
 }
@@ -89,6 +93,7 @@ pub fn on_enter(app: &mut AppState, to: Screen, fx: &mut Vec<Effect>) {
         Screen::History => history::on_enter(app, fx),
         Screen::Send => send::on_enter(app),
         Screen::Log => log::on_enter(app, fx),
+        Screen::Settings => settings::on_enter(fx),
         _ => {}
     }
 }
@@ -97,6 +102,7 @@ pub fn on_leave(app: &mut AppState, from: Screen, fx: &mut Vec<Effect>) {
     match from {
         Screen::Pair => pair::on_leave(app, fx),
         Screen::History => history::on_leave(app),
+        Screen::Settings => settings::on_leave(app),
         Screen::Send => send::on_leave(app),
         _ => {}
     }
@@ -121,15 +127,7 @@ pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
         Screen::History => history::view(app, theme, f, area),
         Screen::Send => send::view(app, theme, f, area),
         Screen::Log => log::view(app, theme, f, area),
-        other => centered_text(
-            f,
-            area,
-            theme.st_dim(),
-            &format!(
-                "{}: this screen is built in a later task of the plan",
-                other.title()
-            ),
-        ),
+        Screen::Settings => settings::view(app, theme, f, area),
     }
 }
 
@@ -150,7 +148,7 @@ pub fn hints(app: &AppState) -> &'static str {
         }
         Screen::Send => "Ctrl+S send · Ctrl+O file · Ctrl+U clear · Enter edit · ",
         Screen::Log => "f follow · / search · PgUp PgDn scroll · G end · ",
-        _ => "",
+        Screen::Settings => "↑↓ select · Enter edit/toggle · s save · u discard · R restart · ",
     }
 }
 
@@ -193,6 +191,13 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             v.push(("C", "clear the history"));
             v.push(("r", "reload"));
         }
+        Screen::Settings => {
+            v.push(("↑↓ / j k", "select a setting"));
+            v.push(("Enter / Space", "edit or toggle the selected setting"));
+            v.push(("s", "save to config.json"));
+            v.push(("u", "discard unsaved changes"));
+            v.push(("R", "restart Klip to apply the saved settings"));
+        }
         Screen::Log => {
             v.push(("f", "follow the end of the log, or stop following"));
             v.push(("/", "search (Esc clears)"));
@@ -207,7 +212,6 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             v.push(("Esc", "leave the editor (then 1-7 switch screens)"));
             v.push(("Enter", "start editing again"));
         }
-        _ => {}
     }
     v
 }

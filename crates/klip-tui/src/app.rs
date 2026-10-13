@@ -4,17 +4,19 @@ use crate::api::{
     ApiError, DaemonStatusInfo, HelloInfo, HistoryItem, PairPollInfo, PairTicket, Paired,
     SendReport, UnpairReport,
 };
-use crate::files::LogChunk;
+use crate::files::{LogChunk, ServiceState};
 use crate::fmt;
 use crate::screens::devices::DevicesState;
 use crate::screens::history::HistoryState;
 use crate::screens::log::LogState;
 use crate::screens::pair::PairState;
 use crate::screens::send::SendState;
+use crate::screens::settings::SettingsState;
 use crate::textbuf::TextBuf;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use klip_core::DaemonConfig;
 
 pub const MIN_COLS: u16 = 60;
 pub const MIN_ROWS: u16 = 16;
@@ -145,6 +147,8 @@ pub enum ConfirmAction {
     Unpair { selector: String, name: String },
     UnpairAll { count: usize },
     ClearHistory,
+    RestartDaemon,
+    ResetConfig,
     StopDaemon,
 }
 
@@ -235,6 +239,7 @@ pub struct AppState {
     pub send: SendState,
     pub log: LogState,
     pub log_path: String,
+    pub settings: SettingsState,
     /// Draw QR codes with light modules as blocks (right for light-on-dark terminals).
     pub invert_qr: bool,
 }
@@ -264,6 +269,7 @@ impl AppState {
             send: SendState::default(),
             log: LogState::default(),
             log_path: "daemon.log".to_string(),
+            settings: SettingsState::default(),
             invert_qr: true,
         }
     }
@@ -372,6 +378,11 @@ pub enum Effect {
     Send(String),
     LoadFile(String),
     TailLog(Option<u64>),
+    ReadConfig,
+    WriteConfig(DaemonConfig),
+    ReadService,
+    InstallService,
+    RestartDaemon,
 }
 
 /// The result of an effect, delivered back as `Msg::Reply`.
@@ -411,13 +422,23 @@ pub enum Reply {
         result: Result<String, String>,
     },
     Log(Result<LogChunk, String>),
+    Config(Result<DaemonConfig, String>),
+    ConfigSaved(Result<(), String>),
+    Service(ServiceState),
+    ServiceInstalled(Result<String, ApiError>),
+    DaemonRestarted(Result<u32, ApiError>),
 }
 
 /// Effects to run when the app starts.
 pub fn boot(app: &mut AppState) -> Vec<Effect> {
     app.inflight.status = true;
     app.inflight.hello = true;
-    vec![Effect::Status, Effect::Hello]
+    vec![
+        Effect::Status,
+        Effect::Hello,
+        Effect::ReadConfig,
+        Effect::ReadService,
+    ]
 }
 
 pub fn update(app: &mut AppState, msg: Msg) -> Vec<Effect> {
@@ -600,7 +621,7 @@ fn on_modal_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
         Modal::Confirm { action, .. }
             if matches!(k.code, KeyCode::Char('y') | KeyCode::Char('Y')) =>
         {
-            run_confirmed(action, fx);
+            run_confirmed(app, action, fx);
             None
         }
         Modal::Confirm { .. } => {
@@ -625,12 +646,20 @@ fn on_modal_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
     };
 }
 
-fn run_confirmed(action: ConfirmAction, fx: &mut Vec<Effect>) {
+fn run_confirmed(app: &mut AppState, action: ConfirmAction, fx: &mut Vec<Effect>) {
     match action {
         ConfirmAction::Unpair { selector, .. } => fx.push(Effect::Unpair { selector }),
         ConfirmAction::UnpairAll { .. } => fx.push(Effect::UnpairAll),
         ConfirmAction::ClearHistory => fx.push(Effect::ClearHistory),
         ConfirmAction::StopDaemon => fx.push(Effect::StopDaemon),
+        ConfirmAction::RestartDaemon => {
+            app.settings.restarting = true;
+            fx.push(Effect::RestartDaemon);
+        }
+        ConfirmAction::ResetConfig => {
+            app.settings.draft = DaemonConfig::default();
+            fx.push(Effect::WriteConfig(DaemonConfig::default()));
+        }
     }
 }
 
@@ -818,6 +847,21 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
         ),
         Reply::Sent(res) => on_sent(app, res),
         Reply::Log(res) => crate::screens::log::on_chunk(app, res),
+        Reply::Config(res) => crate::screens::settings::on_config(app, res),
+        Reply::ConfigSaved(res) => crate::screens::settings::on_saved(app, res),
+        Reply::Service(s) => app.settings.service = Some(s),
+        Reply::ServiceInstalled(Ok(msg)) => {
+            fx.push(Effect::ReadService);
+            app.modal = Some(Modal::Notice {
+                title: "Auto-start installed".to_string(),
+                body: msg,
+            });
+        }
+        Reply::ServiceInstalled(Err(e)) => app.toast(
+            ToastKind::Error,
+            format!("Could not install: {}", e.plain()),
+        ),
+        Reply::DaemonRestarted(res) => crate::screens::settings::on_restarted(app, res),
         Reply::FileLoaded { path, result } => {
             crate::screens::send::on_file_loaded(app, path, result)
         }

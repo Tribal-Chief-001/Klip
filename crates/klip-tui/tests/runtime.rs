@@ -442,3 +442,129 @@ async fn the_log_is_readable_while_the_daemon_is_stopped() {
         h.screen()
     );
 }
+
+#[tokio::test]
+async fn editing_a_setting_and_saving_writes_a_valid_private_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = test_env("settingsave");
+    let cfg_path = env.paths.config_file();
+    // The fake daemon runs the device name "Laptop": start from a file that says the same.
+    std::fs::write(&cfg_path, r#"{"device_name":"Laptop"}"#).unwrap();
+    let fake = FakeDaemon::new();
+    let mut h = Harness::new(fake.clone(), env, 100, 30);
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("7");
+    assert!(
+        h.wait_for("Everything is saved and in use", 3000).await,
+        "{}",
+        h.screen()
+    );
+    h.key(KeyCode::Enter); // edit the device name
+    for _ in 0..30 {
+        h.key(KeyCode::Backspace);
+    }
+    h.text("Desk laptop");
+    h.key(KeyCode::Enter);
+    assert!(h.wait_for("unsaved changes", 1000).await, "{}", h.screen());
+    h.text("s");
+    assert!(
+        h.wait_for("Saved. Restart Klip", 3000).await,
+        "{}",
+        h.screen()
+    );
+    let text = std::fs::read_to_string(&cfg_path).unwrap();
+    assert!(text.contains("Desk laptop"), "{text}");
+    assert_eq!(
+        std::fs::metadata(&cfg_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let back =
+        klip_core::DaemonConfig::load(&klip_core::KlipPaths::from_dir(cfg_path.parent().unwrap()))
+            .unwrap();
+    assert_eq!(back.device_name, "Desk laptop");
+    // The fake daemon reports "Laptop", so the saved name differs from what runs.
+    assert!(
+        h.wait_for("the running Klip uses other settings", 2000)
+            .await,
+        "{}",
+        h.screen()
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_config_is_shown_and_never_overwritten() {
+    let env = test_env("settingbad");
+    std::fs::write(env.paths.config_file(), "{ this is not json").unwrap();
+    let before = std::fs::read_to_string(env.paths.config_file()).unwrap();
+    let path = env.paths.config_file();
+    let fake = FakeDaemon::new();
+    let mut h = Harness::new(fake.clone(), env, 100, 30);
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("7");
+    assert!(
+        h.wait_for("config.json cannot be read", 3000).await,
+        "{}",
+        h.screen()
+    );
+    h.text("s");
+    h.pump(300).await;
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before,
+        "the broken file must stay as it was"
+    );
+    assert!(h.screen().contains("fix it by hand") || h.screen().contains("left untouched"));
+}
+
+#[tokio::test]
+async fn restarting_stops_waits_and_starts_the_daemon_again() {
+    let fake = FakeDaemon::new();
+    let mut h = harness(&fake, "restart");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("7");
+    for _ in 0..7 {
+        h.key(KeyCode::Down); // to the "Apply" row
+    }
+    h.key(KeyCode::Enter);
+    assert!(h.screen().contains("Restart Klip?"), "{}", h.screen());
+    h.text("y");
+    assert!(
+        h.wait_for("Klip restarted (PID 4242)", 8000).await,
+        "{}",
+        h.screen()
+    );
+    let calls = fake.calls();
+    let stop = calls
+        .iter()
+        .position(|c| c == "stop_daemon")
+        .expect("stopped");
+    let start = calls
+        .iter()
+        .position(|c| c == "start_daemon")
+        .expect("started");
+    assert!(stop < start, "{calls:?}");
+}
+
+#[tokio::test]
+async fn auto_start_installs_when_missing() {
+    let env = test_env("settingsvc");
+    let fake = FakeDaemon::new();
+    let mut h = Harness::new(fake.clone(), env, 100, 30);
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("7");
+    for _ in 0..6 {
+        h.key(KeyCode::Down); // to the "Auto-start" row
+    }
+    assert!(h.wait_for("Auto-start", 1000).await);
+    // The harness cannot assume what the developer's home contains: only check the call path when the
+    // row says it can install.
+    if h.wait_for("not installed", 1500).await {
+        h.key(KeyCode::Enter);
+        assert!(
+            h.wait_for("Auto-start installed", 3000).await,
+            "{}",
+            h.screen()
+        );
+        assert!(fake.calls().iter().any(|c| c == "install_service"));
+    }
+}

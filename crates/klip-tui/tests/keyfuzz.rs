@@ -23,7 +23,7 @@ const PASTES: [&str; 6] = [
 ];
 
 fn random_key(rng: &mut StdRng) -> KeyEvent {
-    let code = match rng.gen_range(0..27) {
+    let code = match rng.gen_range(0..32) {
         0..=11 => {
             let chars: Vec<char> = CHARS.chars().collect();
             KeyCode::Char(chars[rng.gen_range(0..chars.len())])
@@ -150,12 +150,22 @@ fn random_reply(rng: &mut StdRng) -> Reply {
             missing: rng.gen_bool(0.2),
         })),
         25 => Reply::Log(Err("denied \x1b[2J".into())),
-        _ => Reply::Log(Ok(klip_tui::files::LogChunk {
+        26 => Reply::Log(Ok(klip_tui::files::LogChunk {
             new_offset: 0,
             text: "x".repeat(70_000),
             reset: false,
             missing: false,
         })),
+        27 => Reply::Config(Ok(klip_core::DaemonConfig {
+            device_name: "n\x1b".into(),
+            max_history_items: rng.gen_range(0..2000),
+            ..klip_core::DaemonConfig::default()
+        })),
+        28 => Reply::Config(Err("bad json \x1b[2J".into())),
+        29 => Reply::ConfigSaved(Err("denied".into())),
+        30 => Reply::Service(klip_tui::files::ServiceState::Installed("/x/\x1b".into())),
+        31 => Reply::ServiceInstalled(Ok("done".into())),
+        _ => Reply::DaemonRestarted(Err(ApiError::Refused("no".into()))),
     }
 }
 
@@ -208,6 +218,7 @@ fn run(seed: u64, mut app: AppState, messages: usize) {
             "selection out of range at message {i}"
         );
         assert!(app.toasts.len() <= 3);
+        assert!(app.settings.selected < 9);
         assert!(app.log.lines.len() <= klip_tui::screens::log::MAX_LINES);
         let (r, c) = app.send.buf.cursor();
         assert!(r < app.send.buf.lines().len());

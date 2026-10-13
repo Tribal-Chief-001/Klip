@@ -162,6 +162,37 @@ async fn run_effect(api: Arc<dyn DaemonApi>, env: TuiEnv, fx: Effect) -> Reply {
         Effect::CopyItem(id) => Reply::Copied(api.copy_to_clipboard(id).await),
         Effect::ClearHistory => Reply::HistoryCleared(api.clear_history().await),
         Effect::Send(text) => Reply::Sent(api.send(text).await),
+        Effect::ReadConfig => {
+            let paths = env.paths.clone();
+            Reply::Config(
+                tokio::task::spawn_blocking(move || klip_core::DaemonConfig::load(&paths))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string())),
+            )
+        }
+        Effect::WriteConfig(cfg) => {
+            let paths = env.paths.clone();
+            Reply::ConfigSaved(
+                tokio::task::spawn_blocking(move || {
+                    crate::files::write_config_atomic(&paths, &cfg)
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string())),
+            )
+        }
+        Effect::ReadService => {
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            Reply::Service(crate::files::service_state(home.as_deref()))
+        }
+        Effect::InstallService => Reply::ServiceInstalled(api.install_service().await),
+        Effect::RestartDaemon => {
+            let _ = api.stop_daemon().await;
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while api.status().await.is_ok() && std::time::Instant::now() < end {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            Reply::DaemonRestarted(api.start_daemon().await)
+        }
         Effect::TailLog(offset) => {
             let path = crate::files::log_path(&env.paths);
             Reply::Log(
@@ -218,6 +249,11 @@ fn failed_reply(fx: &Effect, e: ApiError) -> Reply {
         Effect::ClearHistory => Reply::HistoryCleared(Err(e)),
         Effect::Send(_) => Reply::Sent(Err(e)),
         Effect::TailLog(_) => Reply::Log(Err(e.plain())),
+        Effect::ReadConfig => Reply::Config(Err(e.plain())),
+        Effect::WriteConfig(_) => Reply::ConfigSaved(Err(e.plain())),
+        Effect::ReadService => Reply::Service(crate::files::ServiceState::Unsupported),
+        Effect::InstallService => Reply::ServiceInstalled(Err(e)),
+        Effect::RestartDaemon => Reply::DaemonRestarted(Err(e)),
         Effect::LoadFile(p) => Reply::FileLoaded {
             path: p.clone(),
             result: Err(e.plain()),

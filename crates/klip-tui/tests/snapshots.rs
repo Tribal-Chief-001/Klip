@@ -263,3 +263,36 @@ fn log_screen_states() {
     a.log.filtering = true;
     snap("log_search", &a, 100, 30);
 }
+
+#[test]
+fn settings_screen_states() {
+    use klip_tui::files::ServiceState;
+    // The default device name is this machine's hostname: pin it, or the snapshots differ per computer.
+    let cfg = || klip_core::DaemonConfig {
+        device_name: "Laptop".to_string(),
+        ..klip_core::DaemonConfig::default()
+    };
+    let mut a = up(100, 30, two_peers());
+    a.screen = Screen::Settings;
+    a.settings.file = Some(cfg());
+    a.settings.draft = cfg();
+    a.settings.baseline = Some(cfg());
+    a.settings.service = Some(ServiceState::NotInstalled);
+    snap("settings", &a, 100, 30);
+    snap("settings", &a, 60, 16);
+    a.settings.draft.device_name = "Desk laptop".into();
+    a.settings.draft.relay = klip_core::RelayMode::Lan;
+    a.settings.selected = 3;
+    a.settings.editing = Some(klip_tui::textbuf::TextBuf::from_text("999 GiB", 32));
+    a.settings.error = Some("max_clip_bytes must be between 1 and 268435456".into());
+    snap("settings_editing_error", &a, 100, 30);
+    a.settings.editing = None;
+    a.settings.error = None;
+    a.settings.file = Some(klip_core::DaemonConfig {
+        max_history_items: 7,
+        ..cfg()
+    });
+    snap("settings_restart_needed", &a, 100, 30);
+    a.settings.load_error = Some("config.json: expected value at line 1 column 1".into());
+    snap("settings_broken_file", &a, 100, 30);
+}

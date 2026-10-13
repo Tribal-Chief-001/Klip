@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ Settings ────────────────────────────────────────────────────────────────────────────────────────┐
+│● unsaved changes: s saves, u discards                                                            │
+│                                                                                                  │
+│                                                                                                  │
+│  Device name    Desk laptop                                                                      │
+│  Network        lan only: no third-party server, devices must be on the same network             │
+│  History items  50                                                                               │
+│▸ Largest clip   999 GiB▏                                                                         │
+│    ✗ max_clip_bytes must be between 1 and 268435456                                              │
+│  LAN discovery  on                                                                               │
+│  Poll interval  100 ms (advanced; edit config.json)                                              │
+│  Auto-start     not installed: Enter installs it                                                 │
+│  Apply          restart Klip so it reads the saved settings (R)                                  │
+│  Defaults       reset every setting to its default                                               │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│klip 0.3.6 · daemon 0.4.0                                                                         │
+│The daemon runs another version than this program: restart it (klip stop, klip start).            │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Esc leave the field · Alt+1-7 screens · Ctrl+C quit
