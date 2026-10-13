@@ -4,6 +4,8 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Icon
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.util.Log
@@ -13,11 +15,27 @@ class KlipTileService : TileService() {
 
     override fun onStartListening() {
         super.onStartListening()
+        show(Tile.STATE_INACTIVE, "Send clipboard")
+        // Lit when at least one linked device is connected; the subtitle says who. Engine calls block,
+        // so ask off the main thread. Runs only while the panel is open.
+        Thread {
+            val s = runCatching { StatusText.compute() }.getOrNull()
+            Handler(Looper.getMainLooper()).post {
+                when {
+                    s == null -> show(Tile.STATE_INACTIVE, "Send clipboard")
+                    s.anyOnline -> show(Tile.STATE_ACTIVE, "Send to ${s.firstOnline}")
+                    else -> show(Tile.STATE_INACTIVE, "Not connected")
+                }
+            }
+        }.start()
+    }
+
+    private fun show(state: Int, subtitle: String) {
         qsTile?.let { tile ->
-            tile.state = Tile.STATE_ACTIVE
+            tile.state = state
             tile.label = "Klip"
             tile.icon = Icon.createWithResource(this, R.drawable.ic_klip_logo)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.subtitle = "Send clipboard"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.subtitle = subtitle
             tile.updateTile()
         }
     }

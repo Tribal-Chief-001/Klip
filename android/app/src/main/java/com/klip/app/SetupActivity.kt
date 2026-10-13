@@ -159,10 +159,11 @@ class SetupActivity : Activity() {
     private fun notificationsCard(): View {
         val ok = Setup.notificationsGranted(this)
         return item("notifications", "Notifications", "Shows that Klip is running.",
-            if (ok) Setup.State.DONE else Setup.State.TODO) {
+            stateOf("notifications", ok)) {
             block("What it does",
                 "Android makes any app that runs all the time show a small notification. Klip uses it for status and a “Send clipboard” button.")
             block("What it can and can't see", "Klip can only show its own notification. It cannot read yours.")
+            manualControls("notifications", ok)
             if (!ok) {
                 add(primaryButton(this@SetupActivity, pal,
                     if (notificationAsked) "Open notification settings" else "Allow notifications") {
@@ -181,12 +182,19 @@ class SetupActivity : Activity() {
     private fun batteryCard(): View {
         val ok = Setup.batteryUnrestricted(this)
         return item("battery", "Unrestricted battery use", "Stops Android from pausing Klip when the screen is off.",
-            if (ok) Setup.State.DONE else Setup.State.TODO) {
+            stateOf("battery", ok)) {
             block("What it does",
                 "Android normally freezes background apps after a while. Unrestricted tells it not to freeze Klip, so your devices stay connected.")
             block("What it can and can't see",
                 "It gives Klip no extra data access. It does cost a little battery: Klip keeps one network connection open. " +
                     "I have not measured how much on real phones yet.")
+            val oem = Oem.detect()
+            if (oem.needsExtraSteps) {
+                add(tv("On ${oem.title} phones this Android switch is separate from the maker's own battery manager " +
+                    "(see the next card), and Android can't see what you set there. If you already allowed Klip there, " +
+                    "mark this as done below.", 13f, pal.warn), top = 12)
+            }
+            manualControls("battery", ok)
             if (!ok) {
                 add(primaryButton(this@SetupActivity, pal, "Allow") {
                     try {
@@ -206,10 +214,10 @@ class SetupActivity : Activity() {
                 block("What to know", oem.intro + "\n" + oem.steps.first())
             }
         }
-        val confirmed = Setup.autostartConfirmed(this)
+        val confirmed = Setup.confirmed(this, "autostart")
         return item("autostart", "Auto-start & background (${oem.title})",
             "Your phone's own battery manager. Android apps can't check this one.",
-            if (confirmed) Setup.State.DONE else Setup.State.TODO) {
+            stateOf("autostart", false)) {
             block("What it does", oem.intro + " Without these, Klip is closed a few minutes after the screen turns off and does not come back after a restart.")
             block("What it can and can't see", "These are your phone maker's switches. They only decide whether Klip may run; they give it no extra data access.")
             add(sectionLabel(this@SetupActivity, pal, "Steps"), top = 16, bottom = 8)
@@ -218,14 +226,32 @@ class SetupActivity : Activity() {
             add(secondaryButton(this@SetupActivity, pal, "Open the settings screen") { oem.openSettings(this@SetupActivity) }, top = 14)
             if (!confirmed) {
                 add(tv("Android doesn't let apps see these switches, so tell Klip when you've done them.", 12.5f, pal.dim), top = 10)
-                add(primaryButton(this@SetupActivity, pal, "I've done these steps") {
-                    Setup.setAutostartConfirmed(this@SetupActivity, true); render()
-                }, top = 8)
-            } else {
-                add(textButton(this@SetupActivity, pal, "Undo: I haven't done these") {
-                    Setup.setAutostartConfirmed(this@SetupActivity, false); render()
-                }, top = 6)
             }
+            manualControls("autostart", false, primary = true)
+        }
+    }
+
+    // ------------------------------------------------------------------------ manual confirmation
+
+    private fun stateOf(id: String, auto: Boolean) =
+        if (auto || Setup.confirmed(this, id)) Setup.State.DONE else Setup.State.TODO
+
+    /**
+     * Android can't see every setting (especially phone makers' own), so each required item can be ticked
+     * off by hand. Shows nothing when the system already confirms it.
+     */
+    private fun LinearLayout.manualControls(id: String, autoOk: Boolean, primary: Boolean = false) {
+        if (autoOk) return
+        if (!Setup.confirmed(this@SetupActivity, id)) {
+            val label = if (primary) "I've done these steps" else "I already did this: mark as done"
+            val act = { Setup.setConfirmed(this@SetupActivity, id, true); render() }
+            if (primary) add(primaryButton(this@SetupActivity, pal, label, act), top = 8)
+            else add(textButton(this@SetupActivity, pal, label) { act() }, top = 8)
+        } else {
+            add(tv("Marked as done by you.", 13f, pal.signal, 1), top = 12)
+            add(textButton(this@SetupActivity, pal, "Undo", pal.dim) {
+                Setup.setConfirmed(this@SetupActivity, id, false); render()
+            }, top = 0)
         }
     }
 

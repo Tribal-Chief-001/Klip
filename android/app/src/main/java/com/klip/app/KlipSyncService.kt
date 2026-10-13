@@ -5,7 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.ClipboardManager
+import android.content.IntentFilter
+import android.os.PowerManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -19,6 +22,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -37,6 +41,8 @@ class KlipSyncService : Service() {
     companion object {
         const val ACTION_START = "com.klip.app.ACTION_START"
         const val ACTION_STOP = "com.klip.app.ACTION_STOP"
+        /** The notification was swiped away: Android 14+ allows that for foreground services. Show it again. */
+        const val ACTION_REPOST = "com.klip.app.ACTION_REPOST"
         const val ACTION_TEST_BG_WRITE = "com.klip.app.ACTION_TEST_BG_WRITE"
 
         const val CHANNEL_SERVICE = "klip_service"
@@ -75,6 +81,24 @@ class KlipSyncService : Service() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var logWatcher: ClipboardLogWatcher? = null
     private var started = false
+    private var lastShown = ""
+    private var note: String? = null
+    private var noteUntil = 0L
+    private lateinit var power: PowerManager
+
+    /** While the screen is on, re-check the status every few seconds; while it is off, do nothing at all. */
+    private val ticker = object : Runnable {
+        override fun run() {
+            refreshNotification()
+            if (power.isInteractive) main.postDelayed(this, 8_000)
+        }
+    }
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            main.removeCallbacks(ticker)
+            if (i.action == Intent.ACTION_SCREEN_ON) main.post(ticker)
+        }
+    }
 
     private val clipListener = ClipboardManager.OnPrimaryClipChangedListener { onClipChanged() }
 
@@ -83,11 +107,18 @@ class KlipSyncService : Service() {
         createChannels()
         showForeground("Starting…")
         clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        writer = ClipboardWriter(this) { preview -> notify("Last received: $preview") }
+        power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        // Never put clip content in a notification: it can show on a locked screen.
+        writer = ClipboardWriter(this) { _ -> refreshNotification() }
         clipboard.addPrimaryClipChangedListener(clipListener)
         acquireMulticastLock()
         startEngine()
         startLogWatcher()
+        registerReceiver(screenReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+        })
+        if (power.isInteractive) main.post(ticker)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -97,6 +128,7 @@ class KlipSyncService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_TEST_BG_WRITE -> scheduleBackgroundWriteTest()
+            ACTION_REPOST -> refreshNotification(force = true)
             else -> if (!started) startEngine()
         }
         return START_STICKY
@@ -107,13 +139,12 @@ class KlipSyncService : Service() {
         started = true
         scope.launch {
             try {
-                val engine = KlipRuntime.ensureStarted(this@KlipSyncService, writer)
-                val peers = engine.status().peers.size
-                notify(if (peers == 0) "Running — not linked to any device yet" else "Running — linked to $peers device(s)")
+                KlipRuntime.ensureStarted(this@KlipSyncService, writer)
+                refreshNotification()
             } catch (e: Throwable) {
                 started = false
                 Log.e(TAG, "Engine failed to start: ${e.message}", e)
-                notify("Error: ${e.message}")
+                setNote("Error: ${e.message}")
             }
         }
     }
@@ -167,11 +198,11 @@ class KlipSyncService : Service() {
 
     /** Lets the user check whether this phone allows writing to the clipboard from the background. */
     private fun scheduleBackgroundWriteTest() {
-        notify("Test: a text will be placed on the clipboard in 10 s — switch to another app and paste")
+        setNote("Test: in 10 s a text is placed on the clipboard. Switch to another app and paste.")
         main.postDelayed({
             val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
             val ok = writer.writeText("KLIP-BACKGROUND-TEST $stamp", false)
-            notify(if (ok) "Test text placed at $stamp — paste it to check" else "Test write failed")
+            setNote(if (ok) "Test text placed at $stamp. Paste it to check." else "Test write failed.")
         }, 10_000)
     }
 
@@ -205,33 +236,41 @@ class KlipSyncService : Service() {
         )
     }
 
-    private fun buildNotification(text: String): Notification {
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+    private fun buildNotification(summary: StatusText.Summary): Notification {
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), flags)
         val send = PendingIntent.getActivity(
             this, 1,
             Intent(this, CopyTrampolineActivity::class.java)
                 .setAction(CopyTrampolineActivity.ACTION_SEND_CLIPBOARD)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            flags
         )
+        val repost = PendingIntent.getService(
+            this, 2, Intent(this, KlipSyncService::class.java).setAction(ACTION_REPOST), flags
+        )
+        val extra = note?.takeIf { System.currentTimeMillis() < noteUntil }
+        val body = if (extra != null) summary.body + "\n" + extra else summary.body
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_klip)
-            .setContentTitle("Klip")
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setColor(0xFF4D7A00.toInt())
+            .setContentTitle(summary.title)
+            .setContentText(if (extra != null) extra else summary.line)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setContentIntent(open)
             .addAction(0, "Send clipboard", send)
+            .setDeleteIntent(repost)
             .setOngoing(true)
+            .setShowWhen(false)
             .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
     private fun showForeground(text: String) {
-        val n = buildNotification(text)
+        val n = buildNotification(StatusText.Summary("Klip", text, text, false, null))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // dataSync has a 6 h/24 h limit and cannot start from BOOT_COMPLETED once an app targets
             // Android 15; an always-on peer connection is what specialUse is for.
@@ -243,13 +282,29 @@ class KlipSyncService : Service() {
         }
     }
 
-    private fun notify(text: String) {
-        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
-            .notify(NOTIFICATION_ID, buildNotification(text))
+    /** A short extra line (used by the background-paste test). */
+    private fun setNote(text: String) {
+        note = text
+        noteUntil = System.currentTimeMillis() + 20_000
+        refreshNotification(force = true)
+    }
+
+    /** Recompute the status off the main thread and update the notification only when it changed. */
+    private fun refreshNotification(force: Boolean = false) {
+        scope.launch {
+            val summary = withContext(Dispatchers.IO) { runCatching { StatusText.compute() }.getOrNull() } ?: return@launch
+            val key = summary.key + (note?.takeIf { System.currentTimeMillis() < noteUntil } ?: "")
+            if (!force && key == lastShown) return@launch
+            lastShown = key
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .notify(NOTIFICATION_ID, buildNotification(summary))
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        main.removeCallbacks(ticker)
+        runCatching { unregisterReceiver(screenReceiver) }
         runCatching { clipboard.removePrimaryClipChangedListener(clipListener) }
         logWatcher?.stop()
         runCatching { multicastLock?.takeIf { it.isHeld }?.release() }

@@ -13,7 +13,6 @@ object Setup {
     class Item(val id: String, val state: State, val required: Boolean)
 
     private const val PREFS = "klip_ui"
-    private const val KEY_AUTOSTART = "autostart_confirmed"
 
     fun notificationsGranted(c: Context) =
         Build.VERSION.SDK_INT < 33 ||
@@ -22,11 +21,19 @@ object Setup {
     fun batteryUnrestricted(c: Context) =
         (c.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(c.packageName)
 
-    fun autostartConfirmed(c: Context) =
-        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_AUTOSTART, false)
+    /**
+     * Android cannot tell an app everything: phone makers (Vivo, Xiaomi, ...) keep their own switches that
+     * never show up in the standard checks. So every item can also be marked done by the person.
+     */
+    fun confirmed(c: Context, id: String): Boolean {
+        val p = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        return p.getBoolean("confirmed_$id", false) || (id == "autostart" && p.getBoolean("autostart_confirmed", false))
+    }
 
-    fun setAutostartConfirmed(c: Context, v: Boolean) =
-        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_AUTOSTART, v).apply()
+    fun setConfirmed(c: Context, id: String, v: Boolean) {
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("confirmed_$id", v).remove("autostart_confirmed").apply()
+    }
 
     fun logsGranted(c: Context) =
         c.checkSelfPermission(android.Manifest.permission.READ_LOGS) == PackageManager.PERMISSION_GRANTED
@@ -35,15 +42,19 @@ object Setup {
 
     /** The required items, in the order the setup screen shows them. */
     fun required(c: Context): List<Item> {
+        fun item(id: String, auto: Boolean?, manualOnly: Boolean = false) = Item(
+            id,
+            when {
+                auto == true || confirmed(c, id) -> State.DONE
+                manualOnly -> State.UNCHECKABLE_TODO
+                else -> State.TODO
+            },
+            true
+        )
         val list = mutableListOf<Item>()
-        if (Build.VERSION.SDK_INT >= 33) {
-            list += Item("notifications", if (notificationsGranted(c)) State.DONE else State.TODO, true)
-        }
-        list += Item("battery", if (batteryUnrestricted(c)) State.DONE else State.TODO, true)
-        val oem = Oem.detect()
-        if (oem.needsExtraSteps) {
-            list += Item("autostart", if (autostartConfirmed(c)) State.DONE else State.UNCHECKABLE_TODO, true)
-        }
+        if (Build.VERSION.SDK_INT >= 33) list += item("notifications", notificationsGranted(c))
+        list += item("battery", batteryUnrestricted(c))
+        if (Oem.detect().needsExtraSteps) list += item("autostart", null, manualOnly = true)
         return list
     }
 
