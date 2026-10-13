@@ -10,6 +10,7 @@ members = [
     "crates/klip-android",
     "crates/klip-daemon",
     "crates/klip-cli",
+    "crates/klip-tui",
 ]
 
 [workspace.package]
@@ -40,6 +41,11 @@ directories = "5.0"
 owo-colors = "4.1"
 qrcode = { version = "0.14", default-features = false }
 unicode-width = "0.2"
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = { version = "=0.29.0", features = ["event-stream", "bracketed-paste"] }
+futures-util = "0.3"
+async-trait = "0.1"
+unicode-segmentation = "1"
 
 # Clipboard
 arboard = "3.4"
@@ -61,6 +67,11 @@ klip-net = { path = "crates/klip-net" }
 klip-core = { path = "crates/klip-core" }
 uniffi = "0.32"
 klip-daemon = { path = "crates/klip-daemon" }
+klip-tui = { path = "crates/klip-tui" }
+
+# Test-only: drive the real binary in a pseudo-terminal and read its screen
+portable-pty = "=0.9.0"
+vt100 = "=0.16.2"
 
 # Smaller dev artifacts: full debuginfo for ~400 crates took 15 GB on a 180 GB disk.
 [profile.dev]

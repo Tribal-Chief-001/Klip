@@ -1,0 +1,27 @@
+[package]
+name = "klip-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+# FakeDaemon, Harness and snapshot helpers, for this crate's tests and for klip-cli's tests.
+testkit = []
+
+[dependencies]
+klip-proto = { workspace = true }
+klip-core = { workspace = true }
+tokio = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+qrcode = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

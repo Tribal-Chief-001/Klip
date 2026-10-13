@@ -109,9 +109,9 @@ crates/klip-tui/
   logic testable without a terminal.
 - `view(&AppState, &mut Frame)` only draws. It must not panic for any state at any terminal size.
 - The runtime owns one `tokio::select!` loop over: crossterm `EventStream` (keys, mouse, paste, resize), a 250 ms
-  tick (toasts, spinners, countdowns), and the effect-result channel. Each effect runs in its own task; its reply
-  carries a request id and a per-screen generation number, and replies for an older generation are dropped
-  (so a slow answer can never overwrite newer data).
+  tick (toasts, spinners, countdowns), and the effect-result channel. Each effect runs in its own task; A poll kind has at most one
+  request in flight, and pairing replies carry a `session` number that changes whenever the pair window is restarted
+  or cancelled; replies for an old session are dropped (so a slow answer can never overwrite newer data).
 - Redraw only when the state changed (dirty flag), at most ~30 times a second. Idle cost is the 250 ms tick only.
 - The TUI process is separate from the daemon. Quitting the TUI never stops the daemon (the footer says so).
 
@@ -121,7 +121,7 @@ crates/klip-tui/
   selection can be used to copy a pairing ticket).
 - Leave on every path: `Drop`, a panic hook (restores first, then prints the panic message normally),
   SIGTERM/SIGHUP/SIGINT handlers, and the `q`/Ctrl+C keys. A second restore is harmless.
-- Not a TTY (stdin or stdout redirected): `klip` prints help and exits with code 2, exactly as today.
+- Not a TTY (stdin or stdout redirected) or `TERM` unset/`dumb`: `klip` prints help and exits with code 2, exactly as today.
 - Terminal smaller than 60 × 16: show a centred "terminal too small (need 60×16)" screen; resize recovers.
 
 ### 4.4 Data safety (`sanitize.rs`)
@@ -130,8 +130,9 @@ Clip text is attacker-influenced (anything copied on any linked device). Before 
 
 - C0 controls except `\n` and `\t`, DEL and all C1 controls (incl. `ESC`, `CSI`, `OSC`) are replaced by visible
   symbols (`␛`, `␇`, …) so no escape sequence ever reaches the terminal.
-- Bidirectional overrides and isolates (U+202A–U+202E, U+2066–U+2069) and zero-width characters are shown as
-  `⟦U+202E⟧`-style markers, so text cannot be visually reordered or hidden.
+- Bidirectional controls (U+061C, U+200E/F, U+202A–U+202E, U+2066–U+2069), U+200B, U+2060, U+FEFF and tag
+  characters (U+E0000–E007F) are shown as `⟦U+202E⟧`-style markers, so text cannot be visually reordered or
+  hidden. U+200C/U+200D are kept: emoji and several scripts need them.
 - Tabs expand to 4 columns; `\r` is shown as `␍`; width is computed with `unicode-width`; truncation never
   splits a grapheme or a wide character.
 - Items flagged sensitive by the daemon show `•••• secret (N B)` until the person presses `v` on that item;
@@ -170,7 +171,7 @@ secondary text dim grey. Meaning is never colour-only (`●` online / `○` offl
 | `Ctrl+L` | force redraw |
 | `m` | toggle mouse capture (when no text field is focused) |
 
-Mouse (when captured): click a tab, click a list row, wheel scrolls lists and previews.
+Mouse (when captured): click a tab; the wheel scrolls lists and previews.
 
 **Text-focus rule.** While a text field is focused (Send editor, Join ticket, History search, Settings fields, pause
 "custom seconds"), every printable key goes to the field and the global letter/digit keys above are inactive;
@@ -294,7 +295,7 @@ idle CPU of the TUI over 5 minutes. If the binary budget is exceeded, `tui` beco
   answers `Hello` with `IpcResponse::Error` (the released v0.3.6 behaviour for an unknown variant) treats it as
   protocol 1: everything that exists today works; the three new features are greyed out with
   "daemon is older (v0.3.6): restart it after upgrading".
-- `UnpairAll`: removes every peer using the same code path as `unpair`, continues after a single failure, reports both lists.
+- `UnpairAll`: removes every peer using the same code path as `unpair`, continues after a single failure, reports both lists. The CLI-side helper falls back to one `Unpair` per device for daemons that do not know the call, so unpair-all also works with v0.3.6; only copy-back and clear-history are unavailable there.
 - `CopyToClipboard`: the daemon looks the item up by id and writes it with the same driver path used for received
   clips, including the echo guard, so it is **not** re-broadcast as a new local copy. Unknown id → `Error`.
 - `ClearHistory`: clears the local in-memory history only; nothing is sent to other devices.
