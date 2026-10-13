@@ -1,9 +1,11 @@
 use crate::config::{user_paths, DaemonConfig, KlipPaths};
+use crate::instance_lock::InstanceLock;
 use crate::ipc_server::IpcServer;
 use klip_core::{CoreEngine, Shutdown, SyncCoordinator};
 use klip_platform::create_default_driver;
 use klip_platform::driver::ClipboardDriver;
 use klip_proto::hlc::NodeId;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{interval, MissedTickBehavior};
@@ -15,6 +17,17 @@ pub struct DaemonEngine {
     pub core: Arc<CoreEngine>,
     pub sync: Arc<SyncCoordinator>,
     pub shutdown: Arc<Shutdown>,
+    /// Held for the life of the daemon: only one instance per configuration directory.
+    _lock: InstanceLock,
+    capture: Arc<CaptureGate>,
+}
+
+/// Coordinates clipboard reads: one at a time, with one more queued if a change arrives meanwhile.
+/// Separate from `DaemonEngine` so a read in flight never keeps the instance lock alive.
+#[derive(Default)]
+struct CaptureGate {
+    capturing: AtomicBool,
+    recapture: AtomicBool,
 }
 
 impl DaemonEngine {
@@ -30,6 +43,7 @@ impl DaemonEngine {
         driver: Option<Arc<dyn ClipboardDriver>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         config.validate()?;
+        let lock = InstanceLock::acquire(&paths)?;
         let driver: Arc<dyn ClipboardDriver> = match driver {
             Some(d) => d,
             None => {
@@ -59,14 +73,42 @@ impl DaemonEngine {
             sync: Arc::clone(&core.sync),
             shutdown: Arc::clone(&core.shutdown),
             core,
+            _lock: lock,
+            capture: Arc::default(),
         })
     }
 
+    /// Read the clipboard off the event loop (an X11 selection read can block on a slow owner).
+    /// A change that arrives while a read is running triggers exactly one more read afterwards.
     fn capture_clipboard(&self) {
-        if let Ok(Some(captured)) = self.sync.driver.read_clip() {
-            self.sync
-                .spawn_local_clip(captured.content_type, captured.data);
+        let gate = Arc::clone(&self.capture);
+        if gate.capturing.swap(true, Ordering::SeqCst) {
+            gate.recapture.store(true, Ordering::SeqCst);
+            return;
         }
+        let sync = Arc::clone(&self.sync);
+        tokio::spawn(async move {
+            loop {
+                gate.recapture.store(false, Ordering::SeqCst);
+                let driver = Arc::clone(&sync.driver);
+                if let Ok(Ok(Some(captured))) =
+                    tokio::task::spawn_blocking(move || driver.read_clip()).await
+                {
+                    sync.spawn_local_clip(captured.content_type, captured.data);
+                }
+                if gate.recapture.load(Ordering::SeqCst) {
+                    continue;
+                }
+                gate.capturing.store(false, Ordering::SeqCst);
+                // A change signalled between the check and the store must not be lost.
+                if gate.recapture.load(Ordering::SeqCst)
+                    && !gate.capturing.swap(true, Ordering::SeqCst)
+                {
+                    continue;
+                }
+                break;
+            }
+        });
     }
 
     pub fn node_id(&self) -> NodeId {

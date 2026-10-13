@@ -1,13 +1,34 @@
 use klip_daemon::config::get_ipc_socket_path;
 use klip_proto::ipc::{deserialize_ipc_msg, serialize_ipc_msg, IpcRequest, IpcResponse};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::UnixStream;
+
+/// Most requests are answered in milliseconds; a hung daemon must not hang the CLI forever.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+/// Joining a device waits for the other side's human to approve it.
+const PAIR_JOIN_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct DaemonClient;
 
 impl DaemonClient {
     pub async fn send_request(req: &IpcRequest) -> Result<IpcResponse, String> {
+        let limit = match req {
+            IpcRequest::PairJoin { .. } => PAIR_JOIN_TIMEOUT,
+            _ => DEFAULT_TIMEOUT,
+        };
+        tokio::time::timeout(limit, Self::exchange(req))
+            .await
+            .map_err(|_| {
+                format!(
+                    "Klip did not answer within {} s; it may be stuck. Try `klip stop`, or stop the process.",
+                    limit.as_secs()
+                )
+            })?
+    }
+
+    async fn exchange(req: &IpcRequest) -> Result<IpcResponse, String> {
         let sock_path = get_ipc_socket_path();
         if !sock_path.exists() {
             return Err("Klip daemon is not running. Launch it with `klip start`.".to_string());
@@ -53,6 +74,7 @@ impl DaemonClient {
         }
         #[cfg(not(unix))]
         {
+            let _ = req;
             Err("Unix socket not supported on this platform".to_string())
         }
     }

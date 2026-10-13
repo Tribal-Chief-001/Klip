@@ -118,12 +118,11 @@ pub struct HistoryEntry {
     pub sensitive: bool,
 }
 
-/// Is this text a well-formed, unexpired Klip pairing ticket? (Cheap check for the QR scanner.)
+/// Is this text a well-formed Klip pairing ticket? (Cheap check for the QR scanner.) Expiry is
+/// deliberately not judged here: only the host's clock decides, and a phone's clock may be wrong.
 #[uniffi::export]
 pub fn is_valid_pairing_ticket(text: String) -> bool {
-    PairingTicket::decode(&text)
-        .map(|t| !t.is_expired())
-        .unwrap_or(false)
+    PairingTicket::decode(&text).is_ok()
 }
 
 /// Clipboard driver whose "OS clipboard" is the app, reached through [`ClipboardBridge`].

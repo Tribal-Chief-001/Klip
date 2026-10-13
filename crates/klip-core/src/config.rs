@@ -67,7 +67,7 @@ pub enum RelayMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
     pub device_name: String,
     pub relay: RelayMode,
@@ -197,6 +197,10 @@ mod tests {
         );
         fs::write(p.config_file(), r#"{"poll_interval_ms":1}"#).unwrap();
         assert!(DaemonConfig::load(&p).is_err());
+        // A misspelled key must not be silently ignored (it could be a privacy setting).
+        fs::write(p.config_file(), r#"{"relays":"lan"}"#).unwrap();
+        let err = DaemonConfig::load(&p).unwrap_err();
+        assert!(err.contains("relays"), "{err}");
         let _ = fs::remove_dir_all(p.dir());
     }
 }

@@ -457,3 +457,88 @@ async fn sender_is_told_the_truth_about_what_the_receiver_did() {
     a.stop().await;
     b.stop().await;
 }
+
+#[tokio::test]
+async fn a_second_daemon_on_the_same_config_is_refused_and_does_not_steal_the_socket() {
+    let dir = fresh_dir("a9");
+    let a = start_daemon("Alpha", dir.clone(), false).await;
+
+    // A second instance with the same configuration directory must fail fast ...
+    let paths = KlipPaths::from_dir(&dir);
+    let config = DaemonConfig {
+        device_name: "Alpha".into(),
+        relay: RelayMode::Lan,
+        lan_discovery: false,
+        ..DaemonConfig::default()
+    };
+    let err = DaemonEngine::init_with(config, paths, None)
+        .await
+        .err()
+        .expect("second daemon must be refused");
+    assert!(err.to_string().contains("already running"), "{err}");
+
+    // ... and the first one must still own a working control socket.
+    assert!(matches!(
+        a.ipc(IpcRequest::GetStatus).await,
+        IpcResponse::Status(_)
+    ));
+    a.stop().await;
+
+    // After a clean stop the directory can be used again.
+    let again = start_daemon("Alpha", dir, false).await;
+    assert!(matches!(
+        again.ipc(IpcRequest::GetStatus).await,
+        IpcResponse::Status(_)
+    ));
+    again.stop().await;
+}
+
+#[tokio::test]
+async fn a_burst_of_copies_is_coalesced_and_the_last_one_wins() {
+    use klip_proto::clip::ClipContentType;
+    use std::sync::atomic::Ordering;
+
+    let a = start_daemon("Alpha", fresh_dir("a10"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b10"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+
+    const BURST: u64 = 200;
+    for i in 0..BURST {
+        a.engine.sync.spawn_local_clip(
+            ClipContentType::PlainTextUtf8,
+            format!("burst-{i}").into_bytes(),
+        );
+    }
+    let last = format!("burst-{}", BURST - 1);
+    assert!(
+        wait_until(15, || b.clipboard.current_text().as_deref()
+            == Some(last.as_str()))
+        .await,
+        "the newest clip of the burst never arrived: {:?}",
+        b.clipboard.current_text()
+    );
+    // Let any in-flight send finish, then check the accounting: every clip was either sent or
+    // replaced by a newer one, and far fewer than BURST network sends were made.
+    let sync = &a.engine.sync;
+    assert!(
+        wait_until(10, || {
+            sync.sends_started.load(Ordering::SeqCst) + sync.coalesced_clips.load(Ordering::SeqCst)
+                == BURST
+        })
+        .await,
+        "sent {} + coalesced {} != {BURST}",
+        sync.sends_started.load(Ordering::SeqCst),
+        sync.coalesced_clips.load(Ordering::SeqCst)
+    );
+    let sends = sync.sends_started.load(Ordering::SeqCst);
+    assert!((1..BURST / 2).contains(&sends), "sends_started = {sends}");
+    // The receiver still shows the newest clip after everything settles (nothing older landed late).
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(b.clipboard.current_text().as_deref(), Some(last.as_str()));
+
+    a.stop().await;
+    b.stop().await;
+}

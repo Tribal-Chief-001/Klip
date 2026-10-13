@@ -68,6 +68,13 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
+    // `klip history | head` must end quietly instead of panicking on a closed pipe.
+    #[cfg(unix)]
+    // SAFETY: restoring the default disposition of SIGPIPE at startup, before any other thread
+    // exists or any signal handler is installed by this program.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
         eprintln!("{} {}", "error:".red().bold(), e);
@@ -191,7 +198,8 @@ async fn start(foreground: bool) -> AnyResult<()> {
         return Ok(());
     }
     let paths = klip_daemon::config::user_paths();
-    let _ = std::fs::remove_file(paths.ipc_socket()); // stale socket from a crash
+    // A stale socket from a crash is removed by the daemon itself, but only after it holds the
+    // single-instance lock; removing it here could cut off a busy daemon that is still alive.
 
     if foreground {
         let config = DaemonConfig::load(&paths)?;
@@ -221,7 +229,7 @@ async fn start(foreground: bool) -> AnyResult<()> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let child = cmd.spawn()?;
+    let mut child = cmd.spawn()?;
 
     for _ in 0..120 {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -235,6 +243,21 @@ async fn start(foreground: bool) -> AnyResult<()> {
                 child.id()
             );
             return Ok(());
+        }
+        // The daemon refuses to start for a reason (already running, bad config, no network...):
+        // say why right away instead of waiting for the timeout.
+        if let Ok(Some(status)) = child.try_wait() {
+            let tail = std::fs::read_to_string(&log_path)
+                .map(|t| {
+                    let lines: Vec<&str> = t.lines().collect();
+                    lines[lines.len().saturating_sub(4)..].join("\n")
+                })
+                .unwrap_or_default();
+            return Err(format!(
+                "Klip stopped right after starting ({status}). Last log lines:\n{tail}\n(log: {})",
+                log_path.display()
+            )
+            .into());
         }
     }
     Err(format!(

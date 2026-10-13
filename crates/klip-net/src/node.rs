@@ -3,19 +3,31 @@ use crate::proto::{
     sanitize_name, PairReply, PairRequest, MAX_CONTROL_BYTES, PAIR_ALPN, SYNC_ALPN,
 };
 use crate::ticket::{now_unix, PairingTicket};
-use iroh::endpoint::{presets, Connection, IdleTimeout, Incoming, QuicTransportConfig};
+use iroh::endpoint::{presets, Connection, IdleTimeout, Incoming, QuicTransportConfig, VarInt};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, Watcher};
 use klip_proto::clip::ClipPayload;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const WRITE_TIMEOUT: Duration = Duration::from_secs(20);
+/// Base time for a clip exchange plus time proportional to its size (assumes at least 64 KiB/s),
+/// so a 30 MB clip over a slow link is not killed after 20 s.
+const WRITE_TIMEOUT_BASE: Duration = Duration::from_secs(20);
+const MIN_THROUGHPUT_BYTES_PER_SEC: u64 = 64 * 1024;
+/// A first attempt that fails faster than this was a dead cached connection and is retried once.
+const FAST_FAILURE: Duration = Duration::from_secs(3);
+/// Only a handful of unauthenticated pairing handshakes may run at the same time.
+const MAX_CONCURRENT_PAIR_HANDLERS: usize = 4;
+const PAIR_STREAM_TIMEOUT: Duration = Duration::from_secs(10);
+/// Received clips wait here for the application; kept small because each can be tens of MB.
+const EVENT_QUEUE: usize = 8;
+/// Streams a peer may have open at once (each can hold a whole clip in memory).
+const MAX_BIDI_STREAMS: u32 = 4;
 const MAINTAIN_TICK: Duration = Duration::from_secs(5);
 const RECONNECT_MIN: Duration = Duration::from_secs(5);
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
@@ -135,6 +147,7 @@ struct Inner {
     conns: Mutex<HashMap<EndpointId, Connection>>,
     pairing: Mutex<Option<PairingWindow>>,
     events: mpsc::Sender<NetEvent>,
+    pair_handlers: Semaphore,
 }
 
 #[derive(Clone)]
@@ -159,6 +172,9 @@ impl KlipNode {
         let transport = QuicTransportConfig::builder()
             .keep_alive_interval(cfg.keep_alive)
             .max_idle_timeout(Some(idle))
+            // Klip only uses bidirectional streams, a few at a time; bounding them bounds memory.
+            .max_concurrent_bidi_streams(VarInt::from_u32(MAX_BIDI_STREAMS))
+            .max_concurrent_uni_streams(VarInt::from_u32(0))
             .build();
 
         let builder = match cfg.relay {
@@ -186,13 +202,14 @@ impl KlipNode {
             }
         }
 
-        let (tx, rx) = mpsc::channel(256);
+        let (tx, rx) = mpsc::channel(EVENT_QUEUE);
         let inner = Arc::new(Inner {
             cfg,
             peers: Mutex::new(peers.into_iter().map(|p| (p.id, p)).collect()),
             conns: Mutex::new(HashMap::new()),
             pairing: Mutex::new(None),
             events: tx,
+            pair_handlers: Semaphore::new(MAX_CONCURRENT_PAIR_HANDLERS),
         });
         let node = Self { endpoint, inner };
         node.spawn_accept_loop();
@@ -303,9 +320,8 @@ impl KlipNode {
 
     /// Redeem a ticket: connect to the host, present the secret, wait for the host's approval.
     pub async fn pair_with(&self, ticket: &PairingTicket) -> Result<PeerRecord, NetError> {
-        if ticket.is_expired() {
-            return Err(NetError::Ticket("ticket has expired".into()));
-        }
+        // Expiry is enforced by the host with its own clock. Judging it here with *this* device's
+        // clock would reject valid tickets on a phone whose date/time is wrong.
         let host_id = ticket.addr.id;
         if host_id == self.id() {
             return Err(NetError::Ticket(
@@ -408,11 +424,14 @@ impl KlipNode {
     }
 
     async fn send_to(&self, id: EndpointId, bytes: &[u8]) -> Result<(), NetError> {
-        // Retry once with a fresh connection, but only for transport problems (a cached
-        // connection can be dead). A peer that answered "no" has given its final answer: sending
-        // the same clip again would, at best, be reported as a stale duplicate.
+        // Retry once with a fresh connection, but only when the first attempt failed *fast* (a dead
+        // cached connection). A slow failure/timeout is not retried: re-sending a large clip would
+        // double the traffic and could deliver it twice. A peer that answered "no" has given its
+        // final answer.
+        let started = Instant::now();
         match self.try_send(id, bytes, false).await {
             Err(NetError::PeerRefused(why)) => Err(NetError::PeerRefused(why)),
+            Err(e) if started.elapsed() > FAST_FAILURE => Err(e),
             Err(_) => self.try_send(id, bytes, true).await,
             ok => ok,
         }
@@ -425,7 +444,9 @@ impl KlipNode {
         force_new: bool,
     ) -> Result<(), NetError> {
         let conn = self.connection_to(id, force_new).await?;
-        timeout(WRITE_TIMEOUT, async {
+        let limit = WRITE_TIMEOUT_BASE
+            + Duration::from_secs(bytes.len() as u64 / MIN_THROUGHPUT_BYTES_PER_SEC);
+        timeout(limit, async {
             let (mut tx, mut rx) = conn
                 .open_bi()
                 .await
@@ -647,10 +668,20 @@ impl KlipNode {
     // ------------------------------------------------------------------- pairing (host loop)
 
     async fn handle_pair(&self, conn: Connection, remote: EndpointId) {
-        let Ok((mut tx, mut rx)) = conn.accept_bi().await else {
+        // Pairing connections come from *unauthenticated* devices: cap how many run at once, bound
+        // the request size, and never wait forever. A stranger with no open window still gets a
+        // clear "no pairing in progress" answer, which costs us one tiny read.
+        let Ok(_permit) = self.inner.pair_handlers.try_acquire() else {
+            conn.close(CODE_UNPAIRED.into(), b"busy");
             return;
         };
-        let Ok(bytes) = rx.read_to_end(MAX_CONTROL_BYTES).await else {
+        let Ok(Ok((mut tx, mut rx))) = timeout(PAIR_STREAM_TIMEOUT, conn.accept_bi()).await else {
+            conn.close(CODE_UNPAIRED.into(), b"timeout");
+            return;
+        };
+        let Ok(Ok(bytes)) = timeout(PAIR_STREAM_TIMEOUT, rx.read_to_end(MAX_CONTROL_BYTES)).await
+        else {
+            conn.close(CODE_UNPAIRED.into(), b"timeout");
             return;
         };
         let Ok(req) = postcard::from_bytes::<PairRequest>(&bytes) else {

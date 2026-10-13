@@ -187,16 +187,9 @@ async fn expired_or_closed_window_is_rejected() {
     let host = spawn_node("Laptop", true, None).await;
     let phone = spawn_node("Phone", true, None).await;
 
-    // Client-side expiry check.
     let ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
-    let mut old = ticket.clone();
-    old.expires_unix = 1;
-    assert!(matches!(
-        phone.node.pair_with(&old).await,
-        Err(NetError::Ticket(_))
-    ));
 
-    // Host-side expiry/closing.
+    // Host-side closing.
     host.node.close_pairing();
     let err = phone.node.pair_with(&ticket).await.unwrap_err();
     assert!(matches!(err, NetError::PairingRejected(_)), "{err}");
@@ -365,4 +358,30 @@ async fn paired_devices_stay_connected_without_traffic_and_reconnect() {
     // Unpairing removes the peer from status entirely.
     assert!(host.node.unpair(&phone.node.id()));
     assert!(host.node.peer_statuses().is_empty());
+}
+
+#[tokio::test]
+async fn a_wrong_client_clock_cannot_invalidate_or_extend_a_ticket() {
+    let host = spawn_node("Laptop", true, None).await;
+    let phone = spawn_node("Phone", true, None).await;
+
+    // A phone whose date is wrong (the ticket claims to have expired in 1970) must still be able
+    // to pair: only the host's own clock decides.
+    let mut ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
+    ticket.expires_unix = 1;
+    phone
+        .node
+        .pair_with(&ticket)
+        .await
+        .expect("host window is open");
+
+    // A ticket that *claims* to be valid forever is useless once the host window is closed.
+    let other = spawn_node("Other", true, None).await;
+    let mut forever = host.node.open_pairing(Duration::from_secs(60), true).await;
+    host.node.close_pairing();
+    forever.expires_unix = u64::MAX;
+    assert!(matches!(
+        other.node.pair_with(&forever).await,
+        Err(NetError::PairingRejected(_))
+    ));
 }

@@ -4,6 +4,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// A clip larger than this keeps only its preview in history (the OS clipboard holds the content).
+pub const MAX_STORED_ITEM_BYTES: usize = 256 * 1024;
+/// Total bytes of stored content across all items; the oldest content is dropped first.
+pub const MAX_STORED_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Clone)]
 pub struct HistoryBuffer {
     items: Arc<Mutex<VecDeque<HistoryItem>>>,
@@ -55,7 +60,11 @@ impl HistoryBuffer {
             origin_name,
             timestamp_ms: now,
             content_preview: preview,
-            full_content: content,
+            full_content: if size_bytes <= MAX_STORED_ITEM_BYTES {
+                content
+            } else {
+                Vec::new()
+            },
             size_bytes,
             is_sensitive,
         };
@@ -65,6 +74,17 @@ impl HistoryBuffer {
             lock.pop_back();
         }
         lock.push_front(item);
+        // Bound the memory history holds: strip the oldest stored content until under budget.
+        let mut total: usize = lock.iter().map(|i| i.full_content.len()).sum();
+        while total > MAX_STORED_TOTAL_BYTES {
+            match lock.iter_mut().rev().find(|i| !i.full_content.is_empty()) {
+                Some(oldest) => {
+                    total -= oldest.full_content.len();
+                    oldest.full_content = Vec::new();
+                }
+                None => break,
+            }
+        }
     }
 
     pub fn get_recent(&self, limit: usize) -> Vec<HistoryItem> {
@@ -97,5 +117,42 @@ mod tests {
         assert_eq!(items[0].full_content, b"clip 4");
         assert_eq!(items[1].full_content, b"clip 3");
         assert_eq!(items[2].full_content, b"clip 2");
+    }
+
+    #[test]
+    fn memory_is_bounded_even_for_huge_clips() {
+        let node = NodeId::new([1u8; 32]);
+        // 40 clips of 5 MiB: 200 MiB of input must not stay in memory.
+        let buf = HistoryBuffer::new(50);
+        for i in 0..40u8 {
+            buf.push(
+                [i; 16],
+                node,
+                "N".into(),
+                vec![b'x'; 5 * 1024 * 1024],
+                false,
+            );
+        }
+        let items = buf.get_recent(100);
+        assert_eq!(items.len(), 40, "every clip keeps its history line");
+        assert!(items.iter().all(|i| i.full_content.is_empty()));
+        assert!(items.iter().all(|i| i.size_bytes == 5 * 1024 * 1024));
+
+        // Many mid-size clips: stored content stays under budget, newest kept longest.
+        let buf = HistoryBuffer::new(50);
+        for i in 0..50u8 {
+            buf.push([i; 16], node, "N".into(), vec![b'y'; 200 * 1024], false);
+        }
+        let items = buf.get_recent(100);
+        let held: usize = items.iter().map(|i| i.full_content.len()).sum();
+        assert!(held <= MAX_STORED_TOTAL_BYTES, "{held}");
+        assert!(
+            !items[0].full_content.is_empty(),
+            "newest keeps its content"
+        );
+        assert!(
+            items[49].full_content.is_empty(),
+            "oldest content evicted first"
+        );
     }
 }

@@ -2023,6 +2023,7 @@ dependencies = [
  "clap",
  "klip-daemon",
  "klip-proto",
+ "libc",
  "owo-colors",
  "qrcode",
  "tokio",

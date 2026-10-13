@@ -19,6 +19,43 @@ pub fn node_of(id: &EndpointId) -> NodeId {
     NodeId::new(*id.as_bytes())
 }
 
+/// Transcode (images), classify (secrets), wrap and record in history. Pure CPU work.
+fn build_payload(
+    content_type: ClipContentType,
+    data: Vec<u8>,
+    hlc: HybridLogicalClock,
+    node: NodeId,
+    device_name: String,
+    history: &HistoryBuffer,
+) -> ClipPayload {
+    // Compress uncompressed bitmaps; keep the label in sync with the bytes we actually send.
+    let (content_type, data) = match content_type {
+        ClipContentType::ImagePng | ClipContentType::ImageWebP => {
+            match klip_diff::transcode_image_for_sync(&data) {
+                Ok((klip_diff::ImageFormat::WebP, bytes)) => (ClipContentType::ImageWebP, bytes),
+                Ok((klip_diff::ImageFormat::Png, bytes)) => (ClipContentType::ImagePng, bytes),
+                _ => (content_type, data),
+            }
+        }
+        other => (other, data),
+    };
+
+    let is_sensitive = match (&content_type, std::str::from_utf8(&data)) {
+        (ClipContentType::PlainTextUtf8, Ok(text)) => analyze_snippet(text).is_likely_secret,
+        _ => false,
+    };
+
+    let payload = ClipPayload::new(content_type, data, node, hlc, is_sensitive);
+    history.push(
+        payload.id,
+        node,
+        device_name,
+        payload.content.clone(),
+        is_sensitive,
+    );
+    payload
+}
+
 struct PendingPair {
     peer: NodeId,
     device_name: String,
@@ -54,6 +91,15 @@ pub struct SyncCoordinator {
     pause_until_secs: AtomicU64,
     pub total_synced_clips: AtomicU64,
     pub last_sync_instant: Mutex<Option<Instant>>,
+    /// Newest clip waiting to be sent. Only the latest matters (last write wins), so a burst of
+    /// copies collapses to "the clip being sent now" plus "the newest one after it".
+    outbox: Mutex<Option<ClipPayload>>,
+    /// True while a drain task owns the outbox.
+    sending: AtomicBool,
+    /// How many network sends were started (a send goes to all peers).
+    pub sends_started: AtomicU64,
+    /// Local clips that were never sent because a newer one replaced them.
+    pub coalesced_clips: AtomicU64,
 }
 
 impl SyncCoordinator {
@@ -83,6 +129,10 @@ impl SyncCoordinator {
             pause_until_secs: AtomicU64::new(0),
             total_synced_clips: AtomicU64::new(0),
             last_sync_instant: Mutex::new(None),
+            outbox: Mutex::new(None),
+            sending: AtomicBool::new(false),
+            sends_started: AtomicU64::new(0),
+            coalesced_clips: AtomicU64::new(0),
         }
     }
 
@@ -125,23 +175,116 @@ impl SyncCoordinator {
     // ----------------------------------------------------------------------- local -> peers
 
     /// Record a locally copied item and send it to all peers in the background, so a slow or
-    /// unreachable peer can never stall clipboard polling or inbound processing.
+    /// unreachable peer can never stall clipboard capture or inbound processing. Copies that
+    /// arrive while a send is in flight are coalesced: only the newest is sent next.
     pub fn spawn_local_clip(self: &Arc<Self>, content_type: ClipContentType, data: Vec<u8>) {
+        if self.check_pause_status() || data.is_empty() {
+            return;
+        }
+        // Stamp now, in copy order; the heavy preparation below may finish out of order.
+        let hlc = self.stamp_local_clip();
         let this = Arc::clone(self);
         tokio::spawn(async move {
-            this.broadcast_local_clip(content_type, data).await;
+            if let Some(payload) = this.prepare_off_thread(content_type, data, hlc).await {
+                this.queue_for_sending(payload);
+            }
         });
     }
 
     /// Prepare and send a local clip, waiting for each peer's answer. `None` when ignored
-    /// (paused / empty).
+    /// (paused / empty). Used for explicit sends (`klip send`), which are never coalesced.
     pub async fn broadcast_local_clip(
         &self,
         content_type: ClipContentType,
         data: Vec<u8>,
     ) -> Option<Vec<DeliveryReport>> {
-        let payload = self.prepare_local_clip(content_type, data)?;
-        let results = self.net.send_clip(&payload).await;
+        if self.check_pause_status() || data.is_empty() {
+            return None;
+        }
+        let hlc = self.stamp_local_clip();
+        let payload = self.prepare_off_thread(content_type, data, hlc).await?;
+        Some(self.deliver(&payload).await)
+    }
+
+    fn stamp_local_clip(&self) -> HybridLogicalClock {
+        let mut clock = self.clock.lock().unwrap();
+        let stamp = clock.send_event();
+        *self.last_applied_clip_hlc.lock().unwrap() = Some(stamp);
+        stamp
+    }
+
+    /// Image transcoding and secret analysis are CPU work; keep them off the async workers.
+    async fn prepare_off_thread(
+        &self,
+        content_type: ClipContentType,
+        data: Vec<u8>,
+        hlc: HybridLogicalClock,
+    ) -> Option<ClipPayload> {
+        let node = self.identity.node_id;
+        let device = self.config.device_name.clone();
+        let history = self.history.clone();
+        tokio::task::spawn_blocking(move || {
+            build_payload(content_type, data, hlc, node, device, &history)
+        })
+        .await
+        .ok()
+    }
+
+    fn queue_for_sending(self: &Arc<Self>, payload: ClipPayload) {
+        {
+            let mut outbox = self.outbox.lock().unwrap();
+            match outbox.as_ref() {
+                // Preparation finished out of order: a newer clip is already waiting.
+                Some(waiting) if waiting.hlc >= payload.hlc => {
+                    self.coalesced_clips.fetch_add(1, Ordering::SeqCst);
+                    return;
+                }
+                Some(_) => {
+                    self.coalesced_clips.fetch_add(1, Ordering::SeqCst);
+                }
+                None => {}
+            }
+            *outbox = Some(payload);
+        }
+        if self.sending.swap(true, Ordering::SeqCst) {
+            return; // the running drain task will pick it up
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move { this.drain_outbox().await });
+    }
+
+    async fn drain_outbox(self: Arc<Self>) {
+        loop {
+            let next = self.outbox.lock().unwrap().take();
+            let Some(payload) = next else {
+                self.sending.store(false, Ordering::SeqCst);
+                // A clip may have been queued between the take and the store.
+                if self.outbox.lock().unwrap().is_some()
+                    && !self.sending.swap(true, Ordering::SeqCst)
+                {
+                    continue;
+                }
+                return;
+            };
+            // A newer clip (local or remote) became active while this one waited: skip it.
+            let stale = self
+                .last_applied_clip_hlc
+                .lock()
+                .unwrap()
+                .map(|active| active > payload.hlc)
+                .unwrap_or(false);
+            if stale {
+                self.coalesced_clips.fetch_add(1, Ordering::SeqCst);
+                continue;
+            }
+            self.sends_started.fetch_add(1, Ordering::SeqCst);
+            self.deliver(&payload).await;
+        }
+    }
+
+    /// Send one prepared clip to every peer and record the per-peer outcome.
+    async fn deliver(&self, payload: &ClipPayload) -> Vec<DeliveryReport> {
+        let results = self.net.send_clip(payload).await;
         let names: HashMap<NodeId, String> = self
             .net
             .peers()
@@ -177,54 +320,7 @@ impl SyncCoordinator {
         if reports.iter().any(|r| r.result.is_ok()) {
             self.record_sync();
         }
-        Some(reports)
-    }
-
-    fn prepare_local_clip(
-        &self,
-        content_type: ClipContentType,
-        data: Vec<u8>,
-    ) -> Option<ClipPayload> {
-        if self.check_pause_status() || data.is_empty() {
-            return None;
-        }
-
-        // Compress uncompressed bitmaps; keep the label in sync with the bytes we actually send.
-        let (content_type, data) = match content_type {
-            ClipContentType::ImagePng | ClipContentType::ImageWebP => {
-                match klip_diff::transcode_image_for_sync(&data) {
-                    Ok((klip_diff::ImageFormat::WebP, bytes)) => {
-                        (ClipContentType::ImageWebP, bytes)
-                    }
-                    Ok((klip_diff::ImageFormat::Png, bytes)) => (ClipContentType::ImagePng, bytes),
-                    _ => (content_type, data),
-                }
-            }
-            other => (other, data),
-        };
-
-        let is_sensitive = match (&content_type, std::str::from_utf8(&data)) {
-            (ClipContentType::PlainTextUtf8, Ok(text)) => analyze_snippet(text).is_likely_secret,
-            _ => false,
-        };
-
-        let hlc = {
-            let mut clock = self.clock.lock().unwrap();
-            let stamp = clock.send_event();
-            *self.last_applied_clip_hlc.lock().unwrap() = Some(stamp);
-            stamp
-        };
-
-        let payload =
-            ClipPayload::new(content_type, data, self.identity.node_id, hlc, is_sensitive);
-        self.history.push(
-            payload.id,
-            self.identity.node_id,
-            self.config.device_name.clone(),
-            payload.content.clone(),
-            is_sensitive,
-        );
-        Some(payload)
+        reports
     }
 
     // ----------------------------------------------------------------------- peers -> local
@@ -233,7 +329,7 @@ impl SyncCoordinator {
     pub async fn handle_net_event(&self, event: NetEvent) {
         match event {
             NetEvent::Clip { from, payload, ack } => {
-                let outcome = self.apply_remote_clip(&from, payload);
+                let outcome = self.apply_remote_clip(&from, payload).await;
                 let _ = ack.send(outcome);
             }
             NetEvent::PairRequest {
@@ -261,7 +357,7 @@ impl SyncCoordinator {
         }
     }
 
-    fn apply_remote_clip(&self, from: &EndpointId, payload: ClipPayload) -> ClipOutcome {
+    async fn apply_remote_clip(&self, from: &EndpointId, payload: ClipPayload) -> ClipOutcome {
         if self.check_pause_status() {
             return ClipOutcome::Paused;
         }
@@ -286,18 +382,25 @@ impl SyncCoordinator {
             }
         }
 
-        if self
-            .driver
-            .write_clip_flagged(
-                &payload.content_type,
-                &payload.content,
-                payload.is_sensitive,
-            )
-            .is_err()
-        {
+        // The platform write can block (X11 selection handshake, JNI); keep it off the async
+        // workers. The payload moves into the closure and comes back for the history entry.
+        let driver = Arc::clone(&self.driver);
+        let written = tokio::task::spawn_blocking(move || {
+            let ok = driver
+                .write_clip_flagged(
+                    &payload.content_type,
+                    &payload.content,
+                    payload.is_sensitive,
+                )
+                .is_ok();
+            (ok, payload)
+        })
+        .await;
+        let payload = match written {
+            Ok((true, payload)) => payload,
             // Not applied, so the "active clip" bookkeeping must not claim it was.
-            return ClipOutcome::ClipboardUnavailable;
-        }
+            _ => return ClipOutcome::ClipboardUnavailable,
+        };
         {
             let mut active = self.last_applied_clip_hlc.lock().unwrap();
             if active.map(|cur| remote_hlc > cur).unwrap_or(true) {
