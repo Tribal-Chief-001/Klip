@@ -27,4 +27,4 @@
 │State        not connected                                                                        │
 │Last error   could not reach the device                                                           │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ select · u unpair · U unpair all · 1-7 screens · p pause · ? help · q quit
+↑↓ select · u unpair · a unpair all · 1-7 screens · p pause · h help · q quit

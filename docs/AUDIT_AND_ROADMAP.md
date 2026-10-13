@@ -178,6 +178,8 @@ release build, CI). Evidence and numbers: `docs/RESEARCH_2026.md` sections 12-14
 - Found on the way: a history bug that mis-detected bitmaps by the bytes `BM` at the start of text; a "Broken pipe" instead of the daemon's size error on 9 MB sends; the Pair screen showed an already-invalid code while a new one opened (found by the two-daemon test).
 - Tests: two real daemons driven through the TUI (pair, send byte-for-byte, copy back, pause, unpair all); 56,000 random events; idle cost measured (see README).
 
+**Terminal app, simplification pass (v0.4.1-alpha):** keys are lowercase only (capitals fold to the small letter outside text fields; help is `h`; unpair all `a`, clear history `c`, restart `r`; `Home`/`End` instead of `g`/`G`); the Send screen no longer captures keys on arrival (Enter starts typing); the Pair screen shows the QR beside the ticket, uses low error correction (2-4 rows shorter) and asks the terminal to grow when the code does not fit (restores the size on leaving); clips are forgotten after `history_ttl_hours` (default 24, 0 = off), lazily on every read plus a 10-minute prune in the daemon. The terminal-resize request itself is unverified in real terminals (tested: the request is made and undone; not tested: a terminal honouring it).
+
 **Still open (ranked)**
 0. Terminal app: emulator matrix (kitty, gnome-terminal, alacritty, tmux, SSH), macOS runtime, Windows (needs a Windows control channel first).
 1. Test the Android app on a physical phone: camera QR, tile, notification action, boot restart, Doze/battery, OEM behaviour; optional READ_LOGS mode.

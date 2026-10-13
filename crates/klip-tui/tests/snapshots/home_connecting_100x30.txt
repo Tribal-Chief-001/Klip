@@ -27,4 +27,4 @@
 
 
 
-s start · x stop · 1-7 screens · p pause · ? help · q quit
+s start · x stop · 1-7 screens · p pause · h help · q quit

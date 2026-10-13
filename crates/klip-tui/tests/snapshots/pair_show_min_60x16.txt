@@ -2,15 +2,15 @@
 ┌ Pair a device ───────────────────────────────────────────┐
 │ c  Show a code    j  Join with a ticket                  │
 │                                                          │
-│The QR code does not fit this window: use the ticket below│
+│The QR code needs a window of 81×29 (this one is 60×16):  │
+│make it bigger, or use the ticket below.                  │
+│                                                          │
 │Ticket (single use):                                      │
 │  klip1ABCDEFGHJKLMNPQRSTUVWXYZ23456789ABCDEFGHJKLMNPQRSTU│
 │  VWXYZ23456789ABCDEFGHJKLMNPQRSTUVWXYZ23456789ABCDEFGHJKL│
 │  MNPQRSTUVWXYZ23456789                                   │
-│This device AAAA-BBBB-CCCC · expires in 2:00 · LAN addres…│
-│n new code · l LAN on · t validity 120 s                  │
 │                                                          │
-│                                                          │
-│                                                          │
+│This device AAAA-BBBB-CCCC                                │
+│Expires in 2:00                                           │
 └──────────────────────────────────────────────────────────┘
 n new code · l LAN · t validity · j join · 1-7 screens · p …

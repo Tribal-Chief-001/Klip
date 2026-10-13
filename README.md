@@ -46,18 +46,20 @@ Run `klip` with no arguments on a terminal. Quitting (`q`) leaves Klip running i
 |---|---|
 | `1`-`7` / `Tab` | switch screen (Home, Devices, Pair, History, Send, Log, Settings); `Alt+1-7` also inside a text field |
 | `p` | pause or resume syncing |
-| `?` | help for the current screen |
+| `h` | help for the current screen |
 | `m` | mouse on/off (off lets you select text with the terminal) |
 | `Ctrl+L` | redraw |
 | `q` / `Ctrl+C` | quit |
-| Devices | `↑↓` select · `u` unpair · `U` unpair all |
+| Devices | `↑↓` select · `u` unpair · `a` unpair all |
 | Pair | `n` new code · `l` LAN addresses · `t` validity · `j` join with a ticket · `y`/`n` answer a request |
-| History | `↑↓` select · `/` search · `Enter` copy back to this computer · `s` send again · `v` show a secret · `C` clear |
-| Send | `Ctrl+S`/`F5` send · `Ctrl+O` load a file · `Ctrl+U` clear · `Esc` leave the editor |
-| Log | `f` follow · `/` search · `PgUp`/`PgDn` scroll · `G` end |
-| Settings | `↑↓` select · `Enter` edit/toggle · `s` save · `u` discard · `R` restart Klip |
+| History | `↑↓` select · `/` search · `Enter` copy back to this computer · `s` send again · `v` show a secret · `c` clear · `Home`/`End` first/last |
+| Send | `Enter` start typing (until then the number keys still switch screens) · `Ctrl+S`/`F5` send · `Ctrl+O` load a file · `Ctrl+U` clear · `Esc` stop typing |
+| Log | `f` follow · `/` search · `PgUp`/`PgDn` scroll · `End` newest |
+| Settings | `↑↓` select · `Enter` edit/toggle · `s` save · `u` discard · `r` restart Klip |
 
-Colours: `NO_COLOR=1` switches to bold/reverse, `KLIP_THEME=light` for light terminals; meaning is never colour-only.
+Keys are lowercase letters only: a capital letter (Shift or Caps Lock) does the same as the small one, outside text fields. Colours: `NO_COLOR=1` switches to bold/reverse, `KLIP_THEME=light` for light terminals; meaning is never colour-only.
+
+The Pair screen shows the QR code beside the ticket. If the window is too small for it, Klip asks the terminal to grow (and gives the old size back when you leave the screen); terminals that do not allow that keep their size and the screen says how big it needs to be.
 
 *Clips shown on screen are sanitized: escape sequences and text-direction tricks appear as visible marks (`␛`, `⟦U+202E⟧`). Secrets are hidden until you press `v`. The pairing ticket is a secret: it is shown only on the Pair screen and the window closes when you leave it. Terminal scrollback and screen recorders can still capture what is on screen.*
 
@@ -65,8 +67,8 @@ Colours: `NO_COLOR=1` switches to bold/reverse, `KLIP_THEME=light` for light ter
 
 | Part | State | Evidence |
 |---|---|---|
-| Core engine (pairing, sync, conflict resolution) | ✅ working | 276 automated tests in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
-| **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | 276 automated tests in the workspace, of which the terminal app has: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
+| Core engine (pairing, sync, conflict resolution) | ✅ working | 288 automated tests in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
+| **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | 288 automated tests in the workspace, of which the terminal app has: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
 | **Android app** | 🟡 emulator (Android 14) + one real phone (Vivo, reported by the author) | Emulator: pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect, reboot, notification, setup screens. Real phone (author's report): laptop → phone arrives by itself; phone → laptop works with Share → Klip, the notification button or the app's Send button. **Not verified:** background persistence over hours, reboot, camera QR scan, the tile, battery cost on a real phone |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
@@ -196,11 +198,13 @@ systemctl --user status klip.service
   "lan_discovery": true,
   "max_clip_bytes": 33554432,
   "max_history_items": 50,
+  "history_ttl_hours": 24,
   "poll_interval_ms": 100
 }
 ```
 
 - `"relay": "n0"` (default) uses n0's public relay and discovery servers so devices on different networks can find each other. `"relay": "lan"` uses **no third-party servers at all**, but then both devices must be on the same network.
+- `history_ttl_hours` (default **24**): clips older than this are forgotten from the history automatically (also from `klip history` and the app). `0` keeps them until the item count and size limits push them out. The history lives in memory only, so a restart clears it anyway.
 - `lan_discovery` announces the device ID on your local network (mDNS) so same-Wi-Fi devices connect without internet.
 - Environment: `KLIP_CONFIG_DIR` (separate instance), `KLIP_CLIPBOARD=memory` (don't touch the OS clipboard — servers/demos).
 
@@ -260,7 +264,7 @@ systemctl --user status klip.service
 ## Build & test from source
 
 ```bash
-cargo test --workspace                      # 276 tests
+cargo test --workspace                      # 288 tests
 cargo clippy --workspace --all-targets -- -D warnings
 android/build-core.sh arm64-v8a             # Rust engine + Kotlin bindings (needs cargo-ndk, NDK r28+)
 cd android && ./gradlew assembleDebug

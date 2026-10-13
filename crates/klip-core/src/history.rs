@@ -37,14 +37,55 @@ fn is_bitmap(content: &[u8]) -> bool {
 pub struct HistoryBuffer {
     items: Arc<Mutex<VecDeque<HistoryItem>>>,
     capacity: usize,
+    /// Items older than this are forgotten; 0 keeps them until the item or size limits push them out.
+    max_age_ms: u64,
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+}
+
+fn wall_clock_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 impl HistoryBuffer {
     pub fn new(capacity: usize) -> Self {
+        Self::with_max_age(capacity, 0)
+    }
+
+    pub fn with_max_age(capacity: usize, max_age_ms: u64) -> Self {
+        Self::with_clock(capacity, max_age_ms, Arc::new(wall_clock_ms))
+    }
+
+    pub(crate) fn with_clock(
+        capacity: usize,
+        max_age_ms: u64,
+        clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Self {
         Self {
             items: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
             capacity,
+            max_age_ms,
+            clock,
         }
+    }
+
+    /// Drop expired items. The newest item is at the front, so the expired ones are at the back.
+    fn drop_expired(&self, items: &mut VecDeque<HistoryItem>) {
+        if self.max_age_ms == 0 {
+            return;
+        }
+        let cutoff = (self.clock)().saturating_sub(self.max_age_ms);
+        while items.back().is_some_and(|i| i.timestamp_ms < cutoff) {
+            items.pop_back();
+        }
+    }
+
+    /// For the daemon's periodic call: frees expired items even when nobody reads the history.
+    pub fn prune_expired(&self) {
+        let mut lock = self.items.lock().unwrap();
+        self.drop_expired(&mut lock);
     }
 
     pub fn push(
@@ -73,10 +114,7 @@ impl HistoryBuffer {
             preview_str
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = (self.clock)();
 
         let item = HistoryItem {
             id,
@@ -94,6 +132,7 @@ impl HistoryBuffer {
         };
 
         let mut lock = self.items.lock().unwrap();
+        self.drop_expired(&mut lock);
         if lock.len() >= self.capacity {
             lock.pop_back();
         }
@@ -112,12 +151,14 @@ impl HistoryBuffer {
     }
 
     pub fn get_recent(&self, limit: usize) -> Vec<HistoryItem> {
-        let lock = self.items.lock().unwrap();
+        let mut lock = self.items.lock().unwrap();
+        self.drop_expired(&mut lock);
         lock.iter().take(limit).cloned().collect()
     }
 
     pub fn get_by_id(&self, id: [u8; 16]) -> Option<HistoryItem> {
-        let lock = self.items.lock().unwrap();
+        let mut lock = self.items.lock().unwrap();
+        self.drop_expired(&mut lock);
         lock.iter().find(|i| i.id == id).cloned()
     }
 
@@ -127,7 +168,8 @@ impl HistoryBuffer {
     }
 
     pub fn last_item(&self) -> Option<HistoryItem> {
-        let lock = self.items.lock().unwrap();
+        let mut lock = self.items.lock().unwrap();
+        self.drop_expired(&mut lock);
         lock.front().cloned()
     }
 }
@@ -135,6 +177,84 @@ impl HistoryBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// A buffer whose clock the test moves by hand.
+    fn clocked(capacity: usize, max_age_ms: u64) -> (HistoryBuffer, Arc<AtomicU64>) {
+        let now = Arc::new(AtomicU64::new(1_000_000));
+        let c = Arc::clone(&now);
+        let buf = HistoryBuffer::with_clock(
+            capacity,
+            max_age_ms,
+            Arc::new(move || c.load(Ordering::SeqCst)),
+        );
+        (buf, now)
+    }
+    fn put(buf: &HistoryBuffer, n: u8) {
+        buf.push(
+            [n; 16],
+            NodeId::new([1u8; 32]),
+            "N".into(),
+            vec![n; 4],
+            false,
+        );
+    }
+
+    #[test]
+    fn items_older_than_the_age_limit_vanish_from_every_read() {
+        let (buf, now) = clocked(10, 24 * 3_600_000);
+        put(&buf, 1);
+        now.fetch_add(24 * 3_600_000 - 1, Ordering::SeqCst);
+        assert_eq!(buf.get_recent(10).len(), 1, "not yet 24 hours");
+        now.fetch_add(2, Ordering::SeqCst);
+        assert!(buf.get_recent(10).is_empty());
+        assert!(buf.get_by_id([1; 16]).is_none());
+        assert!(buf.last_item().is_none());
+    }
+
+    #[test]
+    fn only_the_old_items_go_and_zero_means_no_age_limit() {
+        let (buf, now) = clocked(10, 1000);
+        put(&buf, 1);
+        now.fetch_add(800, Ordering::SeqCst);
+        put(&buf, 2);
+        now.fetch_add(400, Ordering::SeqCst);
+        let kept: Vec<u8> = buf
+            .get_recent(10)
+            .iter()
+            .map(|i| i.full_content[0])
+            .collect();
+        assert_eq!(kept, vec![2], "the first is 1200 ms old, the second 400 ms");
+
+        let (forever, now) = clocked(10, 0);
+        put(&forever, 1);
+        now.fetch_add(10 * 365 * 24 * 3_600_000, Ordering::SeqCst);
+        assert_eq!(forever.get_recent(10).len(), 1);
+    }
+
+    #[test]
+    fn pushing_and_the_idle_prune_release_the_memory_of_expired_items() {
+        let (buf, now) = clocked(10, 1000);
+        put(&buf, 1);
+        put(&buf, 2);
+        now.fetch_add(5000, Ordering::SeqCst);
+        assert_eq!(buf.items.lock().unwrap().len(), 2, "nobody has looked yet");
+        buf.prune_expired();
+        assert_eq!(
+            buf.items.lock().unwrap().len(),
+            0,
+            "the idle prune frees them"
+        );
+        put(&buf, 3);
+        now.fetch_add(5000, Ordering::SeqCst);
+        put(&buf, 4);
+        assert_eq!(
+            buf.items.lock().unwrap().len(),
+            1,
+            "a push drops what expired"
+        );
+    }
 
     #[test]
     fn test_history_buffer_ring_capacity() {

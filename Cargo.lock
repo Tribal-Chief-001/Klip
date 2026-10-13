@@ -2218,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "klip-android"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "jni 0.21.1",
  "klip-core",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "klip-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "klip-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "hostname",
  "klip-crypto",
@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "klip-crypto"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ed25519-dalek 2.2.0",
  "klip-proto",
@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "klip-daemon"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "directories",
  "klip-core",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "klip-diff"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "image",
  "klip-proto",
@@ -2304,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "klip-net"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "data-encoding",
  "iroh",
@@ -2319,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "klip-platform"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "arboard",
  "image",
@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "klip-proto"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "blake3",
  "postcard",
@@ -2342,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "klip-tui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "crossterm",

@@ -111,7 +111,10 @@ impl SyncCoordinator {
         driver: Arc<dyn ClipboardDriver>,
         net: KlipNode,
     ) -> Self {
-        let history = HistoryBuffer::new(config.max_history_items);
+        let history = HistoryBuffer::with_max_age(
+            config.max_history_items,
+            config.history_ttl_hours.saturating_mul(3_600_000),
+        );
         let clock = Mutex::new(HybridLogicalClock::new(identity.node_id));
         Self {
             config,

@@ -6,12 +6,13 @@
 │  Device name    Desk laptop                                                                      │
 │  Network        lan only: no third-party server, devices must be on the same network             │
 │  History items  50                                                                               │
+│  Keep history   24 hours, then clips are forgotten                                               │
 │▸ Largest clip   999 GiB▏                                                                         │
 │    ✗ max_clip_bytes must be between 1 and 268435456                                              │
 │  LAN discovery  on                                                                               │
 │  Poll interval  100 ms (advanced; edit config.json)                                              │
 │  Auto-start     not installed: Enter installs it                                                 │
-│  Apply          restart Klip so it reads the saved settings (R)                                  │
+│  Apply          restart Klip so it reads the saved settings (r)                                  │
 │  Defaults       reset every setting to its default                                               │
 │                                                                                                  │
 │                                                                                                  │
@@ -22,8 +23,7 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│                                                                                                  │
-│klip 0.4.0 · daemon 0.4.0                                                                         │
+│klip 0.4.1 · daemon 0.4.1                                                                         │
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘

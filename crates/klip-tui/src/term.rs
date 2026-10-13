@@ -37,6 +37,19 @@ impl TerminalGuard {
         self.mouse
     }
 
+    /// Ask the terminal to change its size (xterm window operation `CSI 8 ; rows ; cols t`).
+    /// Terminals that do not allow it ignore the request; the app then keeps working at the size
+    /// it has.
+    pub fn request_size(&self, cols: u16, rows: u16) {
+        if !self.active {
+            return;
+        }
+        use std::io::Write;
+        let mut out = io::stdout();
+        let _ = out.write_all(resize_sequence(cols, rows).as_bytes());
+        let _ = out.flush();
+    }
+
     pub fn set_mouse(&mut self, on: bool) {
         if on == self.mouse || !self.active {
             return;
@@ -90,4 +103,19 @@ fn install_panic_hook() {
             previous(info);
         }));
     });
+}
+
+/// The escape sequence that asks a terminal for `cols` x `rows` characters.
+pub fn resize_sequence(cols: u16, rows: u16) -> String {
+    format!("\x1b[8;{rows};{cols}t")
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    #[test]
+    fn the_resize_request_is_rows_then_columns() {
+        assert_eq!(resize_sequence(110, 42), "\x1b[8;42;110t");
+    }
 }

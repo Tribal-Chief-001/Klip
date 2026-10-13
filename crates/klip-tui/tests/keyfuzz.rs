@@ -218,7 +218,7 @@ fn run(seed: u64, mut app: AppState, messages: usize) {
             "selection out of range at message {i}"
         );
         assert!(app.toasts.len() <= 3);
-        assert!(app.settings.selected < 9);
+        assert!(app.settings.selected < 10);
         assert!(app.log.lines.len() <= klip_tui::screens::log::MAX_LINES);
         let (r, c) = app.send.buf.cursor();
         assert!(r < app.send.buf.lines().len());

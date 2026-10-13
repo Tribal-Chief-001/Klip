@@ -27,4 +27,4 @@
 │                                                                                                  │
                                                                                     ✓ Paused: 15:00
                                                                            ✗ Could not unpair: boom
-s start · x stop · 1-7 screens · p pause · ? help · q quit
+s start · x stop · 1-7 screens · p pause · h help · q quit

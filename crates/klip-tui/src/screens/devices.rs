@@ -33,8 +33,8 @@ pub fn key(app: &mut AppState, k: KeyEvent, _fx: &mut Vec<Effect>) {
     match k.code {
         KeyCode::Up | KeyCode::Char('k') => scroll(app, -1),
         KeyCode::Down | KeyCode::Char('j') => scroll(app, 1),
-        KeyCode::Home | KeyCode::Char('g') => app.devices.selected = 0,
-        KeyCode::End | KeyCode::Char('G') => app.devices.selected = n.saturating_sub(1),
+        KeyCode::Home => app.devices.selected = 0,
+        KeyCode::End => app.devices.selected = n.saturating_sub(1),
         KeyCode::Char('u') => {
             let target = peers(app)
                 .get(app.devices.selected)
@@ -51,7 +51,7 @@ pub fn key(app: &mut AppState, k: KeyEvent, _fx: &mut Vec<Effect>) {
                 }
             }
         }
-        KeyCode::Char('U') => {
+        KeyCode::Char('a') => {
             let names: Vec<String> = peers(app).iter().map(|p| one_line(&p.name)).collect();
             if names.is_empty() {
                 app.toast(ToastKind::Info, "No linked devices to unpair");

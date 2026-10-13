@@ -196,6 +196,7 @@ async fn two_real_daemons_pair_sync_copy_back_and_unpair_through_the_tui() {
 
     // Send text typed in the TUI: it must land in Beta's clipboard, byte for byte.
     h.text("5");
+    h.key(KeyCode::Enter);
     h.text("hello from the tui\n\tsecond line 日本語");
     ctrl(&mut h, 's');
     assert!(h.wait_for("✓ Beta", 20_000).await, "{}", h.screen());
@@ -233,7 +234,7 @@ async fn two_real_daemons_pair_sync_copy_back_and_unpair_through_the_tui() {
     h.key(KeyCode::Enter); // "Resume now"
     assert!(h.wait_for("ACTIVE", 10_000).await, "{}", h.screen());
     h.text("2");
-    h.text("U");
+    h.text("a");
     assert!(h.screen().contains("Unpair ALL"), "{}", h.screen());
     h.text("y");
     assert!(h.wait_for("No devices yet", 10_000).await, "{}", h.screen());
@@ -303,6 +304,7 @@ async fn a_huge_text_from_the_editor_is_refused_clearly_when_it_exceeds_the_daem
     let mut h = tui_for(&a);
     assert!(h.wait_for("ACTIVE", 10_000).await);
     h.text("5");
+    h.key(KeyCode::Enter);
     h.paste(&"x".repeat(5000));
     ctrl(&mut h, 's');
     assert!(

@@ -130,11 +130,11 @@ pub fn key(app: &mut AppState, k: KeyEvent) {
         KeyCode::Down | KeyCode::Char('j') => scroll(app, 1),
         KeyCode::PageUp => scroll(app, -10),
         KeyCode::PageDown => scroll(app, 10),
-        KeyCode::Char('G') | KeyCode::End => {
+        KeyCode::End => {
             app.log.scroll_back = 0;
             app.log.follow = true;
         }
-        KeyCode::Char('g') | KeyCode::Home => {
+        KeyCode::Home => {
             app.log.scroll_back = max;
             app.log.follow = false;
         }
@@ -352,7 +352,7 @@ mod tests {
         assert!(a.log.follow);
         update(&mut a, key(KeyCode::PageUp));
         assert!(!a.log.follow && a.log.scroll_back == 10);
-        update(&mut a, key(KeyCode::Char('G')));
+        update(&mut a, key(KeyCode::End));
         assert!(a.log.follow && a.log.scroll_back == 0);
         update(&mut a, key(KeyCode::Char('f')));
         assert!(!a.log.follow);

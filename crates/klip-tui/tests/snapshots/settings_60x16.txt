@@ -6,11 +6,11 @@
 │▸ Device name    Laptop                                   │
 │  Network        n0 public relays: they see who talks to… │
 │  History items  50                                       │
+│  Keep history   24 hours, then clips are forgotten       │
 │  Largest clip   32.0 MiB                                 │
 │  LAN discovery  on                                       │
-│  Poll interval  100 ms (advanced; edit config.json)      │
-│klip 0.4.0 · daemon 0.4.0                                 │
+│klip 0.4.1 · daemon 0.4.1                                 │
 │                                                          │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
-↑↓ select · Enter edit/toggle · s save · u discard · R rest…
+↑↓ select · Enter edit/toggle · s save · u discard · r rest…

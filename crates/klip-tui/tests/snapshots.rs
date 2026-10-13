@@ -282,7 +282,7 @@ fn settings_screen_states() {
     snap("settings", &a, 60, 16);
     a.settings.draft.device_name = "Desk laptop".into();
     a.settings.draft.relay = klip_core::RelayMode::Lan;
-    a.settings.selected = 3;
+    a.settings.selected = 4;
     a.settings.editing = Some(klip_tui::textbuf::TextBuf::from_text("999 GiB", 32));
     a.settings.error = Some("max_clip_bytes must be between 1 and 268435456".into());
     snap("settings_editing_error", &a, 100, 30);
@@ -386,4 +386,28 @@ fn every_screen_lists_its_keys_in_the_help_and_in_the_hints() {
             assert!(!hints(&a).is_empty(), "{screen:?} needs key hints");
         }
     }
+}
+
+#[test]
+fn pair_screen_with_a_big_qr_code_side_by_side_and_when_it_does_not_fit() {
+    use klip_tui::api::PairTicket;
+    use klip_tui::screens::pair;
+    let ticket = PairTicket {
+        ticket: format!("klip1{}", "abcdefghijklmnopqrstuvwxyz234567".repeat(7)),
+        expires_in_secs: 120,
+        host_fingerprint: "HW4Z-3H75-X8HS".into(),
+    };
+    let mut a = up(110, 44, two_peers());
+    a.screen = Screen::Pair;
+    a.pair.qr = pair::qr_lines(&ticket.ticket, true);
+    a.pair.ticket = Some(ticket);
+    a.pair.ours = true;
+    snap("pair_qr_side_by_side", &a, 110, 44);
+    let (c, r) = pair::qr_need(a.pair.qr.as_ref().unwrap());
+    a.size = (100, 30);
+    snap("pair_qr_no_room", &a, 100, 30);
+    assert!(
+        c <= 110 && r <= 44,
+        "the side-by-side snapshot is at the needed size"
+    );
 }

@@ -50,6 +50,8 @@ pub struct PairState {
     /// After Approve: keep polling until this time for the "paired" notice.
     pub awaiting_paired_until_ms: u64,
     pub qr: Option<Vec<String>>,
+    /// The window size before the app asked the terminal to grow for the QR code.
+    pub orig_size: Option<(u16, u16)>,
 }
 
 impl Default for PairState {
@@ -69,6 +71,7 @@ impl Default for PairState {
             result: None,
             awaiting_paired_until_ms: 0,
             qr: None,
+            orig_size: None,
         }
     }
 }
@@ -77,7 +80,10 @@ impl Default for PairState {
 /// right for the usual light-text-on-dark terminal.
 pub fn qr_lines(ticket: &str, invert: bool) -> Option<Vec<String>> {
     use qrcode::render::unicode::Dense1x2;
-    let code = qrcode::QrCode::new(ticket.as_bytes()).ok()?;
+    // Low error correction: the code is shown on a screen, not printed or scratched, and it is
+    // two to four rows shorter than with the default level.
+    let code =
+        qrcode::QrCode::with_error_correction_level(ticket.as_bytes(), qrcode::EcLevel::L).ok()?;
     let (dark, light) = if invert {
         (Dense1x2::Light, Dense1x2::Dark)
     } else {
@@ -90,6 +96,34 @@ pub fn qr_lines(ticket: &str, invert: bool) -> Option<Vec<String>> {
         .quiet_zone(true)
         .build();
     Some(drawn.lines().map(|l| l.to_string()).collect())
+}
+
+/// Width kept for the text beside the QR code.
+const SIDE_TEXT_COLS: usize = 34;
+/// Rows around the Pair content: tab bar, status bar, box borders and the mode row.
+const CHROME_ROWS: usize = 6;
+
+/// The terminal size (columns, rows) at which the QR code and the ticket text sit side by side.
+pub fn qr_need(qr: &[String]) -> (u16, u16) {
+    let w = qr.iter().map(|l| width(l)).max().unwrap_or(0);
+    let cols = (w + SIDE_TEXT_COLS + 2).min(300) as u16;
+    let rows = (qr.len() + CHROME_ROWS).min(120) as u16;
+    (cols, rows)
+}
+
+/// A new code is on screen: if the window is too small for it, ask the terminal to grow (once per
+/// code; terminals that refuse just keep their size and the screen explains what is needed).
+fn request_room(app: &mut AppState) {
+    let Some(q) = &app.pair.qr else { return };
+    let (nc, nr) = qr_need(q);
+    let (c, r) = app.size;
+    if c >= nc && r >= nr {
+        return;
+    }
+    if app.pair.orig_size.is_none() {
+        app.pair.orig_size = Some(app.size);
+    }
+    app.resize_request = Some((c.max(nc), r.max(nr)));
 }
 
 pub fn text_focus(app: &AppState) -> bool {
@@ -153,6 +187,10 @@ pub fn on_leave(app: &mut AppState, fx: &mut Vec<Effect>) {
         cancel_window(app, fx);
     }
     app.pair.join_focus = false;
+    // Give the window back its size if the app made it bigger for the QR code.
+    if let Some(o) = app.pair.orig_size.take() {
+        app.resize_request = Some(o);
+    }
 }
 
 pub fn on_daemon_down(app: &mut AppState) {
@@ -230,6 +268,7 @@ pub fn on_started(app: &mut AppState, session: u64, result: Result<PairTicket, A
             app.pair.ticket = Some(t);
             app.pair.started_ms = app.mono_ms;
             app.pair.ours = true;
+            request_room(app);
         }
         Err(e) => app.pair.result = Some(PairResult::Failed(e.plain())),
     }
@@ -466,10 +505,10 @@ pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
 
 fn show(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
     let p = &app.pair;
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut head: Vec<Line<'static>> = Vec::new();
     if let Some(r) = &p.result {
-        lines.push(result_line(r, theme));
-        lines.push(Line::from(""));
+        head.push(result_line(r, theme));
+        head.push(Line::from(""));
     }
     let Some(t) = &p.ticket else {
         let msg = if p.starting {
@@ -479,63 +518,105 @@ fn show(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
         } else {
             "Klip is not running."
         };
-        lines.push(Line::from(Span::styled(msg, theme.st_dim())));
-        f.render_widget(Paragraph::new(lines), area);
+        head.push(Line::from(Span::styled(msg, theme.st_dim())));
+        f.render_widget(Paragraph::new(head), area);
         return;
     };
-    let w = area.width as usize;
-    let ticket = clean(&t.ticket);
-    let ticket_rows: Vec<String> = ticket
-        .as_bytes()
-        .chunks(w.saturating_sub(2).max(1))
-        .map(|c| format!("  {}", String::from_utf8_lossy(c)))
-        .collect();
-    let fixed = lines.len() + 1 + ticket_rows.len() + 1 + 2;
-    let qr_fits =
-        p.qr.as_ref()
-            .map(|q| q.len() + fixed <= area.height as usize && q.iter().all(|l| width(l) <= w));
-    match (&p.qr, qr_fits) {
-        (Some(q), Some(true)) => {
-            for l in q {
-                lines.push(Line::from(l.clone()).centered());
-            }
-        }
-        _ => lines.push(Line::from(Span::styled(
-            "The QR code does not fit this window: use the ticket below, or make the window bigger.",
-            theme.st_dim(),
-        ))),
-    }
-    lines.push(Line::from(Span::styled(
-        "Ticket (single use):",
-        theme.st_dim(),
-    )));
-    for r in ticket_rows {
-        lines.push(Line::from(Span::styled(r, theme.st_signal())));
-    }
+    let (w, h) = (area.width as usize, area.height as usize);
     let left = t
         .expires_in_secs
         .saturating_sub(app.mono_ms.saturating_sub(p.started_ms) / 1000);
-    lines.push(Line::from(Span::styled(
-        truncate(
-            &format!(
-                "This device {} · expires in {} · LAN addresses {}",
-                one_line(&t.host_fingerprint),
-                fmt::mmss(left),
-                if p.lan { "included" } else { "off" }
+    // The text that goes with the code, wrapped to `cols`.
+    let text_lines = |cols: usize| -> Vec<Line<'static>> {
+        let mut v = head.clone();
+        v.push(Line::from(Span::styled(
+            "Ticket (single use):",
+            theme.st_dim(),
+        )));
+        let ticket = clean(&t.ticket);
+        for c in ticket.as_bytes().chunks(cols.saturating_sub(2).max(1)) {
+            v.push(Line::from(Span::styled(
+                format!("  {}", String::from_utf8_lossy(c)),
+                theme.st_signal(),
+            )));
+        }
+        v.push(Line::from(""));
+        for text in [
+            format!("This device {}", one_line(&t.host_fingerprint)),
+            format!("Expires in {}", fmt::mmss(left)),
+            format!("LAN addresses {}", if p.lan { "included" } else { "off" }),
+        ] {
+            v.push(Line::from(Span::styled(
+                truncate(&text, cols),
+                theme.st_text(),
+            )));
+        }
+        v.push(Line::from(Span::styled(
+            truncate(
+                &format!(
+                    "n new code · l LAN {} · t validity {} s",
+                    if p.lan { "off" } else { "on" },
+                    TTLS[p.ttl_idx]
+                ),
+                cols,
             ),
-            w,
-        ),
-        theme.st_text(),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "n new code · l LAN {} · t validity {} s",
-            if p.lan { "off" } else { "on" },
-            TTLS[p.ttl_idx]
-        ),
-        theme.st_dim(),
-    )));
-    f.render_widget(Paragraph::new(lines), area);
+            theme.st_dim(),
+        )));
+        v
+    };
+    let qr_w =
+        p.qr.as_ref()
+            .map(|q| q.iter().map(|l| width(l)).max().unwrap_or(0))
+            .unwrap_or(0);
+    // 1. Code on the left, text on the right: needs the least height.
+    if let Some(q) =
+        p.qr.as_ref()
+            .filter(|q| w >= qr_w + SIDE_TEXT_COLS && q.len() <= h)
+    {
+        let [left_area, right_area] =
+            Layout::horizontal([Constraint::Length(qr_w as u16), Constraint::Min(0)]).areas(area);
+        let lines: Vec<Line> = q.iter().map(|l| Line::from(l.clone())).collect();
+        f.render_widget(Paragraph::new(lines), left_area);
+        let right = Rect {
+            x: right_area.x + 2,
+            width: right_area.width.saturating_sub(2),
+            ..right_area
+        };
+        f.render_widget(Paragraph::new(text_lines(right.width as usize)), right);
+        return;
+    }
+    // 2. Code above the text, when the window is narrow but tall.
+    let mut lines = text_lines(w);
+    let stacked =
+        p.qr.as_ref()
+            .filter(|q| q.len() + 1 + lines.len() <= h && qr_w <= w);
+    if let Some(q) = stacked {
+        let mut all: Vec<Line<'static>> =
+            q.iter().map(|l| Line::from(l.clone()).centered()).collect();
+        all.append(&mut lines);
+        f.render_widget(Paragraph::new(all), area);
+        return;
+    }
+    // 3. No room: say how much is needed, keep the ticket usable.
+    let need = match &p.qr {
+        Some(q) => {
+            let (c, r) = qr_need(q);
+            format!(
+                "The QR code needs a window of {c}×{r} (this one is {}×{}): make it bigger, or use the ticket below.",
+                app.size.0, app.size.1
+            )
+        }
+        None => "No QR code could be made: use the ticket below.".to_string(),
+    };
+    let mut all = vec![
+        Line::from(Span::styled(need, theme.st_dim())),
+        Line::from(""),
+    ];
+    all.append(&mut lines);
+    f.render_widget(
+        Paragraph::new(all).wrap(ratatui::widgets::Wrap { trim: false }),
+        area,
+    );
 }
 
 fn join(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
@@ -859,6 +940,75 @@ mod tests {
             "{:?}",
             a.pair.result
         );
+    }
+
+    fn long_ticket() -> PairTicket {
+        PairTicket {
+            ticket: format!("klip1{}", "abcdefghijklmnopqrstuvwxyz234567".repeat(7)),
+            expires_in_secs: 120,
+            host_fingerprint: "AAAA-BBBB-CCCC".into(),
+        }
+    }
+
+    #[test]
+    fn a_code_that_does_not_fit_asks_the_terminal_to_grow_and_leaving_gives_the_size_back() {
+        let mut a = app();
+        update(&mut a, ch('3'));
+        let session = a.pair.session;
+        update(
+            &mut a,
+            Msg::Reply(Reply::PairStarted {
+                session,
+                result: Ok(long_ticket()),
+            }),
+        );
+        let (nc, nr) = qr_need(a.pair.qr.as_ref().unwrap());
+        assert_eq!(
+            a.resize_request,
+            Some((100.max(nc), 30.max(nr))),
+            "a 100x30 window is too small for this code"
+        );
+        assert!(nr > 30);
+        assert_eq!(a.pair.orig_size, Some((100, 30)));
+        a.resize_request = None;
+        update(&mut a, ch('1'));
+        assert_eq!(a.resize_request, Some((100, 30)), "the old size comes back");
+        assert!(a.pair.orig_size.is_none());
+    }
+
+    #[test]
+    fn a_code_that_already_fits_asks_for_nothing() {
+        let mut a = AppState::new((140, 60));
+        a.conn = Conn::Up;
+        a.status = Some(sample_status(vec![]));
+        update(&mut a, ch('3'));
+        let session = a.pair.session;
+        update(
+            &mut a,
+            Msg::Reply(Reply::PairStarted {
+                session,
+                result: Ok(long_ticket()),
+            }),
+        );
+        assert_eq!(a.resize_request, None);
+        assert!(a.pair.orig_size.is_none());
+    }
+
+    #[test]
+    fn the_qr_code_is_shorter_with_low_error_correction() {
+        let t = long_ticket().ticket;
+        let low = qr_lines(&t, false).unwrap().len();
+        let medium = {
+            use qrcode::render::unicode::Dense1x2;
+            qrcode::QrCode::new(t.as_bytes())
+                .unwrap()
+                .render::<Dense1x2>()
+                .quiet_zone(true)
+                .build()
+                .lines()
+                .count()
+        };
+        assert!(low < medium, "{low} rows instead of {medium}");
     }
 
     #[test]

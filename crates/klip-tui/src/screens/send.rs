@@ -87,8 +87,10 @@ pub fn text_focus(app: &AppState) -> bool {
     app.send.prompt.is_some() || (app.send.focus && app.send.large.is_none())
 }
 
+/// Arriving on the screen does not take the keys: the number keys keep switching screens until
+/// Enter starts typing.
 pub fn on_enter(app: &mut AppState) {
-    app.send.focus = app.send.large.is_none();
+    app.send.focus = false;
 }
 
 pub fn on_leave(app: &mut AppState) {
@@ -514,7 +516,8 @@ mod tests {
             );
         }
     }
-    fn app() -> AppState {
+    /// On the Send screen, as a person gets there: the number keys still belong to the app.
+    fn on_send() -> AppState {
         let mut a = AppState::new((100, 30));
         a.conn = Conn::Up;
         a.status = Some(sample_status(vec![]));
@@ -523,10 +526,26 @@ mod tests {
         assert_eq!(a.screen, Screen::Send);
         a
     }
+    /// The same, after Enter: now keys are typed.
+    fn app() -> AppState {
+        let mut a = on_send();
+        update(&mut a, key(KeyCode::Enter));
+        assert!(a.text_focus());
+        a
+    }
 
     #[test]
-    fn opening_the_screen_focuses_the_editor_and_escape_gives_the_keys_back() {
-        let mut a = app();
+    fn opening_the_screen_keeps_the_number_keys_until_enter_starts_typing() {
+        let mut a = on_send();
+        assert!(
+            !a.text_focus(),
+            "arriving by a number key must not capture the keys"
+        );
+        update(&mut a, key(KeyCode::Char('6')));
+        assert_eq!(a.screen, Screen::Log, "numbers still switch screens");
+        update(&mut a, key(KeyCode::Char('5')));
+        assert_eq!(a.screen, Screen::Send);
+        update(&mut a, key(KeyCode::Enter));
         assert!(a.text_focus());
         typed(&mut a, "q1p"); // letters and digits are text here, not shortcuts
         assert_eq!(a.send.buf.text(), "q1p");

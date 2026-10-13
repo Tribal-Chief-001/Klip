@@ -1,16 +1,17 @@
 ●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
 ┌ Settings ────────────────────────────────────────────────────────────────────────────────────────┐
 │● unsaved changes: s saves, u discards                                                            │
-│● the running Klip uses other settings: R restarts it                                             │
+│● the running Klip uses other settings: r restarts it                                             │
 │                                                                                                  │
 │  Device name    Desk laptop                                                                      │
 │  Network        lan only: no third-party server, devices must be on the same network             │
 │  History items  50                                                                               │
+│  Keep history   24 hours, then clips are forgotten                                               │
 │▸ Largest clip   32.0 MiB                                                                         │
 │  LAN discovery  on                                                                               │
 │  Poll interval  100 ms (advanced; edit config.json)                                              │
 │  Auto-start     not installed: Enter installs it                                                 │
-│  Apply          restart Klip so it reads the saved settings (R)                                  │
+│  Apply          restart Klip so it reads the saved settings (r)                                  │
 │  Defaults       reset every setting to its default                                               │
 │                                                                                                  │
 │                                                                                                  │
@@ -22,9 +23,8 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│                                                                                                  │
-│klip 0.4.0 · daemon 0.4.0                                                                         │
+│klip 0.4.1 · daemon 0.4.1                                                                         │
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-↑↓ select · Enter edit/toggle · s save · u discard · R restart · 1-7 screens · p pause · ? help · q…
+↑↓ select · Enter edit/toggle · s save · u discard · r restart · 1-7 screens · p pause · h help · q…

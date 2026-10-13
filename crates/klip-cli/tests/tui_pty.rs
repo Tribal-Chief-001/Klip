@@ -149,7 +149,7 @@ fn number_keys_open_screens_and_the_help_overlay_lists_keys() {
     );
     p.send(b"2");
     assert!(p.wait_for("Devices (0)", 5), "{}", p.screen());
-    p.send(b"?");
+    p.send(b"h");
     assert!(p.wait_for("quit (Klip keeps running)", 5), "{}", p.screen());
     p.send(b"q"); // closes the help
     p.send(b"1");
@@ -158,8 +158,7 @@ fn number_keys_open_screens_and_the_help_overlay_lists_keys() {
     assert!(p.wait_for("History (", 5), "{}", p.screen());
     p.send(b"5");
     assert!(p.wait_for("Send text to all devices", 5), "{}", p.screen());
-    p.send(b"\x1b"); // leave the editor: the Send screen starts focused, so `q` would be typed
-    std::thread::sleep(std::time::Duration::from_millis(400)); // lets the terminal layer tell Esc from an escape sequence
+    // The Send screen does not capture keys until Enter, so `q` quits.
     p.send(b"q");
     assert_eq!(p.wait_exit(5), Some(0), "{}", p.screen());
 }
@@ -287,6 +286,8 @@ fn send_screen_types_and_sends_against_a_real_daemon() {
     assert!(p.wait_for("ACTIVE", 15));
     p.send(b"5");
     assert!(p.wait_for("Send text to all devices", 5), "{}", p.screen());
+    // Opening the screen does not take the keys: Enter starts typing.
+    p.send(b"\r");
     p.send("héllo 日本\nsecond".as_bytes());
     p.send(b"\x13"); // Ctrl+S
     assert!(

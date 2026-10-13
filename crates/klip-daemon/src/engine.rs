@@ -136,6 +136,9 @@ impl DaemonEngine {
         };
         let mut poll = interval(poll_period);
         poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // Clips older than the configured age are forgotten even when nobody looks at the history.
+        let mut prune = interval(Duration::from_secs(600));
+        prune.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut stop_signals = StopSignals::new();
 
         loop {
@@ -152,6 +155,7 @@ impl DaemonEngine {
             tokio::select! {
                 _ = poll.tick() => self.capture_clipboard(),
                 _ = notified => self.capture_clipboard(),
+                _ = prune.tick() => self.sync.history.prune_expired(),
                 _ = self.shutdown.wait() => break,
                 _ = stop_signals.recv() => {
                     self.shutdown.trigger();

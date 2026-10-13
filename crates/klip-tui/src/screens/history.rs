@@ -170,11 +170,11 @@ pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
     match k.code {
         KeyCode::Up | KeyCode::Char('k') => scroll(app, -1),
         KeyCode::Down | KeyCode::Char('j') => scroll(app, 1),
-        KeyCode::Home | KeyCode::Char('g') => {
+        KeyCode::Home => {
             app.history.selected = 0;
             app.history.detail_scroll = 0;
         }
-        KeyCode::End | KeyCode::Char('G') => {
+        KeyCode::End => {
             app.history.selected = n.saturating_sub(1);
             app.history.detail_scroll = 0;
         }
@@ -196,7 +196,7 @@ pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
         }
         KeyCode::Enter => copy_back(app, fx),
         KeyCode::Char('s') => resend(app, fx),
-        KeyCode::Char('C') => clear_all(app),
+        KeyCode::Char('c') => clear_all(app),
         _ => {}
     }
 }
@@ -542,9 +542,9 @@ mod tests {
         update(&mut a, key(KeyCode::Down));
         update(&mut a, key(KeyCode::Down));
         assert_eq!(a.history.selected, 2);
-        update(&mut a, ch('g'));
+        update(&mut a, key(KeyCode::Home));
         assert_eq!(a.history.selected, 0);
-        update(&mut a, ch('G'));
+        update(&mut a, key(KeyCode::End));
         assert_eq!(a.history.selected, 2);
     }
 
@@ -649,13 +649,13 @@ mod tests {
     #[test]
     fn clearing_asks_first_and_needs_a_capable_daemon() {
         let mut a = app_with(three());
-        update(&mut a, ch('C'));
+        update(&mut a, ch('c'));
         assert!(matches!(a.modal, Some(Modal::Confirm { .. })));
         let fx = update(&mut a, ch('y'));
         assert!(matches!(fx.as_slice(), [Effect::ClearHistory]), "{fx:?}");
         let mut a = app_with(three());
         a.hello = HelloState::Old;
-        update(&mut a, ch('C'));
+        update(&mut a, ch('c'));
         assert!(a.modal.is_none());
         assert!(a.toasts.iter().any(|t| t.text.contains("older")));
     }

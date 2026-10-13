@@ -27,4 +27,4 @@
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-f follow · / search · PgUp PgDn scroll · G end · 1-7 screens · p pause · ? help · q quit
+f follow · / search · PgUp PgDn scroll · End latest · 1-7 screens · p pause · h help · q quit

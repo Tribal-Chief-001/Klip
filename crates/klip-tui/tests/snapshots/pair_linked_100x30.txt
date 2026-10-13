@@ -27,4 +27,4 @@
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-n new code · l LAN · t validity · j join · 1-7 screens · p pause · ? help · q quit
+n new code · l LAN · t validity · j join · 1-7 screens · p pause · h help · q quit

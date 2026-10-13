@@ -83,7 +83,7 @@ async fn unpair_asks_first_and_unpair_all_removes_the_rest() {
         "{}",
         h.screen()
     );
-    h.text("U");
+    h.text("a");
     assert!(h.screen().contains("Unpair ALL"), "{}", h.screen());
     h.text("y");
     assert!(
@@ -112,7 +112,7 @@ async fn a_slow_daemon_never_blocks_keys() {
     let fake = FakeDaemon::new();
     fake.with(|s| s.delay_ms = 1500);
     let mut h = harness(&fake, "slow");
-    h.text("?");
+    h.text("h");
     assert!(
         h.screen().contains("Keys"),
         "the help overlay must open while the daemon is still answering"
@@ -246,7 +246,7 @@ async fn history_shows_clips_copies_back_and_clears() {
     h.text("j");
     h.text("v");
     assert!(h.wait_for("SECRET0123", 1000).await, "{}", h.screen());
-    h.text("C");
+    h.text("c");
     assert!(h.screen().contains("Clear the history?"));
     h.text("y");
     assert!(h.wait_for("History cleared", 3000).await, "{}", h.screen());
@@ -303,6 +303,7 @@ async fn typing_and_sending_text_reaches_the_daemon_and_shows_who_got_it() {
     let mut h = harness(&fake, "send");
     assert!(h.wait_for("ACTIVE", 3000).await);
     h.text("5");
+    h.key(KeyCode::Enter);
     h.text("héllo 日本\n");
     h.paste("second line\r\nthird");
     assert!(h.screen().contains("third"));
@@ -336,6 +337,7 @@ async fn a_failed_delivery_is_shown_per_device() {
     let mut h = harness(&fake, "sendfail");
     assert!(h.wait_for("ACTIVE", 3000).await);
     h.text("5");
+    h.key(KeyCode::Enter);
     h.text("x");
     h.key_mod(KeyCode::Char('s'), KeyModifiers::CONTROL);
     assert!(
@@ -364,6 +366,7 @@ async fn sending_with_no_linked_devices_says_so() {
     let mut h = harness(&fake, "sendnone");
     assert!(h.wait_for("ACTIVE", 3000).await);
     h.text("5");
+    h.key(KeyCode::Enter);
     h.text("x");
     h.key_mod(KeyCode::Char('s'), KeyModifiers::CONTROL);
     assert!(
@@ -522,7 +525,7 @@ async fn restarting_stops_waits_and_starts_the_daemon_again() {
     let mut h = harness(&fake, "restart");
     assert!(h.wait_for("ACTIVE", 3000).await);
     h.text("7");
-    for _ in 0..7 {
+    for _ in 0..8 {
         h.key(KeyCode::Down); // to the "Apply" row
     }
     h.key(KeyCode::Enter);
@@ -552,7 +555,7 @@ async fn auto_start_installs_when_missing() {
     let mut h = Harness::new(fake.clone(), env, 100, 30);
     assert!(h.wait_for("ACTIVE", 3000).await);
     h.text("7");
-    for _ in 0..6 {
+    for _ in 0..7 {
         h.key(KeyCode::Down); // to the "Auto-start" row
     }
     assert!(h.wait_for("Auto-start", 1000).await);

@@ -9,7 +9,7 @@
 │  ○ Pixel 8       ┌ Keys ──────────────────────────────────────────────────────┐ce                │
 │                  │1-7 / Tab   switch screen                                   │                  │
 │                  │p           pause or resume syncing                         │                  │
-│                  │?           this help                                       │                  │
+│                  │h           this help                                       │                  │
 │                  │m           mouse on/off (off lets you select text)         │                  │
 │                  │Alt+1-7     switch screen, also inside a field              │                  │
 │                  │Ctrl+L      redraw                                          │                  │
@@ -27,4 +27,4 @@
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-s start · x stop · 1-7 screens · p pause · ? help · q quit
+s start · x stop · 1-7 screens · p pause · h help · q quit

@@ -72,6 +72,9 @@ pub struct DaemonConfig {
     pub device_name: String,
     pub relay: RelayMode,
     pub max_history_items: usize,
+    /// Clips older than this many hours are forgotten from the history; 0 keeps them until the
+    /// item and size limits push them out.
+    pub history_ttl_hours: u64,
     pub poll_interval_ms: u64,
     /// Largest clip accepted or sent, in bytes.
     pub max_clip_bytes: usize,
@@ -85,6 +88,7 @@ impl Default for DaemonConfig {
             device_name: default_device_name(),
             relay: RelayMode::N0,
             max_history_items: 50,
+            history_ttl_hours: 24,
             poll_interval_ms: 100,
             max_clip_bytes: 32 * 1024 * 1024,
             lan_discovery: true,
@@ -113,6 +117,9 @@ impl DaemonConfig {
         }
         if self.max_clip_bytes == 0 || self.max_clip_bytes > 256 * 1024 * 1024 {
             return Err("max_clip_bytes must be between 1 and 268435456".into());
+        }
+        if self.history_ttl_hours > 24 * 365 {
+            return Err("history_ttl_hours must be at most 8760 (one year); 0 keeps clips until the limits push them out".into());
         }
         if self.max_history_items == 0 {
             return Err("max_history_items must be at least 1".into());

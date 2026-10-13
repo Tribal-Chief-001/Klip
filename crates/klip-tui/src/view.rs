@@ -104,7 +104,7 @@ fn status_bar(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
         "Esc leave the field · Alt+1-7 screens · Ctrl+C quit".to_string()
     } else {
         format!(
-            "{}1-7 screens · p pause · ? help · q quit",
+            "{}1-7 screens · p pause · h help · q quit",
             screens::hints(app)
         )
     };

@@ -240,6 +240,8 @@ pub struct AppState {
     pub log: LogState,
     pub log_path: String,
     pub settings: SettingsState,
+    /// A terminal size the app would like (columns, rows); the runtime asks the terminal and clears it.
+    pub resize_request: Option<(u16, u16)>,
     pub told_old: bool,
     pub told_version: bool,
     /// Draw QR codes with light modules as blocks (right for light-on-dark terminals).
@@ -272,6 +274,7 @@ impl AppState {
             log: LogState::default(),
             log_path: "daemon.log".to_string(),
             settings: SettingsState::default(),
+            resize_request: None,
             told_old: false,
             told_version: false,
             invert_qr: true,
@@ -488,6 +491,17 @@ fn go(app: &mut AppState, to: Screen, fx: &mut Vec<Effect>) {
     crate::screens::on_enter(app, to, fx);
 }
 
+/// `S` (Shift or Caps Lock) becomes `s`; everything else is unchanged.
+fn fold_case(mut k: KeyEvent) -> KeyEvent {
+    if let KeyCode::Char(c) = k.code {
+        if c.is_ascii_uppercase() {
+            k.code = KeyCode::Char(c.to_ascii_lowercase());
+            k.modifiers.remove(KeyModifiers::SHIFT);
+        }
+    }
+    k
+}
+
 fn on_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
     let alt = k.modifiers.contains(KeyModifiers::ALT);
@@ -534,9 +548,12 @@ fn on_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
         crate::screens::key(app, k, fx);
         return;
     }
+    // Outside text fields a capital letter does what the small one does, so Caps Lock and Shift
+    // never change the meaning of a key.
+    let k = fold_case(k);
     match k.code {
         KeyCode::Char('q') => app.quit = true,
-        KeyCode::Char('?') => app.modal = Some(Modal::Help),
+        KeyCode::Char('h') | KeyCode::F(1) => app.modal = Some(Modal::Help),
         KeyCode::Char('p') => {
             app.modal = Some(Modal::Pause {
                 selected: 0,
@@ -609,7 +626,7 @@ fn on_modal_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
     let closes = matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q'));
     app.modal = match modal {
         Modal::Help => {
-            if closes || k.code == KeyCode::Char('?') {
+            if closes || matches!(k.code, KeyCode::Char('h') | KeyCode::F(1)) {
                 None
             } else {
                 Some(Modal::Help)
@@ -1000,7 +1017,7 @@ mod tests {
         update(&mut a, ch('q'));
         assert!(a.quit);
         let mut a = app();
-        update(&mut a, ch('?'));
+        update(&mut a, ch('h'));
         assert!(matches!(a.modal, Some(Modal::Help)));
         update(
             &mut a,
@@ -1254,5 +1271,50 @@ mod tests {
         same.daemon_version = env!("CARGO_PKG_VERSION").to_string();
         update(&mut c, Msg::Reply(Reply::Hello(Ok(same))));
         assert!(c.toasts.is_empty(), "equal versions say nothing");
+    }
+
+    fn shifted(c: char) -> Msg {
+        Msg::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT))
+    }
+
+    #[test]
+    fn capital_letters_do_the_same_as_small_ones_so_caps_lock_cannot_matter() {
+        // Devices: A = a = unpair all.
+        let mut a = app();
+        a.status = Some(sample_status(vec![crate::testkit::sample_peer(
+            "Pixel", true, 1,
+        )]));
+        update(&mut a, ch('2'));
+        update(&mut a, shifted('A'));
+        assert!(
+            matches!(a.modal, Some(Modal::Confirm { .. })),
+            "{:?}",
+            a.modal
+        );
+        // Quit and pause with capitals.
+        let mut b = app();
+        update(&mut b, shifted('P'));
+        assert!(matches!(b.modal, Some(Modal::Pause { .. })));
+        let mut c = app();
+        update(&mut c, shifted('Q'));
+        assert!(c.quit);
+        // In a text field a capital is a capital.
+        let mut d = app();
+        update(&mut d, ch('5'));
+        update(&mut d, key(KeyCode::Enter));
+        update(&mut d, shifted('Q'));
+        assert!(!d.quit);
+        assert_eq!(d.send.buf.text(), "Q");
+    }
+
+    #[test]
+    fn h_opens_the_help_and_the_question_mark_is_not_needed() {
+        let mut a = app();
+        update(&mut a, ch('?'));
+        assert!(a.modal.is_none(), "no shifted key is required for help");
+        update(&mut a, ch('h'));
+        assert!(matches!(a.modal, Some(Modal::Help)));
+        update(&mut a, ch('h'));
+        assert!(a.modal.is_none(), "h closes it again");
     }
 }

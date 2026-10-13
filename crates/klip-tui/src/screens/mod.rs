@@ -135,7 +135,7 @@ pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
 pub fn hints(app: &AppState) -> &'static str {
     match app.screen {
         Screen::Home => "s start · x stop · ",
-        Screen::Devices => "↑↓ select · u unpair · U unpair all · ",
+        Screen::Devices => "↑↓ select · u unpair · a unpair all · ",
         Screen::Pair => {
             if app.pair.mode == pair::PairMode::Show {
                 "n new code · l LAN · t validity · j join · "
@@ -144,11 +144,11 @@ pub fn hints(app: &AppState) -> &'static str {
             }
         }
         Screen::History => {
-            "↑↓ select · / search · Enter copy back · s send again · v reveal · C clear · "
+            "↑↓ select · / search · Enter copy back · s send again · v reveal · c clear · "
         }
-        Screen::Send => "Ctrl+S send · Ctrl+O file · Ctrl+U clear · Enter edit · ",
-        Screen::Log => "f follow · / search · PgUp PgDn scroll · G end · ",
-        Screen::Settings => "↑↓ select · Enter edit/toggle · s save · u discard · R restart · ",
+        Screen::Send => "Enter type · Ctrl+S send · Ctrl+O file · Ctrl+U clear · ",
+        Screen::Log => "f follow · / search · PgUp PgDn scroll · End latest · ",
+        Screen::Settings => "↑↓ select · Enter edit/toggle · s save · u discard · r restart · ",
     }
 }
 
@@ -157,7 +157,7 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
     let mut v = vec![
         ("1-7 / Tab", "switch screen"),
         ("p", "pause or resume syncing"),
-        ("?", "this help"),
+        ("h", "this help"),
         ("m", "mouse on/off (off lets you select text)"),
         ("Alt+1-7", "switch screen, also inside a field"),
         ("Ctrl+L", "redraw"),
@@ -171,7 +171,7 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
         Screen::Devices => {
             v.push(("↑↓ / j k", "select a device"));
             v.push(("u", "unpair the selected device"));
-            v.push(("U", "unpair all devices"));
+            v.push(("a", "unpair all devices"));
         }
         Screen::Pair => {
             v.push((
@@ -188,7 +188,7 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             v.push(("Enter", "copy the clip back to this computer"));
             v.push(("s", "send it to your devices again"));
             v.push(("v", "show or hide a secret"));
-            v.push(("C", "clear the history"));
+            v.push(("c", "clear the history"));
             v.push(("r", "reload"));
         }
         Screen::Settings => {
@@ -196,13 +196,13 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             v.push(("Enter / Space", "edit or toggle the selected setting"));
             v.push(("s", "save to config.json"));
             v.push(("u", "discard unsaved changes"));
-            v.push(("R", "restart Klip to apply the saved settings"));
+            v.push(("r", "restart Klip to apply the saved settings"));
         }
         Screen::Log => {
             v.push(("f", "follow the end of the log, or stop following"));
             v.push(("/", "search (Esc clears)"));
             v.push(("↑↓ PgUp PgDn", "scroll"));
-            v.push(("G / g", "jump to the end / the start"));
+            v.push(("End / Home", "jump to the newest / the oldest line"));
         }
         Screen::Send => {
             v.push(("Ctrl+S / F5", "send the text to all devices"));
@@ -210,7 +210,7 @@ pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
             v.push(("Ctrl+U", "clear"));
             v.push(("Ctrl+W", "delete a word"));
             v.push(("Esc", "leave the editor (then 1-7 switch screens)"));
-            v.push(("Enter", "start editing again"));
+            v.push(("Enter", "start typing"));
         }
     }
     v

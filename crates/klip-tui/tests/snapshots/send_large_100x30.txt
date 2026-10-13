@@ -27,4 +27,4 @@
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-Ctrl+S send · Ctrl+O file · Ctrl+U clear · Enter edit · 1-7 screens · p pause · ? help · q quit
+Enter type · Ctrl+S send · Ctrl+O file · Ctrl+U clear · 1-7 screens · p pause · h help · q quit

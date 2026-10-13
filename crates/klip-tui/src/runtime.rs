@@ -319,10 +319,17 @@ pub async fn run(api: Arc<dyn DaemonApi>, env: TuiEnv) -> io::Result<()> {
             rt.dispatch(m);
         }
         guard.set_mouse(rt.app.mouse_on);
+        if let Some((c, r)) = rt.app.resize_request.take() {
+            guard.request_size(c, r);
+        }
         rt.draw()?;
         if rt.app.quit {
             break;
         }
+    }
+    // Quitting from the Pair screen: give the window its old size back.
+    if let Some((c, r)) = rt.app.pair.orig_size.take() {
+        guard.request_size(c, r);
     }
     guard.restore();
     Ok(())

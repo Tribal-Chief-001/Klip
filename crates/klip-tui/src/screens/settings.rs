@@ -19,6 +19,7 @@ pub enum Row {
     DeviceName,
     Relay,
     HistoryItems,
+    HistoryTtl,
     ClipSize,
     LanDiscovery,
     PollInterval,
@@ -27,10 +28,11 @@ pub enum Row {
     Reset,
 }
 
-pub const ROW_ORDER: [Row; 9] = [
+pub const ROW_ORDER: [Row; 10] = [
     Row::DeviceName,
     Row::Relay,
     Row::HistoryItems,
+    Row::HistoryTtl,
     Row::ClipSize,
     Row::LanDiscovery,
     Row::PollInterval,
@@ -61,6 +63,7 @@ pub fn same(a: &DaemonConfig, b: &DaemonConfig) -> bool {
     a.device_name == b.device_name
         && a.relay == b.relay
         && a.max_history_items == b.max_history_items
+        && a.history_ttl_hours == b.history_ttl_hours
         && a.poll_interval_ms == b.poll_interval_ms
         && a.max_clip_bytes == b.max_clip_bytes
         && a.lan_discovery == b.lan_discovery
@@ -96,7 +99,14 @@ pub fn needs_restart(app: &AppState) -> bool {
         crate::app::HelloState::New(h) => Some(h.config.clone()),
         _ => app.settings.baseline.as_ref().map(info_of),
     };
-    running.map(|r| r != info_of(file)).unwrap_or(false)
+    // The age limit is not part of the Hello report: compare it with what was running when this
+    // screen first read the file (updated when Klip is restarted from here).
+    let ttl_changed = app
+        .settings
+        .baseline
+        .as_ref()
+        .is_some_and(|b| b.history_ttl_hours != file.history_ttl_hours);
+    ttl_changed || running.map(|r| r != info_of(file)).unwrap_or(false)
 }
 
 /// "32 MiB", "512kb", "1.5 MiB", "1,048,576", "2gib": binary units (1 KiB = 1024 bytes).
@@ -174,7 +184,7 @@ pub fn on_saved(app: &mut AppState, res: Result<(), String>) {
         Ok(()) => {
             app.settings.file = Some(app.settings.draft.clone());
             app.settings.load_error = None;
-            app.toast(ToastKind::Ok, "Saved. Restart Klip to apply it (R).");
+            app.toast(ToastKind::Ok, "Saved. Restart Klip to apply it (r).");
         }
         Err(e) => app.toast(ToastKind::Error, format!("Not saved: {}", one_line(&e))),
     }
@@ -183,7 +193,10 @@ pub fn on_saved(app: &mut AppState, res: Result<(), String>) {
 pub fn on_restarted(app: &mut AppState, res: Result<u32, crate::api::ApiError>) {
     app.settings.restarting = false;
     match res {
-        Ok(pid) => app.toast(ToastKind::Ok, format!("Klip restarted (PID {pid})")),
+        Ok(pid) => {
+            app.settings.baseline = app.settings.file.clone().or(app.settings.baseline.take());
+            app.toast(ToastKind::Ok, format!("Klip restarted (PID {pid})"));
+        }
         Err(e) => {
             app.modal = Some(Modal::Notice {
                 title: "Klip did not restart".to_string(),
@@ -219,6 +232,19 @@ fn commit(app: &mut AppState) {
                 Ok(())
             }
             _ => Err("enter a number from 1 to 1000".to_string()),
+        },
+        Row::HistoryTtl => match text.trim().to_lowercase().as_str() {
+            "" | "0" | "forever" | "off" => {
+                next.history_ttl_hours = 0;
+                Ok(())
+            }
+            t => t
+                .parse::<u64>()
+                .map(|h| next.history_ttl_hours = h)
+                .map_err(|_| {
+                    "enter a number of hours (0 keeps clips until the limits push them out)"
+                        .to_string()
+                }),
         },
         Row::ClipSize => parse_size(&text).map(|n| next.max_clip_bytes = n),
         _ => Ok(()),
@@ -270,7 +296,7 @@ pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
                 app.settings.error = None;
             }
         }
-        KeyCode::Char('R') => ask_restart(app),
+        KeyCode::Char('r') => ask_restart(app),
         KeyCode::Enter | KeyCode::Char(' ') => activate(app, fx),
         _ => {}
     }
@@ -294,6 +320,11 @@ fn activate(app: &mut AppState, fx: &mut Vec<Effect>) {
         }
         Row::HistoryItems => {
             let mut b = TextBuf::from_text(&app.settings.draft.max_history_items.to_string(), 16);
+            b.end();
+            app.settings.editing = Some(b);
+        }
+        Row::HistoryTtl => {
+            let mut b = TextBuf::from_text(&app.settings.draft.history_ttl_hours.to_string(), 16);
             b.end();
             app.settings.editing = Some(b);
         }
@@ -377,6 +408,7 @@ fn label(r: Row) -> &'static str {
         Row::DeviceName => "Device name",
         Row::Relay => "Network",
         Row::HistoryItems => "History items",
+        Row::HistoryTtl => "Keep history",
         Row::ClipSize => "Largest clip",
         Row::LanDiscovery => "LAN discovery",
         Row::PollInterval => "Poll interval",
@@ -399,6 +431,11 @@ fn value(app: &AppState, r: Row) -> String {
             }
         },
         Row::HistoryItems => d.max_history_items.to_string(),
+        Row::HistoryTtl => match d.history_ttl_hours {
+            0 => "forever (until the item and size limits push clips out)".to_string(),
+            1 => "1 hour, then clips are forgotten".to_string(),
+            h => format!("{h} hours, then clips are forgotten"),
+        },
         Row::ClipSize => fmt::bytes(d.max_clip_bytes),
         Row::LanDiscovery => if d.lan_discovery { "on" } else { "off" }.to_string(),
         Row::PollInterval => format!("{} ms (advanced; edit config.json)", d.poll_interval_ms),
@@ -414,7 +451,7 @@ fn value(app: &AppState, r: Row) -> String {
             if app.settings.restarting {
                 "restarting Klip…".to_string()
             } else {
-                "restart Klip so it reads the saved settings (R)".to_string()
+                "restart Klip so it reads the saved settings (r)".to_string()
             }
         }
         Row::Reset => "reset every setting to its default".to_string(),
@@ -454,7 +491,7 @@ pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
         }
         if needs_restart(app) {
             notes.push(Line::from(Span::styled(
-                "● the running Klip uses other settings: R restarts it",
+                "● the running Klip uses other settings: r restarts it",
                 theme.st_warn(),
             )));
         }
@@ -797,5 +834,60 @@ mod tests {
         update(&mut a, key(KeyCode::Enter));
         update(&mut a, Msg::Reply(Reply::Config(Ok(running_cfg()))));
         assert!(dirty(&a), "the draft survives a re-read");
+    }
+
+    #[test]
+    fn the_history_age_row_edits_hours_and_zero_means_forever() {
+        let mut a = app();
+        select(&mut a, Row::HistoryTtl);
+        assert_eq!(
+            a.settings.draft.history_ttl_hours, 24,
+            "24 hours by default"
+        );
+        update(&mut a, key(KeyCode::Enter));
+        for _ in 0..5 {
+            update(&mut a, key(KeyCode::Backspace));
+        }
+        update(&mut a, ch('6'));
+        update(&mut a, key(KeyCode::Enter));
+        assert_eq!(a.settings.draft.history_ttl_hours, 6);
+        update(&mut a, key(KeyCode::Enter));
+        for _ in 0..5 {
+            update(&mut a, key(KeyCode::Backspace));
+        }
+        update(&mut a, ch('0'));
+        update(&mut a, key(KeyCode::Enter));
+        assert_eq!(a.settings.draft.history_ttl_hours, 0);
+        assert!(value(&a, Row::HistoryTtl).contains("forever"));
+        update(&mut a, key(KeyCode::Enter));
+        for _ in 0..5 {
+            update(&mut a, key(KeyCode::Backspace));
+        }
+        for c in "99999".chars() {
+            update(&mut a, ch(c));
+        }
+        update(&mut a, key(KeyCode::Enter));
+        assert!(a.settings.error.is_some(), "more than a year is refused");
+    }
+
+    #[test]
+    fn a_changed_history_age_needs_a_restart_until_the_restart_happens() {
+        // The Hello report does not carry the age, so it is judged against what was running.
+        let mut a = app();
+        select(&mut a, Row::HistoryTtl);
+        update(&mut a, key(KeyCode::Enter));
+        for _ in 0..5 {
+            update(&mut a, key(KeyCode::Backspace));
+        }
+        update(&mut a, ch('1'));
+        update(&mut a, key(KeyCode::Enter));
+        update(&mut a, ch('s'));
+        update(&mut a, Msg::Reply(Reply::ConfigSaved(Ok(()))));
+        assert!(needs_restart(&a));
+        update(&mut a, Msg::Reply(Reply::DaemonRestarted(Ok(1))));
+        assert!(
+            !needs_restart(&a),
+            "after the restart the saved age is what runs"
+        );
     }
 }
