@@ -1,7 +1,8 @@
 //! The pure core of the TUI: state, events, effects and `update`. No I/O, no terminal, no clock
 //! (time arrives as `Msg::Tick`). Everything here is unit-tested without a terminal.
-use crate::api::{ApiError, DaemonStatusInfo, HelloInfo};
+use crate::api::{ApiError, DaemonStatusInfo, HelloInfo, UnpairReport};
 use crate::fmt;
+use crate::screens::devices::DevicesState;
 use crate::textbuf::TextBuf;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -134,6 +135,7 @@ pub struct Toast {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
     Unpair { selector: String, name: String },
+    UnpairAll { count: usize },
     StopDaemon,
 }
 
@@ -213,6 +215,7 @@ pub struct AppState {
     pub force_clear: bool,
     pub inflight: Inflight,
     pub clock: Clock,
+    pub devices: DevicesState,
 }
 
 impl AppState {
@@ -234,6 +237,7 @@ impl AppState {
             force_clear: false,
             inflight: Inflight::default(),
             clock: Clock::default(),
+            devices: DevicesState::default(),
         }
     }
 
@@ -310,6 +314,7 @@ pub enum Effect {
     Pause(u64),
     Resume,
     Unpair { selector: String },
+    UnpairAll,
     StopDaemon,
     StartDaemon,
 }
@@ -322,6 +327,7 @@ pub enum Reply {
     Paused(Result<u64, ApiError>),
     Resumed(Result<(), ApiError>),
     Unpaired(Result<String, ApiError>),
+    UnpairedAll(Result<UnpairReport, ApiError>),
     DaemonStopped(Result<(), ApiError>),
     DaemonStarted(Result<u32, ApiError>),
 }
@@ -524,6 +530,7 @@ fn on_modal_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
 fn run_confirmed(action: ConfirmAction, fx: &mut Vec<Effect>) {
     match action {
         ConfirmAction::Unpair { selector, .. } => fx.push(Effect::Unpair { selector }),
+        ConfirmAction::UnpairAll { .. } => fx.push(Effect::UnpairAll),
         ConfirmAction::StopDaemon => fx.push(Effect::StopDaemon),
     }
 }
@@ -648,6 +655,37 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
         Reply::Unpaired(Err(e)) => {
             app.toast(ToastKind::Error, format!("Could not unpair: {}", e.plain()))
         }
+        Reply::UnpairedAll(Ok((removed, failed))) => {
+            app.clock.status_ms = 0;
+            if failed.is_empty() {
+                app.toast(
+                    ToastKind::Ok,
+                    format!("Unpaired {} device(s)", removed.len()),
+                );
+            } else {
+                let list: Vec<String> = failed
+                    .iter()
+                    .map(|(n, why)| {
+                        format!(
+                            "{}: {}",
+                            crate::sanitize::one_line(n),
+                            crate::sanitize::one_line(why)
+                        )
+                    })
+                    .collect();
+                app.modal = Some(Modal::Notice {
+                    title: format!(
+                        "{} removed, {} could not be removed",
+                        removed.len(),
+                        failed.len()
+                    ),
+                    body: list.join("\n"),
+                });
+            }
+        }
+        Reply::UnpairedAll(Err(e)) => {
+            app.toast(ToastKind::Error, format!("Could not unpair: {}", e.plain()))
+        }
         Reply::DaemonStopped(Ok(())) => app.toast(ToastKind::Info, "Klip stopped"),
         Reply::DaemonStopped(Err(e)) => app.toast(
             ToastKind::Error,
@@ -669,6 +707,8 @@ fn on_status(app: &mut AppState, s: DaemonStatusInfo, fx: &mut Vec<Effect>) {
     let from_down = matches!(app.conn, Conn::Down { .. });
     app.conn = Conn::Up;
     app.status = Some(s);
+    let n = app.status.as_ref().map(|s| s.peers.len()).unwrap_or(0);
+    app.devices.selected = app.devices.selected.min(n.saturating_sub(1));
     if from_down {
         // The daemon may have been restarted (even upgraded): ask again what it can do.
         app.hello = HelloState::Unknown;
@@ -683,6 +723,7 @@ fn on_down(app: &mut AppState, e: ApiError) {
     let was_down = matches!(app.conn, Conn::Down { .. });
     app.conn = Conn::Down { reason: e.plain() };
     app.status = None;
+    app.devices.selected = 0;
     if was_down {
         return;
     }

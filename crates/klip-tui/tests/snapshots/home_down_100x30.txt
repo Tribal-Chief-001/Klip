@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                 ○ STOPPED
+
+
+
+
+
+
+
+
+
+                       ┌ Klip is not running ───────────────────────────────┐
+                       │Klip is not running                                 │
+                       │                                                    │
+                       │s  start it                                         │
+                       │or run `klip start` in a shell                      │
+                       │                                                    │
+                       │6  shows the log: why it stopped                    │
+                       │                                                    │
+                       └────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+s start · x stop · 1-7 screens · p pause · ? help · q quit

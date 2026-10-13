@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ Devices (2) ─────────────────────────────────────────────────────────────────────────────────────┐
+│  ● Vivo V2253              [XUXC-EASU-TQP7]  connected                                           │
+│▸ ○ Pixel 8                 [E6Y4-MBFJ-TGTY]  offline · could not reach the device                │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Details ─────────────────────────────────────────────────────────────────────────────────────────┐
+│Name         Pixel 8                                                                              │
+│Fingerprint  E6Y4-MBFJ-TGTY                                                                       │
+│State        not connected                                                                        │
+│Last error   could not reach the device                                                           │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+↑↓ select · u unpair · U unpair all · 1-7 screens · p pause · ? help · q quit

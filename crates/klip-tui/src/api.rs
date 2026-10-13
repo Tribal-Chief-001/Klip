@@ -43,6 +43,9 @@ impl ApiError {
     }
 }
 
+/// `(removed names, (name, reason) failures)` of an unpair-all.
+pub type UnpairReport = (Vec<String>, Vec<(String, String)>);
+
 /// Result of `klip send`: which devices got the text and which did not (with the reason).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendReport {
@@ -76,8 +79,7 @@ pub trait DaemonApi: Send + Sync {
     async fn resume(&self) -> Result<(), ApiError>;
     /// `selector` is a name or the start of a fingerprint. Returns the removed device's name.
     async fn unpair(&self, selector: String) -> Result<String, ApiError>;
-    /// `(removed names, (name, reason) failures)`.
-    async fn unpair_all(&self) -> Result<(Vec<String>, Vec<(String, String)>), ApiError>;
+    async fn unpair_all(&self) -> Result<UnpairReport, ApiError>;
     async fn copy_to_clipboard(&self, id: [u8; 16]) -> Result<(), ApiError>;
     async fn clear_history(&self) -> Result<(), ApiError>;
     async fn pair_start(&self, ttl_secs: u64, lan: bool) -> Result<PairTicket, ApiError>;

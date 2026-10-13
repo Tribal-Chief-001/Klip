@@ -71,6 +71,77 @@ pub fn sample_item(n: u8, text: &str, sensitive: bool) -> HistoryItem {
     }
 }
 
+use crate::app::AppState;
+use crate::theme::{Theme, TuiEnv};
+use klip_core::KlipPaths;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use ratatui::Terminal;
+use std::path::PathBuf;
+
+/// An environment without colours (so snapshots contain text only) and a private temp directory.
+pub fn test_env(tag: &str) -> TuiEnv {
+    let dir = std::env::temp_dir().join(format!("klip-tui-test-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    TuiEnv::from_vars(KlipPaths::from_dir(dir), |k| match k {
+        "NO_COLOR" => Some("1".to_string()),
+        _ => None,
+    })
+}
+
+pub fn plain_theme() -> Theme {
+    Theme::from_env(&test_env("theme"))
+}
+
+/// The text of a buffer, one line per row, trailing spaces removed.
+pub fn dump(buf: &Buffer) -> String {
+    let mut out = String::new();
+    for y in 0..buf.area.height {
+        let mut row = String::new();
+        let mut x = 0;
+        while x < buf.area.width {
+            let sym = buf[(x, y)].symbol();
+            row.push_str(sym);
+            // A wide character covers two cells; the second one holds a blank, not a character.
+            x += crate::sanitize::width(sym).max(1) as u16;
+        }
+        out.push_str(row.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// Draw `app` on a `cols × rows` test terminal and return the screen as text.
+pub fn render(app: &AppState, theme: &Theme, cols: u16, rows: u16) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(cols, rows)).expect("test terminal");
+    terminal
+        .draw(|f| crate::view::view(app, theme, f))
+        .expect("draw");
+    dump(terminal.backend().buffer())
+}
+
+/// Compare with `tests/snapshots/<name>.txt`; `UPDATE_SNAPSHOTS=1` rewrites the file.
+pub fn assert_snapshot(name: &str, actual: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/snapshots")
+        .join(format!("{name}.txt"));
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!(
+            "missing snapshot {}; run with UPDATE_SNAPSHOTS=1 and review it",
+            path.display()
+        )
+    });
+    assert_eq!(
+        actual, want,
+        "snapshot {name} changed; if intended, regenerate and review the diff"
+    );
+}
+
 pub struct FakeState {
     pub up: bool,
     pub status: DaemonStatusInfo,
@@ -259,7 +330,7 @@ impl DaemonApi for FakeDaemon {
         }
     }
 
-    async fn unpair_all(&self) -> Result<(Vec<String>, Vec<(String, String)>), ApiError> {
+    async fn unpair_all(&self) -> Result<UnpairReport, ApiError> {
         self.enter("unpair_all").await?;
         let mut s = self.state.lock().unwrap();
         let removed = s.status.peers.drain(..).map(|p| p.name).collect();

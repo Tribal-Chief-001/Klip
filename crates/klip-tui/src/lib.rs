@@ -15,3 +15,4 @@ pub mod screens;
 pub mod testkit;
 pub mod textbuf;
 pub mod theme;
+pub mod view;

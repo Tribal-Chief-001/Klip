@@ -1,0 +1,10 @@
+
+
+
+  Terminal too small: Klip needs 60×16,
+              this is 40×10
+
+
+
+
+

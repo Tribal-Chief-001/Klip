@@ -25,3 +25,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+
+[[test]]
+name = "snapshots"
+required-features = ["testkit"]

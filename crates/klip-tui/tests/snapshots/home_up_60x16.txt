@@ -1,0 +1,16 @@
+●─● klip   1 Home  2  3  4  5  6  7                 ● ACTIVE
+┌ Status ──────────────────────────────────────────────────┐
+│● ACTIVE   relay connected (https://aps1-1.r…             │
+│this device  4RGS-5DPX-3MZG   Linux (X11)   RAM 15.8 MB   │
+│128 clips synced · last 4s ago · "https://github.com/…" (…│
+└──────────────────────────────────────────────────────────┘
+┌ Devices (2) ─────────────────────────────────────────────┐
+│  ● Vivo V2253              [XUXC-EASU-TQP7]  connected   │
+│  ○ Pixel 8                 [E6Y4-MBFJ-TGTY]  offline · c…│
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+s start · x stop · 1-7 screens · p pause · ? help · q quit

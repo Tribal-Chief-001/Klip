@@ -1,15 +1,117 @@
-//! One module per screen; each has its own state, key handling and drawing. This module routes to
-//! them. Until a screen exists its hook does nothing.
-use crate::app::{AppState, Effect, Screen};
-use crossterm::event::KeyEvent;
+//! One module per screen; each has its own state, key handling and drawing. This module routes.
+pub mod devices;
+pub mod home;
 
-pub fn key(_app: &mut AppState, _k: KeyEvent, _fx: &mut Vec<Effect>) {}
+use crate::app::{AppState, Effect, Screen};
+use crate::theme::Theme;
+use crossterm::event::KeyEvent;
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::Style;
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+
+/// Which rows of a list of `len` items are shown in `height` rows, keeping `selected` in view.
+pub fn window(selected: usize, len: usize, height: usize) -> (usize, usize) {
+    if height == 0 || len == 0 {
+        return (0, 0);
+    }
+    let start = selected
+        .saturating_sub(height / 2)
+        .min(len.saturating_sub(height));
+    (start, (start + height).min(len))
+}
+
+/// One centred line of text in the middle of `area`.
+pub fn centered_text(f: &mut Frame, area: Rect, style: Style, text: &str) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let row = Rect {
+        x: area.x,
+        y: area.y + area.height / 2,
+        width: area.width,
+        height: 1,
+    };
+    f.render_widget(
+        Paragraph::new(text.to_string())
+            .style(style)
+            .alignment(Alignment::Center),
+        row,
+    );
+}
+
+pub fn key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
+    match app.screen {
+        Screen::Home => home::key(app, k, fx),
+        Screen::Devices => devices::key(app, k, fx),
+        _ => {}
+    }
+}
+
 pub fn paste(_app: &mut AppState, _text: &str, _fx: &mut Vec<Effect>) {}
-pub fn scroll(_app: &mut AppState, _delta: i32) {}
+
+pub fn scroll(app: &mut AppState, delta: i32) {
+    if app.screen == Screen::Devices {
+        devices::scroll(app, delta);
+    }
+}
+
 pub fn text_focus(_app: &AppState) -> bool {
     false
 }
+
 pub fn on_enter(_app: &mut AppState, _to: Screen, _fx: &mut Vec<Effect>) {}
 pub fn on_leave(_app: &mut AppState, _from: Screen, _fx: &mut Vec<Effect>) {}
 pub fn on_tick(_app: &mut AppState, _fx: &mut Vec<Effect>) {}
 pub fn on_daemon_down(_app: &mut AppState) {}
+
+pub fn view(app: &AppState, theme: &Theme, f: &mut Frame, area: Rect) {
+    match app.screen {
+        Screen::Home => home::view(app, theme, f, area),
+        Screen::Devices => devices::view(app, theme, f, area),
+        other => centered_text(
+            f,
+            area,
+            theme.st_dim(),
+            &format!(
+                "{}: this screen is built in a later task of the plan",
+                other.title()
+            ),
+        ),
+    }
+}
+
+/// Screen-specific key hints, each followed by " · ", shown in front of the global ones.
+pub fn hints(app: &AppState) -> &'static str {
+    match app.screen {
+        Screen::Home => "s start · x stop · ",
+        Screen::Devices => "↑↓ select · u unpair · U unpair all · ",
+        _ => "",
+    }
+}
+
+/// Key list for the help overlay: global keys first, then the screen's own.
+pub fn help_lines(app: &AppState) -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![
+        ("1-7 / Tab", "switch screen"),
+        ("p", "pause or resume syncing"),
+        ("?", "this help"),
+        ("m", "mouse on/off (off lets you select text)"),
+        ("Alt+1-7", "switch screen, also inside a field"),
+        ("Ctrl+L", "redraw"),
+        ("q / Ctrl+C", "quit (Klip keeps running)"),
+    ];
+    match app.screen {
+        Screen::Home => {
+            v.push(("s", "start Klip when it is not running"));
+            v.push(("x", "stop Klip"));
+        }
+        Screen::Devices => {
+            v.push(("↑↓ / j k", "select a device"));
+            v.push(("u", "unpair the selected device"));
+            v.push(("U", "unpair all devices"));
+        }
+        _ => {}
+    }
+    v
+}
