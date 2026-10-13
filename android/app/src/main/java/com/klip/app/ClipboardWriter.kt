@@ -27,7 +27,17 @@ class ClipboardWriter(
         private set
 
     override fun writeText(text: String, sensitive: Boolean): Boolean {
-        return try {
+        // This is called from the Rust engine. An exception escaping from here would abort the whole app
+        // (the Android engine is built with panic = "abort"), so nothing may be thrown out of this function.
+        try {
+            // Android passes the clip to the clipboard service in one Binder transaction, whose buffer is
+            // about 1 MB for the whole process: a bigger clip fails with TransactionTooLargeException (seen at
+            // 1.18 MB, accepted at 0.5 MB on Android 14). Say no early instead of failing half way.
+            val size = text.toByteArray(Charsets.UTF_8).size
+            if (size > MAX_CLIPBOARD_BYTES) {
+                Log.w(TAG, "clip of $size bytes is too large for Android's clipboard (limit about 1 MB); not applied")
+                return false
+            }
             val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val clip = ClipData.newPlainText("Klip", text)
             if (sensitive) {
@@ -39,17 +49,30 @@ class ClipboardWriter(
             lastWritten = text
             KlipRuntime.lastWrittenText = text
             KlipRuntime.lastWrittenAtMs = System.currentTimeMillis()
-            cm.setPrimaryClip(clip)
+            try {
+                cm.setPrimaryClip(clip)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Direct clipboard write failed, offering tap-to-copy: ${e.message}")
+                if (size > MAX_TAP_TO_COPY_BYTES || !offerTapToCopy(text, sensitive)) return false
+            }
             onApplied(if (sensitive) "secret (hidden)" else text.take(60))
-            true
+            return true
         } catch (e: Throwable) {
-            Log.w(TAG, "Direct clipboard write failed, offering tap-to-copy: ${e.message}")
-            offerTapToCopy(text, sensitive)
-            true // delivered to this device; the user finishes it with one tap
+            Log.w(TAG, "clipboard write failed: ${e.message}")
+            return false
         }
     }
 
-    private fun offerTapToCopy(text: String, sensitive: Boolean) {
+    /** The text travels in the notification's intent (a Binder transaction too), so only small clips use it. */
+    private fun offerTapToCopy(text: String, sensitive: Boolean): Boolean = try {
+        postTapToCopy(text, sensitive)
+        true
+    } catch (e: Throwable) {
+        Log.w(TAG, "tap-to-copy notification failed: ${e.message}")
+        false
+    }
+
+    private fun postTapToCopy(text: String, sensitive: Boolean) {
         val intent = Intent(ctx, CopyTrampolineActivity::class.java).apply {
             action = CopyTrampolineActivity.ACTION_COPY
             flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -75,5 +98,7 @@ class ClipboardWriter(
 
     companion object {
         private const val TAG = "KlipClipboardWriter"
+        private const val MAX_CLIPBOARD_BYTES = 900_000
+        private const val MAX_TAP_TO_COPY_BYTES = 100_000
     }
 }

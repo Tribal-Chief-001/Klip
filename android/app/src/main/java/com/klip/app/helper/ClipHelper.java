@@ -108,6 +108,7 @@ public final class ClipHelper {
     }
 
     private static void onChanged() {
+        byte[] bytes;
         try {
             Object clip = getPrimaryClip.invoke(clipboard, build(getPrimaryClip, null));
             if (DEBUG) System.out.println("read clip: " + (clip == null ? "null" : clip.getClass().getName()));
@@ -120,8 +121,14 @@ public final class ClipHelper {
             if (extras != null && extras.getBoolean("android.content.extra.IS_SENSITIVE", false)) return;
             CharSequence text = data.getItemAt(0).getText();
             if (text == null || text.length() == 0) return;
-            byte[] bytes = text.toString().getBytes(StandardCharsets.UTF_8);
+            bytes = text.toString().getBytes(StandardCharsets.UTF_8);
             if (bytes.length > MAX_BYTES) return;
+        } catch (Throwable t) {
+            // Reading can fail (a clip over about 1 MB does not fit through Binder): skip this clip, keep the link.
+            if (DEBUG) t.printStackTrace();
+            return;
+        }
+        try {
             synchronized (LOCK) {
                 if (out == null) return; // the app is not listening right now; nothing to deliver
                 out.writeInt(bytes.length);
@@ -129,9 +136,8 @@ public final class ClipHelper {
                 out.flush();
             }
         } catch (Throwable t) {
-            // A failed read or write must not kill the helper; the link loop reconnects.
             if (DEBUG) t.printStackTrace();
-            closeSocket();
+            closeSocket(); // the link loop reconnects
         }
     }
 

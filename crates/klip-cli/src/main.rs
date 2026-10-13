@@ -59,7 +59,8 @@ enum Commands {
     },
     /// Send a text to all linked devices right now
     Send {
-        /// Text to send
+        /// Text to send, or `-` to read it from standard input (for big or multi-line text:
+        /// `cat main.rs | klip send -`)
         text: String,
     },
     /// Install the auto-start service for your OS
@@ -155,7 +156,20 @@ async fn run(cli: Cli) -> AnyResult<()> {
             IpcResponse::History(items) => print_history(&items),
             other => return Err(format!("unexpected reply: {other:?}").into()),
         },
-        Commands::Send { text } => match rpc(IpcRequest::SendClip { text }).await? {
+        Commands::Send { text } => match rpc(IpcRequest::SendClip {
+            text: if text == "-" {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .map_err(|e| format!("cannot read standard input as text: {e}"))?;
+                buf
+            } else {
+                text
+            },
+        })
+        .await?
+        {
             IpcResponse::Sent {
                 bytes,
                 delivered,

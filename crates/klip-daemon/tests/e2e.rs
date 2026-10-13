@@ -583,3 +583,52 @@ async fn a_30_mb_clip_is_delivered_and_an_oversized_one_is_refused_without_harm(
     a.stop().await;
     b.stop().await;
 }
+
+/// What a developer actually copies: a long source file with tabs, CRLF and bare CR, trailing spaces,
+/// blank lines, emoji, CJK, right-to-left text, combining marks, zero-width characters and a BOM, plus a
+/// link with a query string and a very long line. It must arrive byte for byte.
+#[tokio::test]
+async fn code_links_and_awkward_text_arrive_byte_for_byte() {
+    let a = start_daemon("Alpha", fresh_dir("a12"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b12"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+
+    let mut code = String::from("\u{FEFF}// \u{1F980} Rust \u{65E5}\u{672C}\u{8A9E} \u{05E9}\u{05DC}\u{05D5}\u{05DD} e\u{0301} a\u{200B}b\n");
+    for i in 0..10_000 {
+        match i % 5 {
+            0 => code.push_str(&format!(
+                "fn f{i}() {{\n\treturn {i}; // tab-indented   \n}}\n"
+            )),
+            1 => code.push_str(&format!(
+                "    let url = \"https://example.com/a/b?x={i}&y=%20z#frag\";\r\n"
+            )),
+            2 => code.push_str("\n\n"),
+            3 => code.push_str(&format!("  if a {{ b }} else {{ c }} \r{i}\n")),
+            _ => code.push_str(&format!("{}\n", "x".repeat(40))),
+        }
+    }
+    code.push_str(&"y".repeat(100_000)); // one very long line
+    code.push('\n');
+    assert!(code.len() > 400_000, "{}", code.len());
+
+    for sample in [
+        code.as_str(),
+        "https://example.com/path/to/page?query=1&other=%E2%9C%93#section",
+        "  leading and trailing spaces  \n",
+        "line1\r\nline2\r\n",
+        "\t",
+    ] {
+        a.clipboard.user_copy(sample);
+        assert!(
+            wait_until(30, || b.clipboard.current_text().as_deref() == Some(sample)).await,
+            "text of {} bytes did not arrive intact (got {:?} bytes)",
+            sample.len(),
+            b.clipboard.current_text().map(|t| t.len())
+        );
+    }
+    a.stop().await;
+    b.stop().await;
+}
