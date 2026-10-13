@@ -6,9 +6,11 @@
 //! `docs/superpowers/specs/2026-10-13-klip-tui-design.md`.
 
 pub mod api;
+pub mod app;
 pub mod files;
 pub mod fmt;
 pub mod sanitize;
+pub mod screens;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 pub mod textbuf;
