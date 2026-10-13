@@ -7,7 +7,7 @@ Commands:
   stop             Stop the background service
   status           Show linked devices, connection state and sync info
   pair             Link another device. Without an argument: show a QR/ticket for the other device. With a ticket: join the device that showed it
-  unpair           Remove a linked device (by name or by the start of its fingerprint)
+  unpair           Remove a linked device (by name or by the start of its fingerprint), or all of them with --all
   pause            Pause synchronisation
   resume           Resume synchronisation
   history          Show recently synced clips

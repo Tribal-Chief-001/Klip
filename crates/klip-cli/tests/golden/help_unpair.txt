@@ -1,9 +1,11 @@
-Remove a linked device (by name or by the start of its fingerprint)
+Remove a linked device (by name or by the start of its fingerprint), or all of them with --all
 
-Usage: klip unpair <DEVICE>
+Usage: klip unpair [OPTIONS] [DEVICE]
 
 Arguments:
-  <DEVICE>  
+  [DEVICE]  Name or start of the fingerprint of the device to remove
 
 Options:
+      --all   Remove every linked device
+  -y, --yes   Do not ask for confirmation (with --all)
   -h, --help  Print help

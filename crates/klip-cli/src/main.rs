@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
-use klip_cli::client::DaemonClient;
+use klip_cli::client::{ClientError, DaemonClient};
+use klip_cli::ops::{request_cap, unpair_all_compat};
 use klip_cli::ui::{print_history, print_pair_card, print_pair_request, print_status_card};
 use klip_daemon::config::DaemonConfig;
 use klip_daemon::engine::DaemonEngine;
 use klip_proto::ipc::{IpcRequest, IpcResponse};
 use owo_colors::OwoColorize;
+use std::io::IsTerminal;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,8 +43,18 @@ enum Commands {
         #[arg(long, default_value = "120")]
         ttl: u64,
     },
-    /// Remove a linked device (by name or by the start of its fingerprint)
-    Unpair { device: String },
+    /// Remove a linked device (by name or by the start of its fingerprint), or all of them with --all
+    Unpair {
+        /// Name or start of the fingerprint of the device to remove
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        device: Option<String>,
+        /// Remove every linked device
+        #[arg(long)]
+        all: bool,
+        /// Do not ask for confirmation (with --all)
+        #[arg(short, long)]
+        yes: bool,
+    },
     /// Pause synchronisation
     Pause {
         /// Pause duration in seconds (default: 600s / 10m)
@@ -56,6 +68,8 @@ enum Commands {
         /// Maximum number of items to show
         #[arg(short, long, default_value = "10")]
         limit: usize,
+        #[command(subcommand)]
+        action: Option<HistoryAction>,
     },
     /// Send a text to all linked devices right now
     Send {
@@ -65,6 +79,16 @@ enum Commands {
     },
     /// Install the auto-start service for your OS
     InstallService,
+}
+
+#[derive(Subcommand)]
+enum HistoryAction {
+    /// Forget all clips kept in the history of this device
+    Clear {
+        /// Do not ask for confirmation
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
@@ -129,12 +153,19 @@ async fn run(cli: Cli) -> AnyResult<()> {
             lan,
             ttl,
         } => pair_host(lan, ttl).await?,
-        Commands::Unpair { device } => match rpc(IpcRequest::Unpair { selector: device }).await? {
-            IpcResponse::Unpaired { name } => {
-                println!("{} Removed {}", "✓".green().bold(), name.bold())
+        Commands::Unpair { device, all, yes } => {
+            if all {
+                unpair_all(yes).await?;
+            } else {
+                let device = device.expect("clap requires a device unless --all is given");
+                match rpc(IpcRequest::Unpair { selector: device }).await? {
+                    IpcResponse::Unpaired { name } => {
+                        println!("{} Removed {}", "✓".green().bold(), name.bold())
+                    }
+                    other => return Err(format!("unexpected reply: {other:?}").into()),
+                }
             }
-            other => return Err(format!("unexpected reply: {other:?}").into()),
-        },
+        }
         Commands::Pause { duration } => match rpc(IpcRequest::Pause {
             duration_secs: duration,
         })
@@ -152,13 +183,19 @@ async fn run(cli: Cli) -> AnyResult<()> {
             IpcResponse::Resumed => println!("{} Sync resumed.", "▶".green().bold()),
             other => return Err(format!("unexpected reply: {other:?}").into()),
         },
-        Commands::History { limit } => match rpc(IpcRequest::GetHistory { limit }).await? {
-            IpcResponse::History(items) => print_history(&items),
-            other => return Err(format!("unexpected reply: {other:?}").into()),
+        Commands::History { limit, action } => match action {
+            Some(HistoryAction::Clear { yes }) => history_clear(yes).await?,
+            None => match rpc(IpcRequest::GetHistory { limit }).await? {
+                IpcResponse::History(items) => print_history(&items),
+                other => return Err(format!("unexpected reply: {other:?}").into()),
+            },
         },
-        Commands::Send { text } => match rpc(IpcRequest::SendClip {
-            text: if text == "-" {
+        Commands::Send { text } => {
+            let text = if text == "-" {
                 use std::io::Read;
+                if std::io::stdin().is_terminal() {
+                    eprintln!("Reading the text from the terminal; finish with Ctrl-D.");
+                }
                 let mut buf = String::new();
                 std::io::stdin()
                     .read_to_string(&mut buf)
@@ -166,38 +203,44 @@ async fn run(cli: Cli) -> AnyResult<()> {
                 buf
             } else {
                 text
-            },
-        })
-        .await?
-        {
-            IpcResponse::Sent {
-                bytes,
-                delivered,
-                failed,
-            } => {
-                if delivered.is_empty() && failed.is_empty() {
-                    println!(
-                        "{} No linked devices. Run `klip pair` first.",
-                        "!".yellow().bold()
-                    );
+            };
+            let client = DaemonClient::for_current_user();
+            let cap = request_cap(&client).await;
+            let reply = client
+                .request(&IpcRequest::SendClip { text }, cap)
+                .await
+                .map_err(|e| e.to_string())?;
+            match reply {
+                IpcResponse::Sent {
+                    bytes,
+                    delivered,
+                    failed,
+                } => {
+                    if delivered.is_empty() && failed.is_empty() {
+                        println!(
+                            "{} No linked devices. Run `klip pair` first.",
+                            "!".yellow().bold()
+                        );
+                    }
+                    for name in &delivered {
+                        println!("{} Sent {bytes} B to {}", "✓".green().bold(), name.bold());
+                    }
+                    for (name, why) in &failed {
+                        println!(
+                            "{} {} did not receive it: {}",
+                            "✗".red().bold(),
+                            name.bold(),
+                            why
+                        );
+                    }
+                    if delivered.is_empty() && !failed.is_empty() {
+                        return Err("could not reach any linked device".into());
+                    }
                 }
-                for name in &delivered {
-                    println!("{} Sent {bytes} B to {}", "✓".green().bold(), name.bold());
-                }
-                for (name, why) in &failed {
-                    println!(
-                        "{} {} did not receive it: {}",
-                        "✗".red().bold(),
-                        name.bold(),
-                        why
-                    );
-                }
-                if delivered.is_empty() && !failed.is_empty() {
-                    return Err("could not reach any linked device".into());
-                }
+                IpcResponse::Error(e) => return Err(e.into()),
+                other => return Err(format!("unexpected reply: {other:?}").into()),
             }
-            other => return Err(format!("unexpected reply: {other:?}").into()),
-        },
+        }
         Commands::InstallService => install_service()?,
     }
     Ok(())
@@ -358,6 +401,68 @@ async fn confirm(prompt: &str) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+async fn unpair_all(yes: bool) -> AnyResult<()> {
+    let peers = match rpc(IpcRequest::GetStatus).await? {
+        IpcResponse::Status(s) => s.peers,
+        other => return Err(format!("unexpected reply: {other:?}").into()),
+    };
+    if peers.is_empty() {
+        println!("{}", "No linked devices.".yellow());
+        return Ok(());
+    }
+    if !yes {
+        let names = peers
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let prompt = format!(
+            "Remove all {} linked devices ({names})? [y/N] ",
+            peers.len()
+        );
+        if !confirm(&prompt).await {
+            println!("{}", "Cancelled.".yellow());
+            return Ok(());
+        }
+    }
+    let (removed, failed) = unpair_all_compat(&DaemonClient::for_current_user())
+        .await
+        .map_err(|e: ClientError| e.to_string())?;
+    for name in &removed {
+        println!("{} Removed {}", "✓".green().bold(), name.bold());
+    }
+    for (name, why) in &failed {
+        eprintln!(
+            "{} could not remove {}: {why}",
+            "error:".red().bold(),
+            name.bold()
+        );
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} device(s) could not be removed", failed.len()).into())
+    }
+}
+
+async fn history_clear(yes: bool) -> AnyResult<()> {
+    if !yes && !confirm("Forget all clips kept in the history of this device? [y/N] ").await {
+        println!("{}", "Cancelled.".yellow());
+        return Ok(());
+    }
+    match DaemonClient::send_request(&IpcRequest::ClearHistory).await {
+        Ok(IpcResponse::HistoryCleared) => {
+            println!("{} History cleared.", "✓".green().bold());
+            Ok(())
+        }
+        Ok(IpcResponse::Error(e)) | Err(e) => Err(format!(
+            "could not clear the history ({e}). If the running daemon is older than this klip, restart it: klip stop && klip start"
+        )
+        .into()),
+        Ok(other) => Err(format!("unexpected reply: {other:?}").into()),
+    }
 }
 
 fn install_service() -> AnyResult<()> {
