@@ -62,7 +62,7 @@ class ClipboardWriter(
         )
         val shown = if (sensitive) "Secret (tap to copy)" else text.take(80)
         val n = NotificationCompat.Builder(ctx, KlipSyncService.CHANNEL_CLIP)
-            .setSmallIcon(android.R.drawable.ic_menu_agenda)
+            .setSmallIcon(R.drawable.ic_stat_klip)
             .setContentTitle("Klip: tap to copy")
             .setContentText(shown)
             .setAutoCancel(true)

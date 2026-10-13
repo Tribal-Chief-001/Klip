@@ -78,11 +78,13 @@ strip = true
 overflow-checks = true
 
 # Profile for the Android native library. Differs from `release` on purpose:
-# - panic = "unwind": a Rust panic must surface as an error to the app (UniFFI catches it);
-#   with abort it would kill the whole Android process.
 # - thin LTO + several codegen units: fat LTO of the iroh stack needs several GB of RAM.
+# - panic = "abort" (inherited from release): measured 12.3 MB -> 10.1 MB for the arm64 library
+#   (2026-10-13). A Rust panic kills the app process instead of becoming a Kotlin exception; the
+#   foreground service is START_STICKY and Android restarts it (about 5 s, tested on an emulator),
+#   which is also the safer outcome here: after an unwound panic a std Mutex stays poisoned and
+#   every later lock().unwrap() would panic again, leaving a half-dead engine.
 [profile.android]
 inherits = "release"
-panic = "unwind"
 lto = "thin"
 codegen-units = 4

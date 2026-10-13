@@ -77,15 +77,17 @@ klip start
 klip status
 ```
 
-Pre-built binaries and the Android APK will be attached to the [Releases](https://github.com/Tribal-Chief-001/Klip/releases) page once a tested alpha is tagged. Until then the latest APK is the **artifact of the newest green run** of the [Android workflow](https://github.com/Tribal-Chief-001/Klip/actions/workflows/android.yml).
+Pre-built binaries and the Android APK are attached to the [Releases](https://github.com/Tribal-Chief-001/Klip/releases) page (pre-releases while the project is alpha).
 
 ### Android
 
-1. Download the APK (see above), open it, allow “install unknown apps” for your browser/file manager.
-2. Open **Klip**. Allow notifications (Android 13+) — the small notification shows Klip is running.
-3. Optional but recommended: tap **Allow background activity (battery)**.
+1. Download **`Klip-Android.apk`** from the latest release (about 10-11 MB; it is for 64-bit phones, i.e. nearly every phone since 2017). Only if your phone is very old and 32-bit, take `Klip-Android-armv7.apk` instead. Open it and allow “install unknown apps” for your browser/file manager.
+2. Open **Klip** and tap **Setup** (top right). It lists every permission and phone setting Klip needs to keep running with the screen off and after a restart, explains what each one does and cannot see, and has the steps for your phone brand (Vivo, Xiaomi, Oppo/Realme/OnePlus, Samsung, Huawei/Honor; others need nothing extra). It marks the ones Android lets it check as done.
+3. **Privacy** (top right) says in plain words where clips go and what Klip does and never does.
 
-Needs Android 8.0 or newer.
+Needs Android 8.0 or newer. Updating from an earlier alpha keeps your pairings (same signing key).
+
+**Size.** The APK was 39 MB (three CPU types in one file, no code shrinking). It is now one APK per CPU type with the Kotlin code shrunk by R8 and without AppCompat/Material: **10.7 MB for arm64** (measured on a local release build). 95% of that is the Rust engine (QUIC, TLS, relay client), about 10 MB; a 2-3 MB app is not possible with this stack. The Android library is built with `panic = "abort"` (saves 2.2 MB); a crash restarts the background service by itself.
 
 ## Link your devices (once)
 

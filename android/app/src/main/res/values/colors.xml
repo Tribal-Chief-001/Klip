@@ -1,9 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
-    <color name="bg_obsidian">#090D16</color>
-    <color name="card_dark">#131B2E</color>
-    <color name="accent_purple">#8B5CF6</color>
-    <color name="accent_green">#10B981</color>
+    <color name="klip_bg">#F3F4F0</color>
+    <color name="klip_ink">#0B0E10</color>
+    <color name="klip_lime">#C8F25A</color>
 </resources>

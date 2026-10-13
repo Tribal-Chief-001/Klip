@@ -20,6 +20,11 @@ required-features = ["bindgen"]
 # Only needed to (re)generate the Kotlin bindings: cargo run --features bindgen --bin uniffi-bindgen
 bindgen = ["uniffi/cli"]
 
+[target.'cfg(target_os = "android")'.dependencies]
+# Already in the dependency tree through iroh's DNS resolver; used to publish the app context to it.
+jni = "0.21"
+ndk-context = "0.1"
+
 [dependencies]
 klip-core = { workspace = true }
 klip-proto = { workspace = true }

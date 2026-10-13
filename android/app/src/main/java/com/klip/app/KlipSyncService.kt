@@ -45,6 +45,12 @@ class KlipSyncService : Service() {
         const val NOTIFICATION_CLIP_ID = 40402
         private const val TAG = "KlipSyncService"
 
+        /** Stop and start again, e.g. after the relay setting changed. */
+        fun restart(ctx: Context) {
+            ctx.stopService(Intent(ctx, KlipSyncService::class.java))
+            Handler(Looper.getMainLooper()).postDelayed({ start(ctx) }, 600)
+        }
+
         fun start(ctx: Context) {
             val intent = Intent(ctx, KlipSyncService::class.java).setAction(ACTION_START)
             try {
@@ -212,7 +218,7 @@ class KlipSyncService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
-            .setSmallIcon(android.R.drawable.ic_menu_agenda)
+            .setSmallIcon(R.drawable.ic_stat_klip)
             .setContentTitle("Klip")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))

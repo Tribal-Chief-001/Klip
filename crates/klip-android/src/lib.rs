@@ -390,3 +390,38 @@ impl KlipEngine {
         self.rt.block_on(self.core.stop());
     }
 }
+
+/// Hands the Android application context to the networking stack.
+///
+/// iroh reads the phone's real DNS servers through JNI (`ConnectivityManager`), which needs a JVM and
+/// an application context published to `ndk_context`. Without it iroh falls back to public DNS servers
+/// (only possible because panics unwind; with `panic = "abort"` the process dies), and those can be
+/// blocked on some networks. Kotlin calls this once, before the engine starts
+/// (`KlipRuntime.installAndroidContext`).
+#[cfg(target_os = "android")]
+mod android_context {
+    use jni::objects::{JClass, JObject};
+    use jni::JNIEnv;
+    use std::ffi::c_void;
+    use std::sync::Once;
+
+    #[no_mangle]
+    pub extern "system" fn Java_com_klip_app_KlipRuntime_installAndroidContext(
+        env: JNIEnv,
+        _class: JClass,
+        context: JObject,
+    ) {
+        static ONCE: Once = Once::new();
+        ONCE.call_once(|| {
+            let Ok(vm) = env.get_java_vm() else { return };
+            let Ok(global) = env.new_global_ref(&context) else {
+                return;
+            };
+            let vm_ptr = vm.get_java_vm_pointer() as *mut c_void;
+            let ctx_ptr = global.as_obj().as_raw() as *mut c_void;
+            // Both pointers must stay valid until the process exits.
+            std::mem::forget(global);
+            unsafe { ndk_context::initialize_android_context(vm_ptr, ctx_ptr) };
+        });
+    }
+}

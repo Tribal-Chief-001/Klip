@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Rust engine for Android and generate the Kotlin bindings.
 #
-#   android/build-core.sh                 # all ABIs
+#   android/build-core.sh                 # arm64-v8a + armeabi-v7a (the real phone ABIs)
 #   android/build-core.sh arm64-v8a       # one ABI (faster, enough for most phones since 2017)
 #
 # Needs: rustup targets (aarch64-linux-android armv7-linux-androideabi x86_64-linux-android),
@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 
 : "${ANDROID_NDK_HOME:?set ANDROID_NDK_HOME, e.g. \$HOME/Android/Sdk/ndk/28.2.13676358}"
 ABIS=("$@")
-[ ${#ABIS[@]} -eq 0 ] && ABIS=(arm64-v8a armeabi-v7a x86_64)
+[ ${#ABIS[@]} -eq 0 ] && ABIS=(arm64-v8a armeabi-v7a)
 
 targets=()
 for abi in "${ABIS[@]}"; do targets+=(-t "$abi"); done

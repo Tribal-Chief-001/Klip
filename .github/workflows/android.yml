@@ -36,7 +36,7 @@ jobs:
       - name: Set up Rust toolchain (Android targets)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi
 
       - name: Cache cargo registry and build output
         uses: actions/cache@v4
@@ -78,18 +78,27 @@ jobs:
             echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/klip-release.jks"
             export KLIP_KEYSTORE_FILE="$RUNNER_TEMP/klip-release.jks"
             gradle assembleRelease --stacktrace
-            echo "APK_PATH=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+            echo "APK_DIR=app/build/outputs/apk/release" >> "$GITHUB_ENV"
+            echo "APK_SUFFIX=release" >> "$GITHUB_ENV"
           else
             echo "::warning::No signing secrets available (fork or missing secrets): building a DEBUG-signed APK"
             gradle assembleDebug --stacktrace
-            echo "APK_PATH=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+            echo "APK_DIR=app/build/outputs/apk/debug" >> "$GITHUB_ENV"
+            echo "APK_SUFFIX=debug" >> "$GITHUB_ENV"
           fi
 
-      - name: Rename APK and write checksum
+      # One APK per CPU type (Gradle ABI splits). Klip-Android.apk is arm64-v8a: every phone made since
+      # about 2017. Klip-Android-armv7.apk is only for old 32-bit-only phones.
+      - name: Rename APKs and write checksums
         run: |
-          cp "android/$APK_PATH" ./Klip-Android.apk
+          cp "android/$APK_DIR/app-arm64-v8a-$APK_SUFFIX.apk" ./Klip-Android.apk
+          cp "android/$APK_DIR/app-armeabi-v7a-$APK_SUFFIX.apk" ./Klip-Android-armv7.apk
           sha256sum Klip-Android.apk > Klip-Android.apk.sha256
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs Klip-Android.apk | head -3 || true
+          sha256sum Klip-Android-armv7.apk > Klip-Android-armv7.apk.sha256
+          ls -l Klip-Android*.apk
+          for f in Klip-Android.apk Klip-Android-armv7.apk; do
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$f" | head -3 || true
+          done
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -98,6 +107,8 @@ jobs:
           path: |
             ./Klip-Android.apk
             ./Klip-Android.apk.sha256
+            ./Klip-Android-armv7.apk
+            ./Klip-Android-armv7.apk.sha256
 
       - name: Attach APK to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
@@ -106,6 +117,8 @@ jobs:
           files: |
             ./Klip-Android.apk
             ./Klip-Android.apk.sha256
+            ./Klip-Android-armv7.apk
+            ./Klip-Android-armv7.apk.sha256
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

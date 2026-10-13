@@ -14,6 +14,19 @@ object KlipRuntime {
     var engine: KlipEngine? = null
         private set
 
+    /** Publishes the app context to the Rust networking stack (system DNS lookup). Implemented in klip-android. */
+    @JvmStatic
+    private external fun installAndroidContext(context: Context)
+
+    private val contextInstalled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun installContextOnce(ctx: Context) {
+        if (contextInstalled.compareAndSet(false, true)) {
+            System.loadLibrary("klip_android")
+            installAndroidContext(ctx.applicationContext)
+        }
+    }
+
     private val lock = Any()
 
     /** What Klip itself last put on the clipboard (and when): used to tell its own writes apart from user copies. */
@@ -41,6 +54,7 @@ object KlipRuntime {
 
     /** Starts the engine once. Blocking: call from a background thread. */
     fun ensureStarted(ctx: Context, bridge: ClipboardBridge): KlipEngine = synchronized(lock) {
+        installContextOnce(ctx)
         engine ?: KlipEngine.start(
             ctx.applicationContext.filesDir.absolutePath,
             deviceName(),

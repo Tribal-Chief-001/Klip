@@ -1998,11 +1998,13 @@ dependencies = [
 name = "klip-android"
 version = "0.1.0"
 dependencies = [
+ "jni 0.21.1",
  "klip-core",
  "klip-crypto",
  "klip-net",
  "klip-platform",
  "klip-proto",
+ "ndk-context",
  "tokio",
  "uniffi",
 ]
