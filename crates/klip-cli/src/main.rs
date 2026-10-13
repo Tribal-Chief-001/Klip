@@ -1,13 +1,12 @@
 use clap::{Parser, Subcommand};
 use klip_cli::client::{ClientError, DaemonClient};
-use klip_cli::ops::{request_cap, unpair_all_compat};
+use klip_cli::ops::{log_tail, request_cap, spawn_daemon_process, unpair_all_compat, Spawned};
 use klip_cli::ui::{print_history, print_pair_card, print_pair_request, print_status_card};
 use klip_daemon::config::DaemonConfig;
 use klip_daemon::engine::DaemonEngine;
 use klip_proto::ipc::{IpcRequest, IpcResponse};
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -100,6 +99,18 @@ async fn main() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
+    // A bare `klip` on a terminal opens the full-screen app. Everything else (arguments, pipes,
+    // TERM=dumb) goes through clap exactly as before, so scripts and help texts are unchanged.
+    #[cfg(unix)]
+    {
+        if std::env::args_os().len() == 1 && can_open_tui() {
+            if let Err(e) = open_tui().await {
+                eprintln!("{} {}", "error:".red().bold(), e);
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
         eprintln!("{} {}", "error:".red().bold(), e);
@@ -108,6 +119,26 @@ async fn main() {
 }
 
 type AnyResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+#[cfg(unix)]
+fn can_open_tui() -> bool {
+    let term_ok = std::env::var("TERM")
+        .map(|t| !t.is_empty() && t != "dumb")
+        .unwrap_or(false);
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && term_ok
+}
+
+#[cfg(unix)]
+async fn open_tui() -> AnyResult<()> {
+    let paths = klip_daemon::config::user_paths();
+    let api = std::sync::Arc::new(klip_cli::api::IpcDaemonApi::new(
+        DaemonClient::for_current_user(),
+        paths.clone(),
+    ));
+    let env = klip_tui::theme::TuiEnv::from_process(paths);
+    klip_tui::runtime::run(api, env).await?;
+    Ok(())
+}
 
 async fn rpc(req: IpcRequest) -> AnyResult<IpcResponse> {
     match DaemonClient::send_request(&req).await {
@@ -273,20 +304,10 @@ async fn start(foreground: bool) -> AnyResult<()> {
     }
 
     // Background: re-launch ourselves detached; keep a private log so failures are not invisible.
-    let log_path = paths.dir().join("daemon.log");
-    let log = open_private_log(&log_path)?;
-    let mut cmd = Command::new(std::env::current_exe()?);
-    cmd.arg("start")
-        .arg("--foreground")
-        .stdin(std::process::Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let mut child = cmd.spawn()?;
+    let Spawned {
+        mut child,
+        log_path,
+    } = spawn_daemon_process(&paths)?;
 
     for _ in 0..120 {
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -304,12 +325,7 @@ async fn start(foreground: bool) -> AnyResult<()> {
         // The daemon refuses to start for a reason (already running, bad config, no network...):
         // say why right away instead of waiting for the timeout.
         if let Ok(Some(status)) = child.try_wait() {
-            let tail = std::fs::read_to_string(&log_path)
-                .map(|t| {
-                    let lines: Vec<&str> = t.lines().collect();
-                    lines[lines.len().saturating_sub(4)..].join("\n")
-                })
-                .unwrap_or_default();
+            let tail = log_tail(&log_path, 4);
             return Err(format!(
                 "Klip stopped right after starting ({status}). Last log lines:\n{tail}\n(log: {})",
                 log_path.display()
@@ -322,17 +338,6 @@ async fn start(foreground: bool) -> AnyResult<()> {
         log_path.display()
     )
     .into())
-}
-
-fn open_private_log(path: &std::path::Path) -> AnyResult<std::fs::File> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    Ok(opts.open(path)?)
 }
 
 async fn pair_host(lan: bool, ttl: u64) -> AnyResult<()> {
@@ -466,42 +471,8 @@ async fn history_clear(yes: bool) -> AnyResult<()> {
 }
 
 fn install_service() -> AnyResult<()> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            let dest = std::path::PathBuf::from(home).join(".config/systemd/user/klip.service");
-            klip_daemon::generate_systemd_unit_file(&dest)?;
-            println!(
-                "{} Installed systemd unit: {}\nNow run: systemctl --user enable --now klip.service",
-                "✓".green(),
-                dest.display()
-            );
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            let dest =
-                std::path::PathBuf::from(home).join("Library/LaunchAgents/com.klip.daemon.plist");
-            klip_daemon::generate_launchd_plist_file(&dest)?;
-            println!(
-                "{} Installed launchd agent: {}\nNow run: launchctl load {}",
-                "✓".green(),
-                dest.display(),
-                dest.display()
-            );
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let dest = klip_daemon::get_klip_dir().join("register-service.ps1");
-        klip_daemon::generate_windows_service_script(&dest)?;
-        println!(
-            "{} Wrote {}\nRun it in PowerShell: powershell -ExecutionPolicy Bypass -File \"{}\"",
-            "✓".green(),
-            dest.display(),
-            dest.display()
-        );
+    if let Some(message) = klip_cli::ops::install_service()? {
+        println!("{} {}", "✓".green(), message);
     }
     Ok(())
 }

@@ -70,7 +70,13 @@ where
     /// Draw if anything changed since the last draw (and clear first after Ctrl+L).
     pub fn draw(&mut self) -> io::Result<()> {
         if self.app.force_clear {
-            self.terminal.clear().map_err(io_err)?;
+            // `Terminal::clear` asks the terminal where the cursor is, which a raw-mode loop that is
+            // itself reading the keyboard cannot get answered (found with the pseudo-terminal test:
+            // "cursor position could not be read"). `resize` clears and resets the buffers without asking.
+            let size = self.terminal.size().map_err(io_err)?;
+            self.terminal
+                .resize(ratatui::layout::Rect::new(0, 0, size.width, size.height))
+                .map_err(io_err)?;
             self.app.force_clear = false;
             self.app.dirty = true;
         }

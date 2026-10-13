@@ -1,69 +1,7 @@
 //! The real `klip` binary against an isolated daemon (own config dir, in-memory clipboard).
 #![cfg(unix)]
-use std::io::Write;
-use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
-
-struct Isolated {
-    dir: PathBuf,
-}
-
-impl Isolated {
-    fn start(tag: &str, config: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("klip-cli-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.json"), config).unwrap();
-        let me = Self { dir };
-        let out = me.run(&["start"], None);
-        assert!(out.status.success(), "start failed: {}", text(&out));
-        me
-    }
-
-    fn run(&self, args: &[&str], stdin: Option<&[u8]>) -> Output {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_klip"));
-        cmd.args(args)
-            .env("KLIP_CONFIG_DIR", &self.dir)
-            .env("KLIP_CLIPBOARD", "memory")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        match stdin {
-            Some(bytes) => {
-                cmd.stdin(Stdio::piped());
-                let mut child = cmd.spawn().unwrap();
-                let mut sin = child.stdin.take().unwrap();
-                let data = bytes.to_vec();
-                let writer = std::thread::spawn(move || {
-                    let _ = sin.write_all(&data); // the CLI may stop reading early on an error
-                });
-                let out = child.wait_with_output().unwrap();
-                let _ = writer.join();
-                out
-            }
-            None => {
-                cmd.stdin(Stdio::null());
-                cmd.output().unwrap()
-            }
-        }
-    }
-}
-
-impl Drop for Isolated {
-    fn drop(&mut self) {
-        let _ = self.run(&["stop"], None);
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn text(o: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&o.stdout),
-        String::from_utf8_lossy(&o.stderr)
-    )
-}
-
-const LAN_ONLY: &str = r#"{"relay":"lan","lan_discovery":false}"#;
+mod common;
+use common::*;
 
 #[test]
 fn history_clear_forgets_the_clips() {
