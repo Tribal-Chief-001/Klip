@@ -9,8 +9,8 @@
 │  Largest clip   32.0 MiB                                 │
 │  LAN discovery  on                                       │
 │  Poll interval  100 ms (advanced; edit config.json)      │
-│klip 0.3.6 · daemon 0.4.0                                 │
-│The daemon runs another version than this program: restart│
-│it (klip stop, klip start).                               │
+│klip 0.3.6 · daemon 0.3.6                                 │
+│                                                          │
+│                                                          │
 └──────────────────────────────────────────────────────────┘
 ↑↓ select · Enter edit/toggle · s save · u discard · R rest…

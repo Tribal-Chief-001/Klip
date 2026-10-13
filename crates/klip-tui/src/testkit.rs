@@ -41,7 +41,7 @@ pub fn sample_hello() -> HelloInfo {
     let max_clip = 32 * 1024 * 1024;
     HelloInfo {
         protocol: IPC_PROTOCOL_VERSION,
-        daemon_version: "0.4.0".to_string(),
+        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
         capabilities: vec![
             CAP_UNPAIR_ALL.to_string(),
             CAP_COPY_TO_CLIPBOARD.to_string(),

@@ -240,6 +240,8 @@ pub struct AppState {
     pub log: LogState,
     pub log_path: String,
     pub settings: SettingsState,
+    pub told_old: bool,
+    pub told_version: bool,
     /// Draw QR codes with light modules as blocks (right for light-on-dark terminals).
     pub invert_qr: bool,
 }
@@ -270,6 +272,8 @@ impl AppState {
             log: LogState::default(),
             log_path: "daemon.log".to_string(),
             settings: SettingsState::default(),
+            told_old: false,
+            told_version: false,
             invert_qr: true,
         }
     }
@@ -745,9 +749,29 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
         Reply::Hello(res) => {
             app.inflight.hello = false;
             match res {
-                Ok(h) => app.hello = HelloState::New(h),
+                Ok(h) => {
+                    let mine = env!("CARGO_PKG_VERSION");
+                    if h.daemon_version != mine && !app.told_version {
+                        app.told_version = true;
+                        app.toast(
+                            ToastKind::Warn,
+                            format!(
+                                "Klip daemon {} differs from this program {mine}: restart it (klip stop, klip start)",
+                                h.daemon_version
+                            ),
+                        );
+                    }
+                    app.hello = HelloState::New(h);
+                }
                 Err(ApiError::Unsupported) | Err(ApiError::Refused(_)) => {
-                    app.hello = HelloState::Old
+                    if !app.told_old {
+                        app.told_old = true;
+                        app.toast(
+                            ToastKind::Info,
+                            "The running Klip is older than this program: restart it to unlock copy-back and clear history",
+                        );
+                    }
+                    app.hello = HelloState::Old;
                 }
                 Err(_) => {} // no answer says nothing about the protocol; asked again after reconnecting
             }
@@ -1198,5 +1222,37 @@ mod tests {
             Msg::Reply(Reply::DaemonStarted(Err(ApiError::Refused("boom".into())))),
         );
         assert!(matches!(a.modal, Some(Modal::Notice { .. })));
+    }
+
+    #[test]
+    fn an_old_daemon_is_mentioned_once_and_a_version_mismatch_once() {
+        let mut a = app();
+        update(&mut a, Msg::Reply(Reply::Hello(Err(ApiError::Unsupported))));
+        assert!(
+            a.toasts.iter().any(|t| t.text.contains("older")),
+            "{:?}",
+            a.toasts
+        );
+        a.toasts.clear();
+        update(&mut a, Msg::Reply(Reply::Hello(Err(ApiError::Unsupported))));
+        assert!(a.toasts.is_empty(), "only once per session");
+
+        let mut b = app();
+        let mut hello = crate::testkit::sample_hello();
+        hello.daemon_version = "0.0.1".to_string();
+        update(&mut b, Msg::Reply(Reply::Hello(Ok(hello.clone()))));
+        assert!(
+            b.toasts.iter().any(|t| t.text.contains("0.0.1")),
+            "{:?}",
+            b.toasts
+        );
+        b.toasts.clear();
+        update(&mut b, Msg::Reply(Reply::Hello(Ok(hello))));
+        assert!(b.toasts.is_empty());
+        let mut c = app();
+        let mut same = crate::testkit::sample_hello();
+        same.daemon_version = env!("CARGO_PKG_VERSION").to_string();
+        update(&mut c, Msg::Reply(Reply::Hello(Ok(same))));
+        assert!(c.toasts.is_empty(), "equal versions say nothing");
     }
 }

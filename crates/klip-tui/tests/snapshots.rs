@@ -296,3 +296,94 @@ fn settings_screen_states() {
     a.settings.load_error = Some("config.json: expected value at line 1 column 1".into());
     snap("settings_broken_file", &a, 100, 30);
 }
+
+#[test]
+fn every_colour_mode_uses_the_signal_colour_for_the_active_state_and_never_relies_on_colour_alone()
+{
+    use klip_tui::theme::{Theme, TuiEnv};
+    use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier};
+    use ratatui::Terminal;
+    let a = up(100, 30, two_peers());
+    type Case = (&'static [(&'static str, &'static str)], Color, bool);
+    let cases: [Case; 5] = [
+        (
+            &[("COLORTERM", "truecolor")],
+            Color::Rgb(200, 242, 90),
+            false,
+        ),
+        (
+            &[("COLORTERM", "truecolor"), ("KLIP_THEME", "light")],
+            Color::Rgb(77, 122, 0),
+            false,
+        ),
+        (&[("TERM", "xterm-256color")], Color::Indexed(192), false),
+        (&[("TERM", "xterm")], Color::Green, false),
+        (
+            &[("NO_COLOR", "1"), ("COLORTERM", "truecolor")],
+            Color::Reset,
+            true,
+        ),
+    ];
+    for (vars, want, plain) in cases {
+        let env = TuiEnv::from_vars(
+            klip_core::KlipPaths::from_dir(std::env::temp_dir().join("klip-tui-theme-snap")),
+            |k| {
+                vars.iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| v.to_string())
+            },
+        );
+        let theme = Theme::from_env(&env);
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| klip_tui::view::view(&a, &theme, f)).unwrap();
+        let buf = term.backend().buffer();
+        // Find the "ACTIVE" word in the status box and look at its first cell.
+        let mut found = None;
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect();
+            if let Some(pos) = row.find("● ACTIVE").filter(|_| y > 0) {
+                found = Some((row[..pos].chars().count() as u16, y));
+                break;
+            }
+        }
+        let (x, y) = found.expect("the ACTIVE marker is on screen");
+        let cell = &buf[(x, y)];
+        if plain {
+            assert_eq!(cell.fg, Color::Reset);
+            assert!(
+                cell.modifier.contains(Modifier::BOLD),
+                "plain mode emphasises with bold"
+            );
+        } else {
+            assert_eq!(cell.fg, want);
+        }
+        // The state is always also written in words.
+        assert!(buf[(x + 2, y)].symbol() == "A");
+    }
+}
+
+#[test]
+fn every_screen_lists_its_keys_in_the_help_and_in_the_hints() {
+    use klip_tui::screens::{help_lines, hints};
+    for screen in Screen::ALL {
+        let mut a = up(100, 30, two_peers());
+        a.screen = screen;
+        let help = help_lines(&a);
+        assert!(
+            help.iter().any(|(k, _)| k.contains("1-7")),
+            "{screen:?} must list the global keys"
+        );
+        if screen != Screen::Home {
+            assert!(
+                help.len() >= 9,
+                "{screen:?} must list its own keys: {help:?}"
+            );
+        }
+        if screen != Screen::Pair && screen != Screen::Home {
+            assert!(!hints(&a).is_empty(), "{screen:?} needs key hints");
+        }
+    }
+}

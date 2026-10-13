@@ -23,8 +23,8 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│klip 0.3.6 · daemon 0.4.0                                                                         │
-│The daemon runs another version than this program: restart it (klip stop, klip start).            │
+│klip 0.3.6 · daemon 0.3.6                                                                         │
+│                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ↑↓ select · Enter edit/toggle · s save · u discard · R restart · 1-7 screens · p pause · ? help · q…

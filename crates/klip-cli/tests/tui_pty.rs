@@ -113,7 +113,11 @@ impl Pty {
 }
 
 fn running() -> (Isolated, Pty) {
-    let d = Isolated::start(&format!("pty{}", std::process::id() % 1000), LAN_ONLY);
+    // Every call gets its own directory and daemon: tests run in parallel threads, and sharing one
+    // (as a tag from the process id alone did) made them stop each other's daemon.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = Isolated::start(&format!("pty{n}"), LAN_ONLY);
     let p = Pty::spawn(&[], &d.env_pairs(), (100, 30));
     (d, p)
 }
