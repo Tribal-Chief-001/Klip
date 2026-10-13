@@ -7,3 +7,4 @@
 
 pub mod fmt;
 pub mod sanitize;
+pub mod textbuf;
