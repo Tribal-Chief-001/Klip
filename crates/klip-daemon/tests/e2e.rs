@@ -45,16 +45,26 @@ fn fresh_dir(tag: &str) -> PathBuf {
 }
 
 async fn start_daemon(name: &str, dir: PathBuf, lan_discovery: bool) -> TestDaemon {
+    start_daemon_with(name, dir, lan_discovery, |_| {}).await
+}
+
+async fn start_daemon_with(
+    name: &str,
+    dir: PathBuf,
+    lan_discovery: bool,
+    tweak: impl FnOnce(&mut DaemonConfig),
+) -> TestDaemon {
     let paths = KlipPaths::from_dir(&dir);
     let (_ks, identity) = KeyStore::load_or_create(paths.keystore(), name).unwrap();
     let clipboard = Arc::new(MemoryClipboardDriver::new(identity.node_id));
-    let config = DaemonConfig {
+    let mut config = DaemonConfig {
         device_name: name.to_string(),
         relay: RelayMode::Lan,
         poll_interval_ms: 20,
         lan_discovery,
         ..DaemonConfig::default()
     };
+    tweak(&mut config);
     let engine = Arc::new(
         DaemonEngine::init_with(config, paths, Some(clipboard.clone()))
             .await
@@ -631,4 +641,187 @@ async fn code_links_and_awkward_text_arrive_byte_for_byte() {
     }
     a.stop().await;
     b.stop().await;
+}
+
+fn hello_of(r: IpcResponse) -> klip_proto::ipc::HelloInfo {
+    match r {
+        IpcResponse::Hello(h) => h,
+        other => panic!("expected Hello, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hello_reports_version_capabilities_config_and_the_request_cap() {
+    let a = start_daemon_with("Alpha", fresh_dir("h1"), false, |c| c.max_clip_bytes = 5000).await;
+    let h = hello_of(a.ipc(IpcRequest::Hello { client_protocol: 2 }).await);
+    assert_eq!(h.protocol, klip_proto::ipc::IPC_PROTOCOL_VERSION);
+    assert_eq!(h.daemon_version, env!("CARGO_PKG_VERSION"));
+    for cap in ["unpair_all", "copy_to_clipboard", "clear_history"] {
+        assert!(
+            h.capabilities.iter().any(|c| c == cap),
+            "missing capability {cap}"
+        );
+    }
+    assert_eq!(h.config.device_name, "Alpha");
+    assert_eq!(h.config.relay, "lan");
+    assert_eq!(h.config.max_clip_bytes, 5000);
+    assert_eq!(h.max_request_bytes, 5000 + 64 * 1024);
+    a.stop().await;
+}
+
+#[tokio::test]
+async fn daemon_version_is_the_release_version_not_the_stale_placeholder() {
+    assert_ne!(env!("CARGO_PKG_VERSION"), "0.1.0");
+}
+
+#[tokio::test]
+async fn unpair_all_removes_every_device_and_reports_the_names() {
+    let a = start_daemon("Alpha", fresh_dir("u1a"), false).await;
+    let b = start_daemon("Beta", fresh_dir("u1b"), false).await;
+    let c = start_daemon("Gamma", fresh_dir("u1c"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    assert!(matches!(
+        pair(&a, &c, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    match a.ipc(IpcRequest::GetStatus).await {
+        IpcResponse::Status(s) => assert_eq!(s.peers.len(), 2),
+        other => panic!("{other:?}"),
+    }
+    match a.ipc(IpcRequest::UnpairAll).await {
+        IpcResponse::UnpairedAll {
+            mut removed,
+            failed,
+        } => {
+            removed.sort();
+            assert_eq!(removed, ["Beta", "Gamma"]);
+            assert!(failed.is_empty(), "{failed:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    match a.ipc(IpcRequest::GetStatus).await {
+        IpcResponse::Status(s) => assert!(s.peers.is_empty()),
+        other => panic!("{other:?}"),
+    }
+    // Nothing left to remove: still a clean answer.
+    assert!(matches!(
+        a.ipc(IpcRequest::UnpairAll).await,
+        IpcResponse::UnpairedAll { removed, failed } if removed.is_empty() && failed.is_empty()
+    ));
+    a.stop().await;
+    b.stop().await;
+    c.stop().await;
+}
+
+#[tokio::test]
+async fn copy_to_clipboard_restores_an_item_without_sending_it_out_again() {
+    let a = start_daemon("Alpha", fresh_dir("c1a"), false).await;
+    let b = start_daemon("Beta", fresh_dir("c1b"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+
+    a.clipboard.user_copy("first");
+    assert!(
+        wait_until(10, || b.clipboard.current_text().as_deref()
+            == Some("first"))
+        .await
+    );
+    b.clipboard.user_copy("second");
+    assert!(
+        wait_until(10, || a.clipboard.current_text().as_deref()
+            == Some("second"))
+        .await
+    );
+
+    let id = match b.ipc(IpcRequest::GetHistory { limit: 10 }).await {
+        IpcResponse::History(items) => {
+            items
+                .iter()
+                .find(|i| i.full_content == b"first")
+                .expect("'first' is in Beta's history")
+                .id
+        }
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(
+        b.ipc(IpcRequest::CopyToClipboard { id }).await,
+        IpcResponse::Copied
+    ));
+    assert_eq!(b.clipboard.current_text().as_deref(), Some("first"));
+    // If the copy had been broadcast as a new local copy, Alpha would now show "first".
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(a.clipboard.current_text().as_deref(), Some("second"));
+
+    // An unknown id is a plain error.
+    match b.ipc(IpcRequest::CopyToClipboard { id: [9; 16] }).await {
+        IpcResponse::Error(e) => assert!(e.contains("no longer in the history"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn clear_history_forgets_the_clips() {
+    let a = start_daemon("Alpha", fresh_dir("ch1"), false).await;
+    let b = start_daemon("Beta", fresh_dir("ch2"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    a.clipboard.user_copy("remember me");
+    assert!(
+        wait_until(10, || b.clipboard.current_text().as_deref()
+            == Some("remember me"))
+        .await
+    );
+    assert!(matches!(
+        b.ipc(IpcRequest::GetHistory { limit: 10 }).await,
+        IpcResponse::History(items) if !items.is_empty()
+    ));
+    assert!(matches!(
+        b.ipc(IpcRequest::ClearHistory).await,
+        IpcResponse::HistoryCleared
+    ));
+    assert!(matches!(
+        b.ipc(IpcRequest::GetHistory { limit: 10 }).await,
+        IpcResponse::History(items) if items.is_empty()
+    ));
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn a_request_over_the_cap_gets_a_clear_error() {
+    let a = start_daemon_with("Alpha", fresh_dir("cap1"), false, |c| {
+        c.max_clip_bytes = 1000
+    })
+    .await;
+    let mut s = UnixStream::connect(a.sock()).await.unwrap();
+    // Announce 1 MB (cap is 1000 + 64 KiB) and send nothing else: the answer must come anyway.
+    s.write_all(&1_000_000u32.to_be_bytes()).await.unwrap();
+    let mut len = [0u8; 4];
+    s.read_exact(&mut len).await.unwrap();
+    let mut buf = vec![0u8; u32::from_be_bytes(len) as usize];
+    s.read_exact(&mut buf).await.unwrap();
+    match deserialize_ipc_msg::<IpcResponse>(&buf).unwrap() {
+        IpcResponse::Error(e) => {
+            assert!(
+                e.contains("request too large") && e.contains("66536"),
+                "{e}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    // The daemon is still fine.
+    assert!(matches!(
+        a.ipc(IpcRequest::GetStatus).await,
+        IpcResponse::Status(_)
+    ));
+    a.stop().await;
 }

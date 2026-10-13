@@ -520,6 +520,51 @@ impl SyncCoordinator {
 
     // ----------------------------------------------------------------------------- status
 
+    /// Remove every linked device. Continues after a failure and reports both lists
+    /// (`removed` names, and `(name, reason)` for each failure).
+    pub async fn unpair_all(&self) -> (Vec<String>, Vec<(String, String)>) {
+        let mut removed = Vec::new();
+        let mut failed = Vec::new();
+        for peer in self.net.peers() {
+            let selector = node_of(&peer.id).fingerprint();
+            match self.unpair(&selector).await {
+                Ok(name) => removed.push(name),
+                Err(reason) => failed.push((peer.name, reason)),
+            }
+        }
+        (removed, failed)
+    }
+
+    /// Put a history item back on this device's clipboard. It goes through the same driver call as a
+    /// received clip, which records it in the echo shield, so it is not sent out again as a new copy.
+    pub async fn copy_history_item(&self, id: [u8; 16]) -> Result<(), String> {
+        let item = self
+            .history
+            .get_by_id(id)
+            .ok_or_else(|| "that clip is no longer in the history".to_string())?;
+        if item.full_content.is_empty() {
+            return Err(
+                "that clip was too large to keep in the history; copy it again on the device it came from"
+                    .to_string(),
+            );
+        }
+        let content_type = crate::history::sniff_content_type(&item.full_content);
+        let driver = Arc::clone(&self.driver);
+        let sensitive = item.is_sensitive;
+        let data = item.full_content;
+        tokio::task::spawn_blocking(move || {
+            driver
+                .write_clip_flagged(&content_type, &data, sensitive)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    pub fn clear_history(&self) {
+        self.history.clear();
+    }
+
     pub fn peer_status(&self) -> Vec<PeerStatusInfo> {
         let errors = self.last_errors.lock().unwrap();
         self.net

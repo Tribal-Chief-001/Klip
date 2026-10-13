@@ -55,7 +55,10 @@ fn help_of_every_subcommand() {
         ("help_resume.txt", vec!["resume", "--help"]),
         ("help_history.txt", vec!["history", "--help"]),
         ("help_send.txt", vec!["send", "--help"]),
-        ("help_install_service.txt", vec!["install-service", "--help"]),
+        (
+            "help_install_service.txt",
+            vec!["install-service", "--help"],
+        ),
     ] {
         check(name, &args, 0);
     }

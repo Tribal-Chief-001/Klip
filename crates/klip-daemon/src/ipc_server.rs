@@ -1,8 +1,12 @@
+use klip_core::RelayMode;
 use klip_core::Shutdown;
 use klip_core::SyncCoordinator;
 use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
-use klip_proto::ipc::{deserialize_ipc_msg, serialize_ipc_msg, IpcRequest, IpcResponse};
+use klip_proto::ipc::{
+    deserialize_ipc_msg, max_request_bytes, serialize_ipc_msg, ConfigInfo, HelloInfo, IpcRequest,
+    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
+};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,8 +14,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
-/// Largest request the control socket accepts (a `klip send` of a big text is the worst case).
-pub const MAX_IPC_REQUEST_BYTES: usize = 8 * 1024 * 1024;
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(10);
 const MIN_PAIR_TTL_SECS: u64 = 30;
 const MAX_PAIR_TTL_SECS: u64 = 600;
@@ -68,7 +70,8 @@ impl IpcServer {
         sync: Arc<SyncCoordinator>,
         shutdown: Arc<Shutdown>,
     ) {
-        let request = match timeout(IPC_IO_TIMEOUT, Self::read_request(&mut stream)).await {
+        let cap = max_request_bytes(sync.config.max_clip_bytes);
+        let request = match timeout(IPC_IO_TIMEOUT, Self::read_request(&mut stream, cap)).await {
             Ok(Ok(req)) => req,
             Ok(Err(msg)) => {
                 let _ = Self::send_response(&mut stream, &IpcResponse::Error(msg)).await;
@@ -81,21 +84,29 @@ impl IpcServer {
     }
 
     #[cfg(unix)]
-    async fn read_request(stream: &mut UnixStream) -> Result<IpcRequest, String> {
+    async fn read_request(stream: &mut UnixStream, cap: usize) -> Result<IpcRequest, String> {
         let mut len_buf = [0u8; 4];
         stream
             .read_exact(&mut len_buf)
             .await
             .map_err(|e| e.to_string())?;
         let len = u32::from_be_bytes(len_buf) as usize;
-        if len > MAX_IPC_REQUEST_BYTES {
-            return Err(format!("request too large ({len} bytes)"));
+        if len > cap {
+            return Err(format!(
+                "request too large ({len} bytes; this daemon accepts at most {cap})"
+            ));
         }
-        let mut buf = vec![0u8; len];
-        stream
-            .read_exact(&mut buf)
+        // Grow the buffer as bytes arrive. A client that announces a huge length and then sends
+        // nothing must not make the daemon reserve that much memory.
+        let mut buf = Vec::new();
+        let got = (&mut *stream)
+            .take(len as u64)
+            .read_to_end(&mut buf)
             .await
             .map_err(|e| e.to_string())?;
+        if got != len {
+            return Err("request ended before its announced length".to_string());
+        }
         deserialize_ipc_msg(&buf)
     }
 
@@ -200,6 +211,41 @@ impl IpcServer {
                         }
                     }
                 }
+            }
+            IpcRequest::Hello { client_protocol: _ } => {
+                let cfg = &sync.config;
+                IpcResponse::Hello(HelloInfo {
+                    protocol: IPC_PROTOCOL_VERSION,
+                    daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+                    capabilities: vec![
+                        CAP_UNPAIR_ALL.to_string(),
+                        CAP_COPY_TO_CLIPBOARD.to_string(),
+                        CAP_CLEAR_HISTORY.to_string(),
+                    ],
+                    config: ConfigInfo {
+                        device_name: cfg.device_name.clone(),
+                        relay: match cfg.relay {
+                            RelayMode::N0 => "n0".to_string(),
+                            RelayMode::Lan => "lan".to_string(),
+                        },
+                        max_history_items: cfg.max_history_items,
+                        max_clip_bytes: cfg.max_clip_bytes,
+                        lan_discovery: cfg.lan_discovery,
+                    },
+                    max_request_bytes: max_request_bytes(cfg.max_clip_bytes),
+                })
+            }
+            IpcRequest::UnpairAll => {
+                let (removed, failed) = sync.unpair_all().await;
+                IpcResponse::UnpairedAll { removed, failed }
+            }
+            IpcRequest::CopyToClipboard { id } => match sync.copy_history_item(id).await {
+                Ok(()) => IpcResponse::Copied,
+                Err(e) => IpcResponse::Error(e),
+            },
+            IpcRequest::ClearHistory => {
+                sync.clear_history();
+                IpcResponse::HistoryCleared
             }
             IpcRequest::StopDaemon => {
                 shutdown.trigger();
