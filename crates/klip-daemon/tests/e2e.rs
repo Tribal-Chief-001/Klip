@@ -542,3 +542,44 @@ async fn a_burst_of_copies_is_coalesced_and_the_last_one_wins() {
     a.stop().await;
     b.stop().await;
 }
+
+#[tokio::test]
+async fn a_30_mb_clip_is_delivered_and_an_oversized_one_is_refused_without_harm() {
+    let a = start_daemon("Alpha", fresh_dir("a11"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b11"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+
+    // 30 MB of text through the real capture path (clipboard -> daemon -> QUIC -> clipboard).
+    let big = "z".repeat(30 * 1000 * 1000);
+    let started = Instant::now();
+    a.clipboard.user_copy(&big);
+    assert!(
+        wait_until(60, || b.clipboard.current_text().map(|t| t.len())
+            == Some(big.len()))
+        .await,
+        "30 MB clip never arrived"
+    );
+    eprintln!("30 MB delivered in {:?}", started.elapsed());
+
+    // Above the 32 MiB limit: not delivered, nobody crashes, small clips still flow afterwards.
+    let too_big = "q".repeat(33 * 1024 * 1024);
+    a.clipboard.user_copy(&too_big);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_ne!(
+        b.clipboard.current_text().map(|t| t.len()),
+        Some(too_big.len()),
+        "an oversized clip must not be applied"
+    );
+    a.clipboard.user_copy("small again");
+    assert!(
+        wait_until(15, || b.clipboard.current_text().as_deref()
+            == Some("small again"))
+        .await,
+        "sync must keep working after an oversized clip"
+    );
+    a.stop().await;
+    b.stop().await;
+}
