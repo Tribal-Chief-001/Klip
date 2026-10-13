@@ -8,6 +8,8 @@ package com.klip.app
 object StatusText {
     class Summary(
         val title: String,
+        /** Title for the collapsed notification, where the Send button takes room: no device names. */
+        val shortTitle: String,
         /** Short line shown when the notification is collapsed. */
         val line: String,
         /** Full text shown when it is expanded. */
@@ -22,9 +24,9 @@ object StatusText {
     /** Blocking (engine calls): call from a background thread. */
     fun compute(): Summary {
         val engine = KlipRuntime.engine
-            ?: return Summary("Klip", "Starting…", "Starting…", false, null)
+            ?: return Summary("Klip", "Klip", "Starting…", "Starting…", false, null)
         val st = runCatching { engine.status() }.getOrNull()
-            ?: return Summary("Klip", "Not responding", "Not responding. Open Klip.", false, null)
+            ?: return Summary("Klip", "Klip", "Not responding", "Not responding. Open Klip.", false, null)
         val history = runCatching { engine.history(1u) }.getOrDefault(emptyList()).firstOrNull()
 
         val online = st.peers.filter { it.online }
@@ -33,6 +35,13 @@ object StatusText {
             st.peers.isEmpty() -> "Klip · No devices linked"
             online.isNotEmpty() -> "Klip · Connected to " + names(online.map { it.name })
             else -> "Klip · Waiting for " + names(st.peers.map { it.name })
+        }
+
+        val shortTitle = when {
+            st.paused -> "Klip · Paused"
+            st.peers.isEmpty() -> "Klip · No devices"
+            online.isNotEmpty() -> "Klip · Connected"
+            else -> "Klip · Waiting"
         }
 
         val lines = mutableListOf<String>()
@@ -50,7 +59,7 @@ object StatusText {
         if (online.isEmpty() && st.peers.isNotEmpty()) {
             st.peers.firstNotNullOfOrNull { it.lastError }?.let { lines += Fmt.plainPeerError(it) }
         }
-        return Summary(title, lines.first(), lines.joinToString("\n"), online.isNotEmpty(), online.firstOrNull()?.name)
+        return Summary(title, shortTitle, lines.first(), lines.joinToString("\n"), online.isNotEmpty(), online.firstOrNull()?.name)
     }
 
     private fun names(list: List<String>): String = when {

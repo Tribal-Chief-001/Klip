@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.ClipboardManager
 import android.content.IntentFilter
 import android.os.PowerManager
+import android.widget.RemoteViews
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -251,14 +252,29 @@ class KlipSyncService : Service() {
         )
         val extra = note?.takeIf { System.currentTimeMillis() < noteUntil }
         val body = if (extra != null) summary.body + "\n" + extra else summary.body
+        val line = extra ?: summary.line
+
+        // Custom views so "Send" sits in the collapsed notification: copy, pull the shade down, tap Send.
+        // (A normal notification action is only shown after expanding with the arrow.)
+        val collapsed = RemoteViews(packageName, R.layout.notification_collapsed).apply {
+            setTextViewText(R.id.title, summary.shortTitle)
+            setTextViewText(R.id.line, line)
+            setOnClickPendingIntent(R.id.send, send)
+        }
+        val expanded = RemoteViews(packageName, R.layout.notification_expanded).apply {
+            setTextViewText(R.id.title, summary.title)
+            setTextViewText(R.id.body, body)
+            setOnClickPendingIntent(R.id.send, send)
+        }
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_klip)
             .setColor(0xFF4D7A00.toInt())
             .setContentTitle(summary.title)
-            .setContentText(if (extra != null) extra else summary.line)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentText(line)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(collapsed)
+            .setCustomBigContentView(expanded)
             .setContentIntent(open)
-            .addAction(0, "Send clipboard", send)
             .setDeleteIntent(repost)
             .setOngoing(true)
             .setShowWhen(false)
@@ -270,7 +286,7 @@ class KlipSyncService : Service() {
     }
 
     private fun showForeground(text: String) {
-        val n = buildNotification(StatusText.Summary("Klip", text, text, false, null))
+        val n = buildNotification(StatusText.Summary("Klip", "Klip", text, text, false, null))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // dataSync has a 6 h/24 h limit and cannot start from BOOT_COMPLETED once an app targets
             // Android 15; an always-on peer connection is what specialUse is for.
