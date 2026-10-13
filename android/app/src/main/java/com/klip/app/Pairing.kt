@@ -167,9 +167,12 @@ class Pairing(
         s.body.add(secondaryButton(activity, pal, "Close") { s.dismiss() })
 
         var watcher: Job? = null
+        // The sheet is also dismissed by the code itself (to show the approval or the result). That must
+        // NOT cancel the pairing: cancelling declines the request that is waiting for approval.
+        var handedOver = false
         s.onDismiss {
             watcher?.cancel()
-            scope.launch(Dispatchers.IO) { runCatching { engine.pairCancel() } }
+            if (!handedOver) scope.launch(Dispatchers.IO) { runCatching { engine.pairCancel() } }
         }
         s.show()
 
@@ -186,6 +189,7 @@ class Pairing(
                 val p = withContext(Dispatchers.IO) { runCatching { engine.pairPoll() }.getOrNull() }
                 if (p != null) {
                     p.pairedDevice?.let {
+                        handedOver = true
                         s.dismiss()
                         showMessage("Linked with $it", "Klip will now share your clipboard with it.")
                         onLinked()
@@ -194,11 +198,13 @@ class Pairing(
                     val pending = p.pending
                     if (pending != null && !asked) {
                         asked = true
+                        handedOver = true
                         s.dismiss()
                         approve(engine, pending.deviceName, pending.fingerprint)
                         return@launch
                     }
                     if (!p.windowOpen && !asked) {
+                        handedOver = true
                         s.dismiss()
                         showMessage("The code expired", "Codes last two minutes. Open “Show my code” again.")
                         return@launch
@@ -220,8 +226,21 @@ class Pairing(
         s.body.add(primaryButton(activity, pal, "Approve") {
             s.dismiss()
             scope.launch {
-                withContext(Dispatchers.IO) { runCatching { engine.pairDecide(true) } }
+                val accepted = withContext(Dispatchers.IO) { runCatching { engine.pairDecide(true) }.getOrDefault(false) }
+                if (!accepted) {
+                    showMessage("That request is gone", "The other device stopped waiting. Open “Show my code” again and let it scan the new code.")
+                    return@launch
+                }
+                // The host learns about the new device a moment after approving; wait for that and say so.
+                var linked: String? = null
+                for (i in 0 until 30) {
+                    linked = withContext(Dispatchers.IO) { runCatching { engine.pairPoll().pairedDevice }.getOrNull() }
+                    if (linked != null) break
+                    delay(500)
+                }
                 onLinked()
+                if (linked != null) showMessage("Linked with $linked", "Klip will now share your clipboard with it.")
+                else showMessage("Approved", "The other device may need a few seconds to finish. Check the Devices list.")
             }
         }, bottom = 10)
         s.body.add(secondaryButton(activity, pal, "Decline") {

@@ -161,3 +161,57 @@ fn declined_pairing_and_bad_tickets() {
     a.stop();
     b.stop();
 }
+
+/// The phone-to-phone flow as the app drives it: the host shows a code, a request arrives, the person
+/// reads the fingerprint (seconds), then approves. A request must stay pending until then, and the
+/// host must hear about the new device afterwards.
+#[test]
+fn a_waiting_request_survives_until_the_host_decides_and_the_host_is_told() {
+    let (host, _) = engine("p6", "HostPhone");
+    let (joiner, _) = engine("p7", "JoinPhone");
+    let ticket = host.pair_start(60, true).unwrap();
+    let j = Arc::clone(&joiner);
+    let t = ticket.ticket.clone();
+    let handle = std::thread::spawn(move || j.pair_join(t).map(|d| d.name));
+    assert!(wait_until(10, || host.pair_poll().pending.is_some()));
+
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        host.pair_poll().pending.is_some(),
+        "a request waiting for approval must stay pending"
+    );
+    assert!(host.pair_decide(true));
+    assert_eq!(handle.join().unwrap().unwrap(), "HostPhone");
+
+    let mut told = None;
+    assert!(
+        wait_until(10, || {
+            told = host.pair_poll().paired_device;
+            told.is_some()
+        }),
+        "the host was never told about the new device"
+    );
+    assert_eq!(told.as_deref(), Some("JoinPhone"));
+    host.stop();
+    joiner.stop();
+}
+
+/// Cancelling pairing (what closing the code sheet does) declines a request that is still waiting.
+/// The app must therefore never cancel as a side effect of showing the approval screen.
+#[test]
+fn cancelling_while_a_request_waits_declines_it() {
+    let (host, _) = engine("p8", "HostPhone");
+    let (joiner, _) = engine("p9", "JoinPhone");
+    let ticket = host.pair_start(60, true).unwrap();
+    let j = Arc::clone(&joiner);
+    let handle = std::thread::spawn(move || j.pair_join(ticket.ticket).map(|d| d.name));
+    assert!(wait_until(10, || host.pair_poll().pending.is_some()));
+    host.pair_cancel();
+    assert!(
+        handle.join().unwrap().is_err(),
+        "the waiting request is declined"
+    );
+    assert!(host.status().peers.is_empty());
+    host.stop();
+    joiner.stop();
+}
