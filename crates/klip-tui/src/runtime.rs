@@ -158,6 +158,18 @@ async fn run_effect(api: Arc<dyn DaemonApi>, fx: Effect) -> Reply {
         Effect::CopyItem(id) => Reply::Copied(api.copy_to_clipboard(id).await),
         Effect::ClearHistory => Reply::HistoryCleared(api.clear_history().await),
         Effect::Send(text) => Reply::Sent(api.send(text).await),
+        Effect::LoadFile(path) => {
+            let shown = path.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                crate::files::load_text_file(&path, crate::files::MAX_LOADED_FILE_BYTES)
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+            Reply::FileLoaded {
+                path: shown,
+                result,
+            }
+        }
     }
 }
 
@@ -193,6 +205,10 @@ fn failed_reply(fx: &Effect, e: ApiError) -> Reply {
         Effect::CopyItem(_) => Reply::Copied(Err(e)),
         Effect::ClearHistory => Reply::HistoryCleared(Err(e)),
         Effect::Send(_) => Reply::Sent(Err(e)),
+        Effect::LoadFile(p) => Reply::FileLoaded {
+            path: p.clone(),
+            result: Err(e.plain()),
+        },
     }
 }
 

@@ -193,3 +193,47 @@ fn history_screen() {
     a.history.items.clear();
     snap("history_empty", &a, 100, 30);
 }
+
+#[test]
+fn send_screen_states() {
+    use klip_tui::api::SendReport;
+    use klip_tui::screens::send::{LargePayload, SendOutcome};
+    let mut a = up(100, 30, two_peers());
+    a.screen = Screen::Send;
+    snap("send_empty", &a, 100, 30);
+    a.send.focus = true;
+    a.send.buf.insert_str(
+        "fn main() {\n\tprintln!(\"héllo 日本語 \u{1F980}\");\n}\nevil \x1b[2J\u{202E}text",
+    );
+    snap("send_text", &a, 100, 30);
+    snap("send_text", &a, 60, 16);
+    a.send.result = Some(SendOutcome::Done(SendReport {
+        bytes: 70,
+        delivered: vec!["Vivo V2253".into()],
+        failed: vec![(
+            "Pixel 8".into(),
+            "the other device could not write its clipboard".into(),
+        )],
+    }));
+    snap("send_result", &a, 100, 30);
+    a.send.result = Some(SendOutcome::Failed(
+        "30.0 MiB is over the limit of 10 B per clip".into(),
+    ));
+    snap("send_failed", &a, 100, 30);
+    a.send.sending = true;
+    snap("send_sending", &a, 100, 30);
+    a.send.sending = false;
+    a.send.prompt = Some(klip_tui::textbuf::TextBuf::from_text(
+        "~/notes/todo.txt",
+        4096,
+    ));
+    snap("send_prompt", &a, 100, 30);
+    a.send.prompt = None;
+    a.send.buf.clear();
+    a.send.focus = false;
+    a.send.large = Some(LargePayload {
+        path: "/tmp/big.log".into(),
+        text: "log line\n".repeat(200_000),
+    });
+    snap("send_large", &a, 100, 30);
+}

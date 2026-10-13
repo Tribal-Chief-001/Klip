@@ -1,0 +1,16 @@
+●─● klip   1  2  3  4  5 Send  6  7                 ● ACTIVE
+┌ Send text to all devices ────────────────────────────────┐
+│fn main() {                                               │
+│    println!("héllo 日本語 🦀");                          │
+│}                                                         │
+│evil ␛[2J⟦U+202E⟧text                                     │
+│                                                          │
+│                                                          │
+│                                                          │
+└───────────────────────────────────────── 66 B / 32.0 MiB ┘
+┌ Result ──────────────────────────────────────────────────┐
+│Ctrl+S or F5 sends · Ctrl+O loads a file · Ctrl+U clears ·│
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+Esc leave the field · Alt+1-7 screens · Ctrl+C quit

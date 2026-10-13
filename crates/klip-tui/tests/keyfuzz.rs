@@ -81,7 +81,7 @@ fn random_reply(rng: &mut StdRng) -> Reply {
             )
         })
         .collect();
-    match rng.gen_range(0..20) {
+    match rng.gen_range(0..24) {
         0..=2 => Reply::Status(Ok(sample_status(peers))),
         3 => Reply::Status(Err(ApiError::DaemonDown)),
         4 => Reply::Status(Err(ApiError::Timeout(15))),
@@ -125,11 +125,24 @@ fn random_reply(rng: &mut StdRng) -> Reply {
             .map(|i| sample_item(i + 1, "clip \x1b[2J 日本\n\u{202e}x", i % 2 == 0))
             .collect())),
         18 => Reply::History(Err(ApiError::DaemonDown)),
-        _ => Reply::Sent(Ok(klip_tui::api::SendReport {
+        19 => Reply::Sent(Ok(klip_tui::api::SendReport {
             bytes: 3,
             delivered: vec!["a".into()],
             failed: vec![("b".into(), "\x1b".into())],
         })),
+        20 => Reply::Sent(Err(ApiError::TooLarge { size: 9, max: 8 })),
+        21 => Reply::FileLoaded {
+            path: "p\x1b".into(),
+            result: Ok("x".repeat(rng.gen_range(0..5000))),
+        },
+        22 => Reply::FileLoaded {
+            path: "q".into(),
+            result: Err("no such file\x1b".into()),
+        },
+        _ => Reply::FileLoaded {
+            path: "big".into(),
+            result: Ok("y".repeat(klip_tui::screens::send::EDITOR_MAX_BYTES + 1)),
+        },
     }
 }
 
@@ -182,6 +195,9 @@ fn run(seed: u64, mut app: AppState, messages: usize) {
             "selection out of range at message {i}"
         );
         assert!(app.toasts.len() <= 3);
+        let (r, c) = app.send.buf.cursor();
+        assert!(r < app.send.buf.lines().len());
+        assert!(c <= app.send.buf.lines()[r].chars().count());
         assert!(app.history.selected <= app.history.visible().len().saturating_sub(1));
         // Drawing at every third message (and always after a resize) keeps the run affordable.
         if resized || i % 3 == 0 {

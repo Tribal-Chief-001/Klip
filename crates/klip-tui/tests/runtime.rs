@@ -295,3 +295,101 @@ async fn a_huge_hostile_item_renders_quickly_and_safely() {
         started.elapsed()
     );
 }
+
+#[tokio::test]
+async fn typing_and_sending_text_reaches_the_daemon_and_shows_who_got_it() {
+    use crossterm::event::KeyModifiers;
+    let fake = FakeDaemon::new();
+    let mut h = harness(&fake, "send");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("5");
+    h.text("héllo 日本\n");
+    h.paste("second line\r\nthird");
+    assert!(h.screen().contains("third"));
+    h.key_mod(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(h.wait_for("✓ Vivo V2253", 3000).await, "{}", h.screen());
+    let sent = fake
+        .calls()
+        .into_iter()
+        .find(|c| c.starts_with("send "))
+        .expect("a send call");
+    assert_eq!(
+        sent,
+        format!("send {}", "héllo 日本\nsecond line\nthird".len())
+    );
+}
+
+#[tokio::test]
+async fn a_failed_delivery_is_shown_per_device() {
+    use crossterm::event::KeyModifiers;
+    let fake = FakeDaemon::new();
+    fake.with(|s| {
+        s.send_reply = Ok(klip_tui::api::SendReport {
+            bytes: 0,
+            delivered: vec!["Vivo V2253".into()],
+            failed: vec![(
+                "Pixel 8".into(),
+                "the other device could not write its clipboard".into(),
+            )],
+        });
+    });
+    let mut h = harness(&fake, "sendfail");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("5");
+    h.text("x");
+    h.key_mod(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(
+        h.wait_for(
+            "✗ Pixel 8: the other device could not write its clipboard",
+            3000
+        )
+        .await,
+        "{}",
+        h.screen()
+    );
+    assert!(h.screen().contains("✓ Vivo V2253"));
+}
+
+#[tokio::test]
+async fn sending_with_no_linked_devices_says_so() {
+    use crossterm::event::KeyModifiers;
+    let fake = FakeDaemon::new();
+    fake.with(|s| {
+        s.send_reply = Ok(klip_tui::api::SendReport {
+            bytes: 1,
+            delivered: vec![],
+            failed: vec![],
+        })
+    });
+    let mut h = harness(&fake, "sendnone");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    h.text("5");
+    h.text("x");
+    h.key_mod(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    assert!(
+        h.wait_for("No linked devices: nothing was sent", 3000)
+            .await,
+        "{}",
+        h.screen()
+    );
+}
+
+#[tokio::test]
+async fn loading_a_real_file_from_disk_works_and_a_missing_one_is_reported() {
+    use crossterm::event::KeyModifiers;
+    let fake = FakeDaemon::new();
+    let mut h = harness(&fake, "sendfile");
+    assert!(h.wait_for("ACTIVE", 3000).await);
+    let path = std::env::temp_dir().join(format!("klip-tui-send-{}.txt", std::process::id()));
+    std::fs::write(&path, "from a file\nsecond\n").unwrap();
+    h.text("5");
+    h.key_mod(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.text(path.to_str().unwrap());
+    h.key(KeyCode::Enter);
+    assert!(h.wait_for("from a file", 3000).await, "{}", h.screen());
+    h.key_mod(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.text("/definitely/not/here.txt");
+    h.key(KeyCode::Enter);
+    assert!(h.wait_for("No such file", 3000).await, "{}", h.screen());
+    let _ = std::fs::remove_file(path);
+}

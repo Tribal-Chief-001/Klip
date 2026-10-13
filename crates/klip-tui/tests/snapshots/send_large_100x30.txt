@@ -1,0 +1,30 @@
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ Send a large file ───────────────────────────────────────────────────────────────────────────────┐
+│/tmp/big.log · 1.7 MiB · sent as it is, not editable here · Ctrl+U discards it                    │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+│log line                                                                                          │
+└────────────────────────────────────────────────────────────────────────────── 1.7 MiB / 32.0 MiB ┘
+┌ Result ──────────────────────────────────────────────────────────────────────────────────────────┐
+│✗ 30.0 MiB is over the limit of 10 B per clip                                                     │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Ctrl+S send · Ctrl+O file · Ctrl+U clear · Enter edit · 1-7 screens · p pause · ? help · q quit

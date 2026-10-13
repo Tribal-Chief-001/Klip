@@ -8,6 +8,7 @@ use crate::fmt;
 use crate::screens::devices::DevicesState;
 use crate::screens::history::HistoryState;
 use crate::screens::pair::PairState;
+use crate::screens::send::SendState;
 use crate::textbuf::TextBuf;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -229,6 +230,7 @@ pub struct AppState {
     pub devices: DevicesState,
     pub pair: PairState,
     pub history: HistoryState,
+    pub send: SendState,
     /// Draw QR codes with light modules as blocks (right for light-on-dark terminals).
     pub invert_qr: bool,
 }
@@ -255,6 +257,7 @@ impl AppState {
             devices: DevicesState::default(),
             pair: PairState::default(),
             history: HistoryState::default(),
+            send: SendState::default(),
             invert_qr: true,
         }
     }
@@ -361,6 +364,7 @@ pub enum Effect {
     CopyItem([u8; 16]),
     ClearHistory,
     Send(String),
+    LoadFile(String),
 }
 
 /// The result of an effect, delivered back as `Msg::Reply`.
@@ -395,6 +399,10 @@ pub enum Reply {
     Copied(Result<(), ApiError>),
     HistoryCleared(Result<(), ApiError>),
     Sent(Result<SendReport, ApiError>),
+    FileLoaded {
+        path: String,
+        result: Result<String, String>,
+    },
 }
 
 /// Effects to run when the app starts.
@@ -486,6 +494,10 @@ fn on_key(app: &mut AppState, k: KeyEvent, fx: &mut Vec<Effect>) {
         return;
     }
     if crate::screens::text_focus(app) {
+        crate::screens::key(app, k, fx);
+        return;
+    }
+    if ctrl || alt {
         crate::screens::key(app, k, fx);
         return;
     }
@@ -797,6 +809,9 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
             format!("Could not clear the history: {}", e.plain()),
         ),
         Reply::Sent(res) => on_sent(app, res),
+        Reply::FileLoaded { path, result } => {
+            crate::screens::send::on_file_loaded(app, path, result)
+        }
         Reply::PairJoined { session, result } => {
             crate::screens::pair::on_joined(app, session, result)
         }
@@ -810,6 +825,7 @@ fn on_reply(app: &mut AppState, reply: Reply, fx: &mut Vec<Effect>) {
 }
 
 fn on_sent(app: &mut AppState, res: Result<SendReport, ApiError>) {
+    crate::screens::send::on_sent(app, &res);
     match res {
         Ok(r) if r.delivered.is_empty() && r.failed.is_empty() => app.toast(
             ToastKind::Warn,

@@ -270,3 +270,23 @@ fn hostile_clip_text_cannot_leave_the_alternate_screen_or_change_the_terminal() 
     p.send(b"q");
     assert_eq!(p.wait_exit(5), Some(0));
 }
+
+#[test]
+fn send_screen_types_and_sends_against_a_real_daemon() {
+    let (_d, mut p) = running();
+    assert!(p.wait_for("ACTIVE", 15));
+    p.send(b"5");
+    assert!(p.wait_for("Send text to all devices", 5), "{}", p.screen());
+    p.send("héllo 日本\nsecond".as_bytes());
+    p.send(b"\x13"); // Ctrl+S
+    assert!(
+        p.wait_for("No linked devices: nothing was sent", 10),
+        "{}",
+        p.screen()
+    );
+    assert!(p.alt_screen());
+    p.send(b"\x1b"); // Esc leaves the editor
+    std::thread::sleep(std::time::Duration::from_millis(400)); // lets the terminal layer tell Esc from an escape sequence
+    p.send(b"q");
+    assert_eq!(p.wait_exit(5), Some(0), "{}", p.screen());
+}
