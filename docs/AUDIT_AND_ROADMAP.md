@@ -138,7 +138,7 @@ With focused work (and verification at each step) P0+P1 is ~2–3 weeks of part-
 
 ---
 
-## 9. Progress since this audit (updated 2026-10-13)
+## 9. Progress since this audit (updated 2026-10-13, second hardening pass)
 
 Everything below was done and verified with command output (tests, real X11, Android emulator,
 release build, CI). Evidence and numbers: `docs/RESEARCH_2026.md` sections 12-14.
@@ -156,10 +156,22 @@ release build, CI). Evidence and numbers: `docs/RESEARCH_2026.md` sections 12-14
 - Android: shares the Rust engine (UniFFI); stable APK signing key; background clipboard *write* verified on Android 14.
 - systemd unit memory cap and hardening; CI compile-checks macOS/Windows; Cargo.lock tracked.
 
+**Second hardening pass (verified with commands on this machine, 2026-10-13)**
+- One daemon per config directory (file lock); a second start is refused and cannot delete the first one's socket. CLI calls have timeouts; `klip history | head` no longer panics; a typo in `config.json` is an error.
+- Resource bounds: pairing handlers capped (4) with timeouts, bidi streams capped (4), history keeps at most 256 KiB per item / 8 MiB total, a burst of copies is coalesced (200 copies in a tight loop -> far fewer than 100 network sends, last one wins - test), clipboard reads/writes run off the async workers.
+- Pairing no longer depends on the phone's clock (only the host judges expiry).
+- Duplicate connections (both sides dial at once) are settled deterministically; a device that was unpaired by the other side now says so in `klip status` instead of retrying silently.
+- A connection that fails a send is dropped and small clips are re-sent once on a fresh one: after `kill -9` of the peer the first successful send took 61 s before, 0-10 s after (3 runs).
+- Pasted tickets survive terminal-card borders/whitespace/quotes.
+- Decoders (ticket, clip, pairing messages, control socket) tested with 120k+ random inputs and every single-bit corruption of valid messages: no panics.
+- `cargo audit` (RustSec, 1307 advisories): 0 vulnerabilities; 2 "unmaintained" notices remain (`paste`, `atomic-polyfill`) from iroh/postcard dependency trees. `bincode` (unmaintained) was removed: the control socket now uses postcard. CI got a dependency-audit job (it did not have one although a job name claimed it).
+- Real-binary chaos run (two release daemons, isolated dirs, memory clipboards, LAN+mDNS, loopback): pairing, both directions, 300 rapid sends, unicode, 100 KB text, 8 s SIGSTOP, `kill -9` + restart of each side, unpair while connected: 19/19 checks on 3 consecutive runs; resident memory ~12 MB, 10 threads, 16 fds after the run (no growth seen).
+- Not covered by that run: 30 MB clips through the real binary (a command-line argument cannot carry them; covered only by library tests), real X11/Android clipboards, WAN/relay conditions, runs longer than a few minutes.
+
 **Still open (ranked)**
 1. Test the Android app on a physical phone: camera QR, tile, notification action, boot restart, Doze/battery, OEM behaviour; optional READ_LOGS mode.
 2. Post-quantum key exchange (enable aws-lc-rs + `prefer-post-quantum`) and say exactly what it protects; external review of the pairing design.
-3. Security tooling in CI: cargo-deny, cargo-audit, fuzz targets (ticket/clip decode), signed binaries (cosign/minisign).
+3. Security tooling in CI: cargo-deny, coverage-guided fuzz targets (only random/mutation tests exist), signed binaries (cosign/minisign). cargo-audit is in CI now.
 4. Desktop drivers: Wayland (ext-data-control), GNOME extension, Windows (listener + history/cloud-exclude formats + IPC without Unix sockets), macOS (changeCount, concealed types); real-machine tests.
 5. Keystore at rest (OS keyring), relay self-hosting guide, measured relay-on idle cost and real WAN latency/hole-punch success.
 6. Product: images/HTML on Android, secret-handling policy engine (per class: sync or not, history flags), tray/GUI, iOS.

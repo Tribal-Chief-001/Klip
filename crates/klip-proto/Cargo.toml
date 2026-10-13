@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-bincode = { workspace = true }
+postcard = { workspace = true }
 serde = { workspace = true }
 blake3 = { workspace = true }
 rand = { workspace = true }

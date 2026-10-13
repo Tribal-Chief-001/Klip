@@ -462,7 +462,7 @@ async fn a_device_that_was_unpaired_by_the_other_side_is_told() {
         .await
         .expect("the phone was never told");
     assert!(
-        problem.contains("no longer has this device paired"),
+        problem.contains("unpaired by the other device"),
         "{problem}"
     );
     assert!(!phone.node.peer_statuses()[0].connected);

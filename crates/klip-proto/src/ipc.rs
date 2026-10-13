@@ -125,11 +125,11 @@ pub enum IpcResponse {
 }
 
 pub fn serialize_ipc_msg<T: Serialize>(val: &T) -> Result<Vec<u8>, String> {
-    bincode::serialize(val).map_err(|e| e.to_string())
+    postcard::to_stdvec(val).map_err(|e| e.to_string())
 }
 
 pub fn deserialize_ipc_msg<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, String> {
-    bincode::deserialize(bytes).map_err(|e| e.to_string())
+    postcard::from_bytes(bytes).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -160,5 +160,37 @@ mod tests {
     fn garbage_is_an_error_not_a_panic() {
         assert!(deserialize_ipc_msg::<IpcRequest>(&[0xff; 7]).is_err());
         assert!(deserialize_ipc_msg::<IpcRequest>(&[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod robustness {
+    use super::*;
+    use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
+
+    #[test]
+    fn random_and_mutated_control_messages_never_crash() {
+        let mut rng = StdRng::seed_from_u64(0x1BC);
+        for _ in 0..50_000 {
+            let mut buf = vec![0u8; rng.gen_range(0..200)];
+            rng.fill_bytes(&mut buf);
+            let _ = deserialize_ipc_msg::<IpcRequest>(&buf);
+            let _ = deserialize_ipc_msg::<IpcResponse>(&buf);
+        }
+        let good = serialize_ipc_msg(&IpcRequest::SendClip {
+            text: "hello".into(),
+        })
+        .unwrap();
+        for pos in 0..good.len() {
+            for bit in 0..8 {
+                let mut bad = good.clone();
+                bad[pos] ^= 1 << bit;
+                let _ = deserialize_ipc_msg::<IpcRequest>(&bad);
+            }
+        }
+        // Same message, but the text length claims ~4 GiB with 3 bytes behind it.
+        let mut huge = vec![good[0], 0xFF, 0xFF, 0xFF, 0xFF, 0x0F];
+        huge.extend_from_slice(b"abc");
+        assert!(deserialize_ipc_msg::<IpcRequest>(&huge).is_err());
     }
 }

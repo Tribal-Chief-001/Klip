@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    name: Test Suite & Security Audit
+    name: Test Suite
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -53,6 +53,23 @@ jobs:
             echo "Binary size exceeded 8.5MB performance budget!"
             exit 1
           fi
+
+  dependency-audit:
+    name: Dependency audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Fails on known vulnerabilities. "Unmaintained" notices are printed as warnings and do not
+      # fail the job (the current ones come from iroh's dependency tree).
+      - name: cargo audit
+        run: cargo audit
 
   cross-platform-check:
     name: Compile check (${{ matrix.os }})

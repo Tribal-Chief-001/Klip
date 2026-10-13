@@ -18,8 +18,12 @@ use tokio::time::timeout;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Base time for a clip exchange plus time proportional to its size (assumes at least 64 KiB/s),
-/// so a 30 MB clip over a slow link is not killed after 20 s.
-const WRITE_TIMEOUT_BASE: Duration = Duration::from_secs(20);
+/// so a 30 MB clip over a slow link is not killed after 10 s.
+const WRITE_TIMEOUT_BASE: Duration = Duration::from_secs(10);
+/// A clip up to this size is re-sent once on a fresh connection after a timeout (the cached
+/// connection may be dead: peer crashed, laptop slept, network changed). Larger clips are not
+/// re-sent automatically because that would double a big transfer.
+const RETRY_AFTER_TIMEOUT_MAX_BYTES: usize = 256 * 1024;
 const MIN_THROUGHPUT_BYTES_PER_SEC: u64 = 64 * 1024;
 /// A first attempt that fails faster than this was a dead cached connection and is retried once.
 const FAST_FAILURE: Duration = Duration::from_secs(3);
@@ -49,8 +53,7 @@ const CODE_DONE: u32 = 0;
 /// Closed because a duplicate connection to the same peer won the tie-break.
 const CODE_SUPERSEDED: u32 = 2;
 /// Shown in peer status when the other device closed with `CODE_UNPAIRED` on a sync connection.
-const REMOVED_BY_PEER: &str =
-    "the other device no longer has this device paired - unpair it here and pair again";
+const REMOVED_BY_PEER: &str = "unpaired by the other device; pair again";
 
 /// How the endpoint finds and reaches peers beyond the local network.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -446,16 +449,32 @@ impl KlipNode {
     }
 
     async fn send_to(&self, id: EndpointId, bytes: &[u8]) -> Result<(), NetError> {
-        // Retry once with a fresh connection, but only when the first attempt failed *fast* (a dead
-        // cached connection). A slow failure/timeout is not retried: re-sending a large clip would
-        // double the traffic and could deliver it twice. A peer that answered "no" has given its
-        // final answer.
+        // A failed connection is never reused: drop it so the next attempt dials fresh. Retry once
+        // on a fresh connection when the failure was fast (a dead cached connection is refused at
+        // once) or when a small clip timed out (the cached connection was silently dead). A peer
+        // that answered "no" has given its final answer; connect failures are not retried at once.
+        // A duplicate delivery is harmless: the receiver answers "superseded" for a clip it has.
         let started = Instant::now();
         match self.try_send(id, bytes, false).await {
+            Ok(()) => Ok(()),
             Err(NetError::PeerRefused(why)) => Err(NetError::PeerRefused(why)),
-            Err(e) if started.elapsed() > FAST_FAILURE => Err(e),
-            Err(_) => self.try_send(id, bytes, true).await,
-            ok => ok,
+            Err(e @ (NetError::UnknownPeer | NetError::Connect(_))) => Err(e),
+            Err(e) => {
+                self.drop_connection(&id);
+                let fast = started.elapsed() <= FAST_FAILURE;
+                if fast || bytes.len() <= RETRY_AFTER_TIMEOUT_MAX_BYTES {
+                    self.try_send(id, bytes, true).await
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// Forget and close the cached connection to a peer (it just failed us).
+    fn drop_connection(&self, id: &EndpointId) {
+        if let Some(conn) = self.inner.conns.lock().unwrap().remove(id) {
+            conn.close(CODE_DONE.into(), b"abandoned");
         }
     }
 

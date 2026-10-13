@@ -51,3 +51,20 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod robustness {
+    use super::*;
+    use rand::{rngs::StdRng, Rng, RngCore, SeedableRng};
+
+    #[test]
+    fn random_pairing_messages_never_crash() {
+        let mut rng = StdRng::seed_from_u64(0xFA12);
+        for _ in 0..50_000 {
+            let mut buf = vec![0u8; rng.gen_range(0..MAX_CONTROL_BYTES.min(400))];
+            rng.fill_bytes(&mut buf);
+            let _ = postcard::from_bytes::<PairRequest>(&buf);
+            let _ = postcard::from_bytes::<PairReply>(&buf);
+        }
+    }
+}

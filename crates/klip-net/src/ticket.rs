@@ -49,7 +49,9 @@ impl PairingTicket {
     }
 
     pub fn decode(text: &str) -> Result<Self, NetError> {
-        let t: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        // Tolerate whatever a copy/paste brings along: spaces, line breaks, the `│` borders of the
+        // terminal card, quotes. Tickets only contain ASCII letters and digits.
+        let t: String = text.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
         if t.len() > MAX_TICKET_CHARS {
             return Err(NetError::Ticket("ticket is too long".into()));
         }
@@ -101,6 +103,23 @@ mod tests {
         assert_eq!(upper.secret, t.secret);
         let spaced = format!("  {}\n", s);
         assert!(PairingTicket::decode(&spaced).is_ok());
+    }
+
+    #[test]
+    fn survives_being_copied_out_of_the_terminal_card() {
+        let t = sample();
+        let s = t.encode();
+        // The card shows the ticket in 70-character lines inside a box; a mouse selection that
+        // spans whole lines brings the borders and indentation along.
+        let boxed: String = s
+            .as_bytes()
+            .chunks(70)
+            .map(|c| format!("│   {}   │\n", std::str::from_utf8(c).unwrap()))
+            .collect();
+        let back = PairingTicket::decode(&boxed).expect("boxed ticket must decode");
+        assert_eq!(back.secret, t.secret);
+        let quoted = format!("\"{s}\"");
+        assert!(PairingTicket::decode(&quoted).is_ok());
     }
 
     #[test]
