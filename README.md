@@ -41,7 +41,7 @@
 
 | Part | State | Evidence |
 |---|---|---|
-| Core engine (pairing, sync, conflict resolution) | ✅ working | 51 automated tests (real network endpoints, two full daemons, pairing, unpair, pause, bad input) run in CI |
+| Core engine (pairing, sync, conflict resolution) | ✅ working | 70 automated tests (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
 | **Android app** | 🟡 tested on an emulator (Android 14) only | pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect. **Not yet tried on a physical phone**, not the camera QR scan, not the tile |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
@@ -224,7 +224,7 @@ systemctl --user status klip.service
 ## Build & test from source
 
 ```bash
-cargo test --workspace                      # 51 tests
+cargo test --workspace                      # 70 tests
 cargo clippy --workspace --all-targets -- -D warnings
 android/build-core.sh arm64-v8a             # Rust engine + Kotlin bindings (needs cargo-ndk, NDK r28+)
 cd android && ./gradlew assembleDebug
