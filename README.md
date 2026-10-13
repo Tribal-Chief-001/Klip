@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📎 Klip
+<img src="docs/assets/banner.svg" alt="klip: two devices joined by a line, and the word klip" width="760">
 
 ### Copy on one of your devices, paste on another. End-to-end encrypted, no account, no cloud.
 
@@ -11,10 +11,10 @@
 
 </div>
 
-> **Alpha software.** The Linux ↔ Android path works and has been tested (details in [Status](#status--what-is-actually-tested)), but it has had **no independent security review**, has not yet run on a physical phone, and macOS/Windows are only compile-checked. Read [Limits & honesty](#limits--honesty) before relying on it.
+> **Alpha software.** The Linux ↔ Android path works and has been tested (details in [Status](#status--what-is-actually-tested)), but it has had **no independent security review**, has only been tried on one real phone (the author's) plus an emulator, and macOS/Windows are only compile-checked. Read [Limits & honesty](#limits--honesty) before relying on it.
 
 ```text
-╭── 📎 Klip ───────────────────────────────────────────────────────────────╮
+╭── ●─● klip ───────────────────────────────────────────────────────────────╮
 │                                                                          │
 │ ● STATE    Active                                                        │
 │ ● SYSTEM   Linux (X11)                                                   │
@@ -43,7 +43,7 @@
 |---|---|---|
 | Core engine (pairing, sync, conflict resolution) | ✅ working | 70 automated tests (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
-| **Android app** | 🟡 tested on an emulator (Android 14) only | pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect. **Not yet tried on a physical phone**, not the camera QR scan, not the tile |
+| **Android app** | 🟡 emulator (Android 14) + one real phone (Vivo, reported by the author) | Emulator: pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect, reboot, notification, setup screens. Real phone (author's report): laptop → phone arrives by itself; phone → laptop works with Share → Klip, the notification button or the app's Send button. **Not verified:** background persistence over hours, reboot, camera QR scan, the tile, battery cost on a real phone |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
 | macOS, Windows | 🔴 compile-checked in CI only | never run; the Windows CLI cannot control the daemon yet |
 | iOS | ⚪ not started | Apple does not allow background clipboard access |

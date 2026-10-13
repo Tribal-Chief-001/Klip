@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="260" viewBox="0 0 1280 260">
+<rect width="1280" height="260" fill="#0B0E10"/>
+<line x1="396.4" y1="108" x2="616.4" y2="108" stroke="#C8F25A" stroke-width="12.100000000000001" stroke-linecap="round"/>
+<circle cx="396.4" cy="108" r="36.300000000000004" fill="#C8F25A"  opacity="0.18"/>
+<circle cx="396.4" cy="108" r="20.900000000000002" fill="#C8F25A"  opacity="1.0"/>
+<circle cx="616.4" cy="108" r="20.900000000000002" fill="#C8F25A"  opacity="1.0"/>
+<line x1="705.4" y1="44.639999999999986" x2="705.4" y2="140.64" stroke="#E8EDF0" stroke-width="14.399999999999999" stroke-linecap="round"/>
+<line x1="707.3199999999999" y1="117.59999999999998" x2="747.64" y2="79.19999999999999" stroke="#E8EDF0" stroke-width="14.399999999999999" stroke-linecap="round"/>
+<line x1="720.76" y1="102.23999999999998" x2="749.56" y2="140.64" stroke="#E8EDF0" stroke-width="14.399999999999999" stroke-linecap="round"/>
+<line x1="772.6" y1="44.639999999999986" x2="772.6" y2="140.64" stroke="#E8EDF0" stroke-width="14.399999999999999" stroke-linecap="round"/>
+<line x1="811.0" y1="79.19999999999999" x2="811.0" y2="140.64" stroke="#E8EDF0" stroke-width="14.399999999999999" stroke-linecap="round"/>
+<circle cx="811.0" cy="50.399999999999984" r="8.64" fill="#C8F25A"  opacity="1.0"/>
+<line x1="849.4" y1="79.19999999999999" x2="849.4" y2="175.2" stroke="#E8EDF0" stroke-width="14.399999999999999" stroke-linecap="round"/>
+<circle cx="881.0799999999999" cy="109.91999999999999" r="29.759999999999998" fill="none" stroke="#E8EDF0" stroke-width="14.399999999999999" opacity="1.0"/>
+<text x="640" y="226" fill="#8C979F" font-size="28" text-anchor="middle" font-family="Inter, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">Your clipboard, on all your devices.</text>
+</svg>

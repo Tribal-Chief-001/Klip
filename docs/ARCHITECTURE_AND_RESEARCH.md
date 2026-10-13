@@ -1,4 +1,4 @@
-# 📎 Klip: Master Technical Architecture, Research & System Specification (2026)
+# Klip: Master Technical Architecture, Research & System Specification (2026)
 
 > **State-of-the-Art, Cross-Platform, Zero-Knowledge End-to-End Encrypted Universal Clipboard Engine written in Rust.**
 
@@ -422,7 +422,7 @@ A core non-functional requirement for Klip is that every user-facing surface—f
   - Subtext & Borders: `Muted Slate` (`#475569` / `#64748B`).
 - **Terminal Status Card (`klip status`):**
   ```text
-  ╭── 📎 Klip Engine ──────────────────────────────────────────╮
+  ╭── ●─● klip engine ──────────────────────────────────────────╮
   │                                                           │
   │  ● STATUS: Active (Wayland)      ⚡ MESH: Connected       │
   │  ● MEMORY: 4.1 MB RSS            ⏱ LATENCY: 19ms (Direct) │

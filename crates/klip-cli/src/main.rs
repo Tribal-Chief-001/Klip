@@ -11,7 +11,7 @@ use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "klip")]
-#[command(about = "📎 Klip: end-to-end encrypted clipboard sync between your own devices", long_about = None)]
+#[command(about = "klip: end-to-end encrypted clipboard sync between your own devices", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

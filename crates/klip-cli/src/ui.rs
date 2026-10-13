@@ -156,7 +156,7 @@ pub fn print_status_card(info: &DaemonStatusInfo) {
         None => "Last sync  never".to_string(),
     };
     push(last.clone(), last);
-    print_card("📎 Klip", &rows);
+    print_card("●─● klip", &rows);
 }
 
 /// Pairing screen for the host: QR + copyable ticket + fingerprint to compare.
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn card_rows_have_equal_display_width_even_with_emoji() {
-        let mut card = Card::new("📎 Klip");
+        let mut card = Card::new("●─● klip");
         card.row("plain");
         card.row("🟢 emoji and 日本語 text");
         card.row(&"x".repeat(500));
