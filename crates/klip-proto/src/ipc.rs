@@ -1,6 +1,43 @@
 use crate::hlc::NodeId;
 use serde::{Deserialize, Serialize};
 
+/// Version of the control protocol. 1 = before `Hello` existed (v0.3.6 and older); 2 adds `Hello`,
+/// `UnpairAll`, `CopyToClipboard` and `ClearHistory`. Variants are only ever appended.
+pub const IPC_PROTOCOL_VERSION: u32 = 2;
+
+/// Room for the request's own framing and fields on top of the largest clip.
+pub const IPC_REQUEST_OVERHEAD: usize = 64 * 1024;
+
+/// Largest request a daemon with this clip limit accepts.
+pub fn max_request_bytes(max_clip_bytes: usize) -> usize {
+    max_clip_bytes.saturating_add(IPC_REQUEST_OVERHEAD)
+}
+
+pub const CAP_UNPAIR_ALL: &str = "unpair_all";
+pub const CAP_COPY_TO_CLIPBOARD: &str = "copy_to_clipboard";
+pub const CAP_CLEAR_HISTORY: &str = "clear_history";
+
+/// The settings the running daemon loaded (what a restart would re-read from `config.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigInfo {
+    pub device_name: String,
+    /// `"n0"` or `"lan"`.
+    pub relay: String,
+    pub max_history_items: usize,
+    pub max_clip_bytes: usize,
+    pub lan_discovery: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelloInfo {
+    pub protocol: u32,
+    pub daemon_version: String,
+    pub capabilities: Vec<String>,
+    pub config: ConfigInfo,
+    /// Largest request this daemon accepts (`max_request_bytes(config.max_clip_bytes)`).
+    pub max_request_bytes: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IpcRequest {
     GetStatus,
@@ -36,6 +73,18 @@ pub enum IpcRequest {
         text: String,
     },
     StopDaemon,
+    /// First call of protocol 2: who is the daemon, what can it do, which limits apply.
+    Hello {
+        client_protocol: u32,
+    },
+    /// Remove every linked device.
+    UnpairAll,
+    /// Put a history item back on this device's clipboard (not re-broadcast).
+    CopyToClipboard {
+        id: [u8; 16],
+    },
+    /// Forget the clips kept in this device's history.
+    ClearHistory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +171,13 @@ pub enum IpcResponse {
     },
     DaemonStopping,
     Error(String),
+    Hello(HelloInfo),
+    UnpairedAll {
+        removed: Vec<String>,
+        failed: Vec<(String, String)>,
+    },
+    Copied,
+    HistoryCleared,
 }
 
 pub fn serialize_ipc_msg<T: Serialize>(val: &T) -> Result<Vec<u8>, String> {
@@ -192,5 +248,167 @@ mod robustness {
         let mut huge = vec![good[0], 0xFF, 0xFF, 0xFF, 0xFF, 0x0F];
         huge.extend_from_slice(b"abc");
         assert!(deserialize_ipc_msg::<IpcRequest>(&huge).is_err());
+    }
+}
+
+#[cfg(test)]
+mod compat {
+    //! The control protocol is index-encoded by postcard. These tests pin the bytes of every variant
+    //! that existed in v0.3.6, so a reordered or inserted variant fails here instead of breaking a
+    //! running daemon or an older `klip`.
+    use super::*;
+    use crate::hlc::NodeId;
+
+    fn req(r: &IpcRequest) -> Vec<u8> {
+        serialize_ipc_msg(r).unwrap()
+    }
+    fn resp(r: &IpcResponse) -> Vec<u8> {
+        serialize_ipc_msg(r).unwrap()
+    }
+
+    #[test]
+    fn existing_request_variants_keep_their_wire_bytes() {
+        assert_eq!(req(&IpcRequest::GetStatus), [0]);
+        assert_eq!(
+            req(&IpcRequest::PairStart {
+                ttl_secs: 1,
+                include_lan_addrs: false
+            })[0],
+            1
+        );
+        assert_eq!(req(&IpcRequest::PairPoll), [2]);
+        assert_eq!(req(&IpcRequest::PairDecide { accept: true }), [3, 1]);
+        assert_eq!(req(&IpcRequest::PairCancel), [4]);
+        assert_eq!(
+            req(&IpcRequest::PairJoin { ticket: "k".into() }),
+            [5, 1, b'k']
+        );
+        assert_eq!(
+            req(&IpcRequest::Unpair {
+                selector: "ab".into()
+            }),
+            [6, 2, b'a', b'b']
+        );
+        assert_eq!(
+            req(&IpcRequest::Pause { duration_secs: 600 }),
+            [7, 0xD8, 0x04]
+        );
+        assert_eq!(req(&IpcRequest::Resume), [8]);
+        assert_eq!(req(&IpcRequest::GetHistory { limit: 10 }), [9, 10]);
+        assert_eq!(
+            req(&IpcRequest::SendClip { text: "hi".into() }),
+            [10, 2, b'h', b'i']
+        );
+        assert_eq!(req(&IpcRequest::StopDaemon), [11]);
+    }
+
+    #[test]
+    fn new_request_variants_are_appended_after_the_old_ones() {
+        assert_eq!(req(&IpcRequest::Hello { client_protocol: 2 }), [12, 2]);
+        assert_eq!(req(&IpcRequest::UnpairAll), [13]);
+        assert_eq!(req(&IpcRequest::CopyToClipboard { id: [0; 16] })[0], 14);
+        assert_eq!(req(&IpcRequest::ClearHistory), [15]);
+    }
+
+    #[test]
+    fn existing_response_variants_keep_their_wire_bytes() {
+        let status = DaemonStatusInfo {
+            is_active: true,
+            is_paused: false,
+            paused_remaining_secs: 0,
+            platform: String::new(),
+            memory_rss_bytes: 0,
+            node_id: NodeId::ZERO,
+            relay_mode: String::new(),
+            relay_state: String::new(),
+            pairing_open: false,
+            peers: vec![],
+            total_synced_clips: 0,
+            last_sync_time_secs_ago: None,
+            last_clip_preview: None,
+            last_clip_size_bytes: 0,
+        };
+        assert_eq!(resp(&IpcResponse::Status(status))[0], 0);
+        assert_eq!(
+            resp(&IpcResponse::PairTicket {
+                ticket: String::new(),
+                expires_in_secs: 0,
+                host_fingerprint: String::new()
+            })[0],
+            1
+        );
+        assert_eq!(resp(&IpcResponse::PairPoll(PairPollInfo::default()))[0], 2);
+        assert_eq!(
+            resp(&IpcResponse::PairSuccess {
+                peer_name: String::new(),
+                peer_fingerprint: String::new()
+            })[0],
+            3
+        );
+        assert_eq!(resp(&IpcResponse::PairCancelled), [4]);
+        assert_eq!(
+            resp(&IpcResponse::Unpaired {
+                name: String::new()
+            })[0],
+            5
+        );
+        assert_eq!(resp(&IpcResponse::Paused { remaining_secs: 1 }), [6, 1]);
+        assert_eq!(resp(&IpcResponse::Resumed), [7]);
+        assert_eq!(resp(&IpcResponse::History(vec![])), [8, 0]);
+        assert_eq!(
+            resp(&IpcResponse::Sent {
+                bytes: 0,
+                delivered: vec![],
+                failed: vec![]
+            }),
+            [9, 0, 0, 0]
+        );
+        assert_eq!(resp(&IpcResponse::DaemonStopping), [10]);
+        assert_eq!(resp(&IpcResponse::Error("x".into())), [11, 1, b'x']);
+    }
+
+    #[test]
+    fn new_response_variants_are_appended_after_the_old_ones() {
+        let hello = HelloInfo {
+            protocol: IPC_PROTOCOL_VERSION,
+            daemon_version: "0.4.0".into(),
+            capabilities: vec![CAP_UNPAIR_ALL.into()],
+            config: ConfigInfo {
+                device_name: "d".into(),
+                relay: "n0".into(),
+                max_history_items: 50,
+                max_clip_bytes: 1000,
+                lan_discovery: true,
+            },
+            max_request_bytes: max_request_bytes(1000),
+        };
+        assert_eq!(resp(&IpcResponse::Hello(hello.clone()))[0], 12);
+        assert_eq!(
+            resp(&IpcResponse::UnpairedAll {
+                removed: vec![],
+                failed: vec![]
+            }),
+            [13, 0, 0]
+        );
+        assert_eq!(resp(&IpcResponse::Copied), [14]);
+        assert_eq!(resp(&IpcResponse::HistoryCleared), [15]);
+        let bytes = serialize_ipc_msg(&IpcResponse::Hello(hello.clone())).unwrap();
+        assert_eq!(
+            deserialize_ipc_msg::<IpcResponse>(&bytes).unwrap(),
+            IpcResponse::Hello(hello)
+        );
+    }
+
+    #[test]
+    fn an_old_peer_decodes_a_new_request_as_an_error_not_a_panic() {
+        // An index far beyond any variant must be a decode error (the daemon turns it into
+        // IpcResponse::Error), never a panic.
+        assert!(deserialize_ipc_msg::<IpcRequest>(&[200, 1, 2]).is_err());
+    }
+
+    #[test]
+    fn request_cap_follows_the_clip_limit() {
+        assert_eq!(max_request_bytes(1000), 1000 + 64 * 1024);
+        assert_eq!(max_request_bytes(usize::MAX), usize::MAX);
     }
 }
