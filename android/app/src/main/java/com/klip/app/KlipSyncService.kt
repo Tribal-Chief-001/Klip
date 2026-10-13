@@ -226,19 +226,14 @@ class KlipSyncService : Service() {
             this, 2, Intent(this, KlipSyncService::class.java).setAction(ACTION_REPOST), flags
         )
         val extra = note?.takeIf { System.currentTimeMillis() < noteUntil }
-        val body = if (extra != null) summary.body + "\n" + extra else summary.body
-        val line = extra ?: summary.line
+        val line = extra ?: summary.compact
 
-        // Custom views so "Send" sits in the collapsed notification: copy, pull the shade down, tap Send.
-        // (A normal notification action is only shown after expanding with the arrow.)
-        val collapsed = RemoteViews(packageName, R.layout.notification_collapsed).apply {
-            setTextViewText(R.id.title, summary.shortTitle)
+        // One compact view only, with the status and the Send button: no expanded layout. Android alone
+        // decides which notification is shown expanded by default (often the top one) and apps cannot
+        // turn that off, so there is nothing larger to open and no arrow either.
+        val view = RemoteViews(packageName, R.layout.notification_collapsed).apply {
+            setTextViewText(R.id.title, summary.title.removePrefix("Klip · ")) // the icon and header already say Klip
             setTextViewText(R.id.line, line)
-            setOnClickPendingIntent(R.id.send, send)
-        }
-        val expanded = RemoteViews(packageName, R.layout.notification_expanded).apply {
-            setTextViewText(R.id.title, summary.title)
-            setTextViewText(R.id.body, body)
             setOnClickPendingIntent(R.id.send, send)
         }
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
@@ -247,8 +242,7 @@ class KlipSyncService : Service() {
             .setContentTitle(summary.title)
             .setContentText(line)
             .setStyle(NotificationCompat.DecoratedCustomViewStyle())
-            .setCustomContentView(collapsed)
-            .setCustomBigContentView(expanded)
+            .setCustomContentView(view)
             .setContentIntent(open)
             .setDeleteIntent(repost)
             .setOngoing(true)
@@ -261,7 +255,7 @@ class KlipSyncService : Service() {
     }
 
     private fun showForeground(text: String) =
-        postForeground(StatusText.Summary("Klip", "Klip", text, text, false, null))
+        postForeground(StatusText.Summary("Klip", "Klip", text, text, text, false, null))
 
     /** (Re)attach the notification to the foreground service. Also puts it back when it was removed. */
     private fun postForeground(summary: StatusText.Summary) {

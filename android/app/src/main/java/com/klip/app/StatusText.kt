@@ -12,6 +12,8 @@ object StatusText {
         val shortTitle: String,
         /** Short line shown when the notification is collapsed. */
         val line: String,
+        /** One line for the notification: the last clip (who, when), or what is wrong. */
+        val compact: String,
         /** Full text shown when it is expanded. */
         val body: String,
         val anyOnline: Boolean,
@@ -24,9 +26,9 @@ object StatusText {
     /** Blocking (engine calls): call from a background thread. */
     fun compute(): Summary {
         val engine = KlipRuntime.engine
-            ?: return Summary("Klip", "Klip", "Starting…", "Starting…", false, null)
+            ?: return Summary("Klip", "Klip", "Starting…", "Starting…", "Starting…", false, null)
         val st = runCatching { engine.status() }.getOrNull()
-            ?: return Summary("Klip", "Klip", "Not responding", "Not responding. Open Klip.", false, null)
+            ?: return Summary("Klip", "Klip", "Not responding", "Not responding", "Not responding. Open Klip.", false, null)
         val history = runCatching { engine.history(1u) }.getOrDefault(emptyList()).firstOrNull()
 
         val online = st.peers.filter { it.online }
@@ -50,16 +52,23 @@ object StatusText {
         } else {
             lines += st.peers.joinToString("   ") { (if (it.online) "● " else "○ ") + it.name }
         }
-        lines += if (history != null) {
+        val lastClip = if (history != null) {
             val whenText = Fmt.agoMs(history.timestampMs.toLong())
             val me = KlipRuntime.deviceName()
-            if (history.fromDevice.isBlank() || history.fromDevice == me) "Last clip: sent from this phone · $whenText"
-            else "Last clip: received from ${history.fromDevice} · $whenText"
+            if (history.fromDevice.isBlank() || history.fromDevice == me) "Sent from this phone · $whenText"
+            else "Received from ${history.fromDevice} · $whenText"
         } else "No clips yet"
+        lines += lastClip
         if (online.isEmpty() && st.peers.isNotEmpty()) {
             st.peers.firstNotNullOfOrNull { it.lastError }?.let { lines += Fmt.plainPeerError(it) }
         }
-        return Summary(title, shortTitle, lines.first(), lines.joinToString("\n"), online.isNotEmpty(), online.firstOrNull()?.name)
+        val compact = when {
+            st.paused -> "Sync is paused"
+            st.peers.isEmpty() -> "Open Klip and tap Add a device"
+            online.isEmpty() -> st.peers.firstNotNullOfOrNull { it.lastError }?.let { Fmt.plainPeerError(it) } ?: lastClip
+            else -> lastClip
+        }
+        return Summary(title, shortTitle, lines.first(), compact, lines.joinToString("\n"), online.isNotEmpty(), online.firstOrNull()?.name)
     }
 
     private fun names(list: List<String>): String = when {

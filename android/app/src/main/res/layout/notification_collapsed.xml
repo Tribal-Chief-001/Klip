@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Collapsed notification: status on the left, the one action (Send) on the right, no arrow to open. -->
+<!-- The only notification layout: status and last clip on the left, the one action (Send) on the right. There is no expanded layout, so nothing can open into a bigger view. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
@@ -33,13 +33,13 @@
         android:id="@+id/send"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
+        android:layout_marginStart="10dp"
         android:background="@drawable/notif_send_pill"
         android:contentDescription="Send clipboard"
-        android:paddingStart="18dp"
-        android:paddingTop="9dp"
-        android:paddingEnd="18dp"
-        android:paddingBottom="9dp"
+        android:paddingStart="15dp"
+        android:paddingTop="8dp"
+        android:paddingEnd="15dp"
+        android:paddingBottom="8dp"
         android:text="Send"
         android:textColor="@color/klip_ink"
         android:textSize="14sp"
