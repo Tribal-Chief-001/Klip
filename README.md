@@ -7,6 +7,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/Tribal-Chief-001/Klip/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/Tribal-Chief-001/Klip/actions/workflows/ci.yml)
 [![Android build](https://img.shields.io/github/actions/workflow/status/Tribal-Chief-001/Klip/android.yml?branch=main&style=flat-square&label=Android%20build)](https://github.com/Tribal-Chief-001/Klip/actions/workflows/android.yml)
 [![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
+[![Release](https://img.shields.io/github/v/release/Tribal-Chief-001/Klip?include_prereleases&style=flat-square&label=release)](https://github.com/Tribal-Chief-001/Klip/releases)
 ![Status](https://img.shields.io/badge/status-alpha-orange?style=flat-square)
 
 </div>
@@ -42,6 +43,22 @@
 
 Run `klip` with no arguments on a terminal. Quitting (`q`) leaves Klip running in the background.
 
+```text
+●─● klip   1 Home  2 Devices  3 Pair  4 History  5 Send  6 Log  7 Settings                  ● ACTIVE
+┌ Status ──────────────────────────────────────────────────────────────────────────────────────────┐
+│● ACTIVE   relay connected (https://aps1-1.relay.n0.iroh.link./)                                  │
+│this device  4RGS-5DPX-3MZG   Linux (X11)   RAM 15.8 MB                                           │
+│128 clips synced · last 4s ago · "https://github.com/…" (38 B)                                    │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Devices (2) ─────────────────────────────────────────────────────────────────────────────────────┐
+│  ● Vivo V2253              [XUXC-EASU-TQP7]  connected                                           │
+│  ○ Pixel 8                 [E6Y4-MBFJ-TGTY]  offline · could not reach the device                │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+s start · x stop · 1-7 screens · p pause · h help · q quit
+```
+
+*Text snapshot from the test suite with sample data (not a screenshot of a real session).*
+
 | Key | Does |
 |---|---|
 | `1`-`7` / `Tab` | switch screen (Home, Devices, Pair, History, Send, Log, Settings); `Alt+1-7` also inside a text field |
@@ -68,7 +85,7 @@ The Pair screen shows the QR code beside the ticket. If the window is too small 
 | Part | State | Evidence |
 |---|---|---|
 | Core engine (pairing, sync, conflict resolution) | ✅ working | 288 automated tests in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
-| **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | 288 automated tests in the workspace, of which the terminal app has: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
+| **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | The terminal app's own tests: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
 | **Android app** | 🟡 emulator (Android 14) + one real phone (Vivo, reported by the author) | Emulator: pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect, reboot, notification, setup screens. Real phone (author's report): laptop → phone arrives by itself; phone → laptop works with Share → Klip, the notification button or the app's Send button. **Not verified:** background persistence over hours, reboot, camera QR scan, the tile, battery cost on a real phone |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
@@ -102,6 +119,7 @@ cargo build --release -p klip-cli
 install -Dm755 target/release/klip ~/.local/bin/klip     # make sure ~/.local/bin is in your PATH
 klip start
 klip status
+klip            # opens the full-screen app (see below)
 ```
 
 Pre-built binaries and the Android APK are attached to the [Releases](https://github.com/Tribal-Chief-001/Klip/releases) page (pre-releases while the project is alpha).
@@ -143,6 +161,7 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 |---|---|
 | Copy on the computer, paste on the phone | Just copy. It arrives on the phone's clipboard by itself. |
 | Copy on the phone, paste on the computer | Share → Klip, or tile / notification button (Android can't notice a copy by itself — see [why](#phone--computer-android-limits)). |
+| Do everything in one screen | `klip` (the full-screen app: devices, pair, history, send, log, settings) |
 | See what happened | `klip status`, `klip history` |
 | Send text without copying | `klip send "text"` |
 | Stop syncing for a while | `klip pause 600` … `klip resume` |
@@ -212,15 +231,18 @@ systemctl --user status klip.service
 
 | Command | What it does |
 |---|---|
+| `klip` | open the full-screen terminal app (on a terminal; in a script it prints this help) |
 | `klip start [--foreground]` | start the background service |
 | `klip stop` | stop it |
 | `klip status` | devices, connection, relay state, last sync |
 | `klip pair [--lan] [--ttl 120]` | show QR + ticket and wait for a device |
 | `klip pair <ticket>` | join the device that showed a ticket |
 | `klip unpair <name\|fingerprint>` | forget a device |
+| `klip unpair --all [-y]` | forget every device (asks first unless `-y`) |
 | `klip pause [seconds]` / `klip resume` | pause or resume syncing |
-| `klip history [-l N]` | recent clips (secrets are masked) |
-| `klip send "<text>"` | send text now, with per-device result |
+| `klip history [-l N]` | recent clips (secrets are masked; forgotten after 24 hours by default) |
+| `klip history clear` | forget all clips kept on this computer |
+| `klip send "<text>"` | send text now, with per-device result (`klip send -` reads standard input) |
 | `klip install-service` | create the auto-start unit for your OS |
 
 ## Limits & honesty
@@ -239,7 +261,7 @@ systemctl --user status klip.service
 
 - **Both devices must be online at the same time.** There is no mailbox or push service: a clip copied while the other device is off is not delivered later. (A deliberate choice: no server of ours.)
 - Text only on Android for now. The desktop engine understands images, but the phone app does not yet.
-- Clips are limited to 32 MiB by default. **Android is stricter: a clip over about 0.9 MB cannot be put on the phone's clipboard** (Android passes it through one Binder transaction of about 1 MB). The sender is told "the other device could not write its clipboard"; nothing crashes (it did before 0.3.6: see the changelog).
+- Clips are limited to 32 MiB by default. **Android is stricter: a clip over about 0.9 MB cannot be put on the phone's clipboard** (Android passes it through one Binder transaction of about 1 MB). The sender is told "the other device could not write its clipboard"; nothing crashes (it did before 0.3.6: see the [release notes](https://github.com/Tribal-Chief-001/Klip/releases/tag/v0.3.6-alpha)).
 - **What is preserved.** Text is sent as UTF-8 bytes and written back unchanged: tabs, indentation, trailing spaces, blank lines, CRLF and bare CR, emoji, CJK, right-to-left text, combining and zero-width characters, a BOM, links with query strings, and very long lines. Tested between two desktop daemons with a 400 KB+ source-like file (byte for byte), and on an Android 14 emulator with 57 KB, 249 KB and 504 KB code files (accepted; a 504 KB clip made the round trip phone → laptop with the same size and the same start; no full byte-for-byte comparison on Android).
 - **What is not.** Only *plain text* is synced between phone and computer: rich formatting (bold, colours, syntax highlighting copied from a web page or an editor), HTML tables, files and clips that hold only an image or a content link are not carried over a phone. A copy that an app marks as sensitive (password managers) is not sent automatically by the optional helper.
 - Large text from the terminal: `cat main.rs | klip send -` is limited by the daemon's clip limit (32 MiB by default) plus 64 KiB; text over the limit is refused before it is sent, with the limit in the message. (The argument form is limited to about 128 KB by Linux.)
