@@ -26,6 +26,7 @@ async-trait = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 klip-tui = { workspace = true, features = ["testkit"] }
+crossterm = { workspace = true }
 klip-platform = { workspace = true }
 klip-crypto = { workspace = true }
 portable-pty = { workspace = true }

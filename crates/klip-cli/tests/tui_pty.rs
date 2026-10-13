@@ -150,8 +150,14 @@ fn number_keys_open_screens_and_the_help_overlay_lists_keys() {
     p.send(b"q"); // closes the help
     p.send(b"1");
     assert!(p.wait_for("this device", 5), "{}", p.screen());
+    p.send(b"4");
+    assert!(p.wait_for("History (", 5), "{}", p.screen());
+    p.send(b"5");
+    assert!(p.wait_for("Send text to all devices", 5), "{}", p.screen());
+    p.send(b"\x1b"); // leave the editor: the Send screen starts focused, so `q` would be typed
+    std::thread::sleep(std::time::Duration::from_millis(400)); // lets the terminal layer tell Esc from an escape sequence
     p.send(b"q");
-    assert_eq!(p.wait_exit(5), Some(0));
+    assert_eq!(p.wait_exit(5), Some(0), "{}", p.screen());
 }
 
 #[test]

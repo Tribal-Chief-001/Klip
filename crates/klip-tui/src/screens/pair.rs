@@ -110,6 +110,10 @@ fn start_window(app: &mut AppState, fx: &mut Vec<Effect>, restart: bool) {
     app.pair.starting = true;
     app.pair.result = None;
     app.pair.qr = None;
+    if restart {
+        // The daemon replaces the window, so the code on screen stops working at once.
+        app.pair.ticket = None;
+    }
     fx.push(Effect::PairStart {
         ttl_secs: TTLS[app.pair.ttl_idx],
         lan: app.pair.lan,
@@ -855,6 +859,23 @@ mod tests {
             "{:?}",
             a.pair.result
         );
+    }
+
+    #[test]
+    fn a_restarted_window_never_shows_the_old_code_which_is_already_invalid() {
+        let mut a = app();
+        update(&mut a, ch('3'));
+        started(&mut a);
+        assert!(a.pair.ticket.is_some());
+        for c in ['n', 'l', 't'] {
+            update(&mut a, ch(c));
+            assert!(
+                a.pair.ticket.is_none() && a.pair.qr.is_none() && a.pair.starting,
+                "after {c} the old code must be hidden until the new one arrives"
+            );
+            started(&mut a);
+            assert!(a.pair.ticket.is_some());
+        }
     }
 
     #[test]

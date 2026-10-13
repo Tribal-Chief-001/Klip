@@ -132,3 +132,20 @@ async fn a_missing_socket_is_reported_as_the_daemon_being_down() {
         other => panic!("{other:?}"),
     }
 }
+
+#[tokio::test]
+async fn the_tui_api_reports_an_old_daemon_as_unsupported_and_still_unpairs_everyone() {
+    use klip_cli::api::IpcDaemonApi;
+    use klip_tui::api::{ApiError, DaemonApi};
+    let dir = temp("api");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    spawn_old_daemon(&dir, Arc::clone(&log));
+    let api = IpcDaemonApi::new(
+        DaemonClient::new(dir.join("old.sock")),
+        klip_daemon::KlipPaths::from_dir(dir.join("cfg")),
+    );
+    assert_eq!(api.hello().await.unwrap_err(), ApiError::Unsupported);
+    assert!(api.status().await.is_ok());
+    let (removed, failed) = api.unpair_all().await.unwrap();
+    assert_eq!((removed.len(), failed.len()), (2, 0));
+}
