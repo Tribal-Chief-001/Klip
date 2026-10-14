@@ -110,6 +110,7 @@ class Summary:
     image: Optional[ImageInfo]
     auto_images: bool
     daemon_old: bool
+    pairing_open: bool = False
 
 
 def _int(v: Any, default: int = 0) -> int:
@@ -175,7 +176,7 @@ def summarize(status: Any, images: Any, down: bool = False, caps: Optional[list]
                    size(_int(status.get("memory_rss_bytes"))), str(status.get("relay_state") or ""),
                    str(status.get("relay_mode") or ""), left,
                    status.get("last_clip_preview") if isinstance(status.get("last_clip_preview"), str) else None,
-                   image, auto, daemon_old)
+                   image, auto, daemon_old, bool(status.get("pairing_open")))
 
 
 # ------------------------------------------------------------------------------------- history

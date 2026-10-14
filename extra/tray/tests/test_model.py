@@ -125,6 +125,11 @@ class Summaries(unittest.TestCase):
         self.assertEqual((p.name, p.fingerprint, p.online), ("A", "ZZZZ-1111-2222", False))
         self.assertIn("paused", p.error)
 
+    def test_an_open_pairing_window_is_noticed(self):
+        self.assertTrue(m.summarize(status([], pairing_open=True), NOIMG).pairing_open)
+        self.assertFalse(m.summarize(status([]), NOIMG).pairing_open)
+        self.assertFalse(m.summarize(None, None, down=True).pairing_open)
+
     def test_a_malformed_status_never_raises(self):
         for bad in ({}, {"peers": None}, {"peers": [{}]}, {"peers": ["x"]}, []):
             s = m.summarize(bad, {"waiting": "nonsense"})
