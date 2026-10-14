@@ -40,8 +40,12 @@ class IconTests(unittest.TestCase):
     @unittest.skipUnless(HAVE_GTK, "needs PyGObject")
     def test_the_icons_load_as_pictures(self):
         d = tempfile.mkdtemp()
+        from gi.repository import GLib
         for path in icons.write_all(d).values():
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(path, 24, 24)
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(path, 24, 24)
+            except GLib.Error as e:  # a machine without the SVG loader (librsvg)
+                self.skipTest(f"cannot load SVG: {e.message}")
             self.assertEqual((pixbuf.get_width(), pixbuf.get_height()), (24, 24))
 
 
