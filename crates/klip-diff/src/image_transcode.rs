@@ -62,6 +62,28 @@ pub fn validate_image(expected: ImageFormat, bytes: &[u8]) -> Result<(u32, u32),
     Ok((width, height))
 }
 
+/// A PNG preview of an image, at most `max_side` pixels on the longest side (never enlarged). The
+/// pixel limit is checked from the header before anything is decoded.
+pub fn thumbnail_png(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, String> {
+    if max_side == 0 {
+        return Err("the thumbnail size must be at least 1 pixel".to_string());
+    }
+    let (width, height, rgba) = png_to_rgba(bytes)?;
+    let img = RgbaImage::from_raw(width, height, rgba)
+        .ok_or_else(|| "Failed to construct RgbaImage from buffer".to_string())?;
+    let dynamic = DynamicImage::ImageRgba8(img);
+    let dynamic = if width > max_side || height > max_side {
+        dynamic.thumbnail(max_side, max_side)
+    } else {
+        dynamic
+    };
+    let mut out = Vec::new();
+    dynamic
+        .write_to(&mut Cursor::new(&mut out), ImgFormat::Png)
+        .map_err(|e| format!("PNG encoding failed: {e}"))?;
+    Ok(out)
+}
+
 /// Encodes raw RGBA pixel data (e.g. from arboard::ImageData) into standard compressed PNG container bytes.
 pub fn rgba_to_png(width: u32, height: u32, rgba_bytes: &[u8]) -> Result<Vec<u8>, String> {
     if width == 0 || height == 0 {
@@ -381,6 +403,32 @@ mod tests {
         // A normal image still decodes.
         let png = rgba_to_png(3, 2, &[7u8; 24]).unwrap();
         assert_eq!(png_to_rgba(&png).unwrap().0, 3);
+    }
+
+    #[test]
+    fn a_thumbnail_keeps_the_aspect_ratio_and_never_upscales() {
+        let big = rgba_to_png(800, 600, &vec![90u8; 800 * 600 * 4]).unwrap();
+        let t = thumbnail_png(&big, 240).unwrap();
+        assert_eq!(detect_image_format(&t), ImageFormat::Png);
+        let (w, h, _) = png_to_rgba(&t).unwrap();
+        assert_eq!((w, h), (240, 180));
+
+        let tall = rgba_to_png(100, 400, &vec![5u8; 100 * 400 * 4]).unwrap();
+        let (w, h, _) = png_to_rgba(&thumbnail_png(&tall, 240).unwrap()).unwrap();
+        assert_eq!((w, h), (60, 240));
+
+        let small = rgba_to_png(100, 50, &vec![7u8; 100 * 50 * 4]).unwrap();
+        let (w, h, _) = png_to_rgba(&thumbnail_png(&small, 240).unwrap()).unwrap();
+        assert_eq!((w, h), (100, 50), "a small image stays as it is");
+    }
+
+    #[test]
+    fn a_thumbnail_of_a_bomb_or_garbage_is_refused() {
+        let err = thumbnail_png(&png_claiming(60_000, 60_000), 240).unwrap_err();
+        assert!(err.contains("limit"), "{err}");
+        assert!(thumbnail_png(b"not an image", 240).is_err());
+        assert!(thumbnail_png(b"", 240).is_err());
+        assert!(thumbnail_png(&rgba_to_png(2, 2, &[1u8; 16]).unwrap(), 0).is_err());
     }
 
     #[test]
