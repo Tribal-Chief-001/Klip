@@ -59,6 +59,8 @@ fn help_of_every_subcommand() {
             "help_install_service.txt",
             vec!["install-service", "--help"],
         ),
+        ("help_share.txt", vec!["share", "--help"]),
+        ("help_images.txt", vec!["images", "--help"]),
     ] {
         check(name, &args, 0);
     }
@@ -79,6 +81,8 @@ fn commands_that_need_the_daemon_say_so_when_it_is_not_running() {
         ("down_pause.txt", vec!["pause"]),
         ("down_resume.txt", vec!["resume"]),
         ("down_unpair.txt", vec!["unpair", "someone"]),
+        ("down_share.txt", vec!["share"]),
+        ("down_images.txt", vec!["images"]),
     ] {
         check(name, &args, 1);
     }

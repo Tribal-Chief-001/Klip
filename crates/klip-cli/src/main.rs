@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use klip_cli::client::{ClientError, DaemonClient};
 use klip_cli::ops::{log_tail, request_cap, spawn_daemon_process, unpair_all_compat, Spawned};
 use klip_cli::ui::{print_history, print_pair_card, print_pair_request, print_status_card};
@@ -78,6 +78,20 @@ enum Commands {
     },
     /// Install the auto-start service for your OS
     InstallService,
+    /// Send the image you copied last to all linked devices (bind it to a keyboard shortcut)
+    Share,
+    /// Show, or choose, whether copied images are sent at once or wait until you send them
+    Images {
+        /// `auto`: send every copied image at once. `manual`: it waits for `klip share`
+        #[arg(value_enum)]
+        mode: Option<ImageMode>,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ImageMode {
+    Auto,
+    Manual,
 }
 
 #[derive(Subcommand)]
@@ -145,6 +159,71 @@ async fn rpc(req: IpcRequest) -> AnyResult<IpcResponse> {
         Ok(IpcResponse::Error(e)) => Err(e.into()),
         Ok(other) => Ok(other),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Like `rpc`, but an error that is not one of ours (an older daemon does not know the request) gets
+/// the usual "restart it" hint.
+async fn rpc_hint(req: IpcRequest) -> AnyResult<IpcResponse> {
+    match DaemonClient::send_request(&req).await {
+        Ok(IpcResponse::Error(e)) => {
+            if e.starts_with("no image") || e.starts_with("sync is paused") {
+                Err(e.into())
+            } else {
+                Err(format!(
+                    "{e}. If the running daemon is older than this klip, restart it: klip stop && klip start"
+                )
+                .into())
+            }
+        }
+        Ok(other) => Ok(other),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn print_sent(bytes: usize, delivered: &[String], failed: &[(String, String)]) -> AnyResult<()> {
+    if delivered.is_empty() && failed.is_empty() {
+        println!(
+            "{} No linked devices. Run `klip pair` first.",
+            "!".yellow().bold()
+        );
+    }
+    for name in delivered {
+        println!("{} Sent {bytes} B to {}", "✓".green().bold(), name.bold());
+    }
+    for (name, why) in failed {
+        println!(
+            "{} {} did not receive it: {}",
+            "✗".red().bold(),
+            name.bold(),
+            why
+        );
+    }
+    if delivered.is_empty() && !failed.is_empty() {
+        return Err("could not reach any linked device".into());
+    }
+    Ok(())
+}
+
+fn print_image_state(state: &klip_proto::ipc::ImageStateInfo) {
+    if state.auto {
+        println!("Images are sent automatically as soon as you copy them.");
+        println!("To choose each one yourself: klip images manual");
+    } else {
+        println!("Images wait until you send them: `klip share` sends the last one you copied.");
+        println!("To send every copied image at once: klip images auto");
+    }
+    match &state.waiting {
+        Some(w) => println!(
+            "{} Waiting: {} {}x{} ({} B), copied {} s ago.",
+            "●".green(),
+            w.kind.to_uppercase(),
+            w.width,
+            w.height,
+            w.size_bytes,
+            w.age_secs
+        ),
+        None => println!("No image is waiting."),
     }
 }
 
@@ -246,33 +325,32 @@ async fn run(cli: Cli) -> AnyResult<()> {
                     bytes,
                     delivered,
                     failed,
-                } => {
-                    if delivered.is_empty() && failed.is_empty() {
-                        println!(
-                            "{} No linked devices. Run `klip pair` first.",
-                            "!".yellow().bold()
-                        );
-                    }
-                    for name in &delivered {
-                        println!("{} Sent {bytes} B to {}", "✓".green().bold(), name.bold());
-                    }
-                    for (name, why) in &failed {
-                        println!(
-                            "{} {} did not receive it: {}",
-                            "✗".red().bold(),
-                            name.bold(),
-                            why
-                        );
-                    }
-                    if delivered.is_empty() && !failed.is_empty() {
-                        return Err("could not reach any linked device".into());
-                    }
-                }
+                } => print_sent(bytes, &delivered, &failed)?,
                 IpcResponse::Error(e) => return Err(e.into()),
                 other => return Err(format!("unexpected reply: {other:?}").into()),
             }
         }
         Commands::InstallService => install_service()?,
+        Commands::Share => match rpc_hint(IpcRequest::SendPendingImage).await? {
+            IpcResponse::Sent {
+                bytes,
+                delivered,
+                failed,
+            } => print_sent(bytes, &delivered, &failed)?,
+            other => return Err(format!("unexpected reply: {other:?}").into()),
+        },
+        Commands::Images { mode } => {
+            let request = match mode {
+                Some(m) => IpcRequest::SetAutoImages {
+                    enabled: m == ImageMode::Auto,
+                },
+                None => IpcRequest::GetImageState,
+            };
+            match rpc_hint(request).await? {
+                IpcResponse::ImageState(state) => print_image_state(&state),
+                other => return Err(format!("unexpected reply: {other:?}").into()),
+            }
+        }
     }
     Ok(())
 }

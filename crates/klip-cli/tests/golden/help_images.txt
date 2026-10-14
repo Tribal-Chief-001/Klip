@@ -1,0 +1,9 @@
+Show, or choose, whether copied images are sent at once or wait until you send them
+
+Usage: klip images [MODE]
+
+Arguments:
+  [MODE]  `auto`: send every copied image at once. `manual`: it waits for `klip share` [possible values: auto, manual]
+
+Options:
+  -h, --help  Print help

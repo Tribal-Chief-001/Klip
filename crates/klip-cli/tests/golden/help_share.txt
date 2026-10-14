@@ -1,0 +1,6 @@
+Send the image you copied last to all linked devices (bind it to a keyboard shortcut)
+
+Usage: klip share
+
+Options:
+  -h, --help  Print help

@@ -57,3 +57,38 @@ fn text_over_the_daemons_cap_is_refused_before_it_is_written() {
     assert!(all.contains("at most 66536"), "{all}");
     assert!(!all.contains("Broken pipe"), "{all}");
 }
+
+#[test]
+fn share_with_no_copied_image_explains_what_to_do() {
+    let d = Isolated::start("sh1", LAN_ONLY);
+    let out = d.run(&["share"], None);
+    let all = text(&out);
+    assert!(!out.status.success(), "{all}");
+    assert!(all.contains("no image is waiting"), "{all}");
+}
+
+#[test]
+fn the_image_mode_can_be_shown_changed_and_is_kept_in_config_json() {
+    let d = Isolated::start("im1", LAN_ONLY);
+    let shown = text(&d.run(&["images"], None));
+    assert!(shown.contains("wait until you send"), "{shown}");
+    assert!(shown.contains("klip share"), "{shown}");
+
+    let out = d.run(&["images", "auto"], None);
+    assert!(out.status.success(), "{}", text(&out));
+    assert!(text(&out).contains("sent automatically"), "{}", text(&out));
+    let saved = std::fs::read_to_string(d.dir.join("config.json")).unwrap();
+    assert!(saved.contains("\"auto_send_images\": true"), "{saved}");
+    assert!(text(&d.run(&["images"], None)).contains("sent automatically"));
+
+    let out = d.run(&["images", "manual"], None);
+    assert!(out.status.success());
+    assert!(text(&out).contains("wait until you send"), "{}", text(&out));
+    assert!(std::fs::read_to_string(d.dir.join("config.json"))
+        .unwrap()
+        .contains("\"auto_send_images\": false"));
+
+    let bad = d.run(&["images", "sometimes"], None);
+    assert!(!bad.status.success());
+    assert!(text(&bad).contains("possible values"), "{}", text(&bad));
+}
