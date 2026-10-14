@@ -16,6 +16,8 @@ pub fn max_request_bytes(max_clip_bytes: usize) -> usize {
 pub const CAP_UNPAIR_ALL: &str = "unpair_all";
 pub const CAP_COPY_TO_CLIPBOARD: &str = "copy_to_clipboard";
 pub const CAP_CLEAR_HISTORY: &str = "clear_history";
+/// The daemon holds copied images until they are sent (`GetImageState`, `SendPendingImage`, ...).
+pub const CAP_SHARE_IMAGE: &str = "share_image";
 
 /// The settings the running daemon loaded (what a restart would re-read from `config.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +87,19 @@ pub enum IpcRequest {
     },
     /// Forget the clips kept in this device's history.
     ClearHistory,
+    // Added in v0.6.0 (protocol stays 2): always appended, never inserted.
+    /// Is an image waiting to be sent, and are images sent automatically?
+    GetImageState,
+    /// Send the image that was copied last (see `GetImageState`).
+    SendPendingImage,
+    /// Switch automatic sending of copied images on or off (also saved in `config.json`).
+    SetAutoImages {
+        enabled: bool,
+    },
+    /// A small PNG of the waiting image (`id: None`) or of a stored history image.
+    GetThumbnail {
+        id: Option<[u8; 16]>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +140,24 @@ pub struct HistoryItem {
     pub full_content: Vec<u8>,
     pub size_bytes: usize,
     pub is_sensitive: bool,
+}
+
+/// The image that was copied last and is waiting to be sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingImageInfo {
+    pub size_bytes: usize,
+    pub width: u32,
+    pub height: u32,
+    pub age_secs: u64,
+    /// `"png"` or `"webp"`.
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageStateInfo {
+    /// Images are sent as soon as they are copied.
+    pub auto: bool,
+    pub waiting: Option<WaitingImageInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +211,9 @@ pub enum IpcResponse {
     },
     Copied,
     HistoryCleared,
+    ImageState(ImageStateInfo),
+    /// PNG bytes, at most 240 px on the longest side.
+    Thumbnail(Vec<u8>),
 }
 
 pub fn serialize_ipc_msg<T: Serialize>(val: &T) -> Result<Vec<u8>, String> {
@@ -397,6 +433,50 @@ mod compat {
             deserialize_ipc_msg::<IpcResponse>(&bytes).unwrap(),
             IpcResponse::Hello(hello)
         );
+    }
+
+    #[test]
+    fn image_variants_are_appended_after_protocol_two() {
+        // v0.6.0: requests 16.., responses 16.. - the earlier indices above must not move.
+        assert_eq!(req(&IpcRequest::GetImageState), [16]);
+        assert_eq!(req(&IpcRequest::SendPendingImage), [17]);
+        assert_eq!(req(&IpcRequest::SetAutoImages { enabled: true }), [18, 1]);
+        assert_eq!(req(&IpcRequest::GetThumbnail { id: None }), [19, 0]);
+        let mut with_id = vec![19, 1];
+        with_id.extend_from_slice(&[7u8; 16]);
+        assert_eq!(
+            req(&IpcRequest::GetThumbnail { id: Some([7; 16]) }),
+            with_id
+        );
+
+        let empty = ImageStateInfo {
+            auto: false,
+            waiting: None,
+        };
+        assert_eq!(resp(&IpcResponse::ImageState(empty.clone())), [16, 0, 0]);
+        let waiting = ImageStateInfo {
+            auto: true,
+            waiting: Some(WaitingImageInfo {
+                size_bytes: 1,
+                width: 2,
+                height: 3,
+                age_secs: 4,
+                kind: "png".into(),
+            }),
+        };
+        assert_eq!(
+            resp(&IpcResponse::ImageState(waiting.clone())),
+            [16, 1, 1, 1, 2, 3, 4, 3, b'p', b'n', b'g']
+        );
+        assert_eq!(resp(&IpcResponse::Thumbnail(vec![9, 8])), [17, 2, 9, 8]);
+        for r in [
+            IpcResponse::ImageState(waiting),
+            IpcResponse::Thumbnail(vec![1]),
+        ] {
+            let bytes = serialize_ipc_msg(&r).unwrap();
+            assert_eq!(deserialize_ipc_msg::<IpcResponse>(&bytes).unwrap(), r);
+        }
+        assert_eq!(CAP_SHARE_IMAGE, "share_image");
     }
 
     #[test]

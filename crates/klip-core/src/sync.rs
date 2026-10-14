@@ -428,6 +428,18 @@ impl SyncCoordinator {
         });
     }
 
+    /// A copy captured from the OS clipboard (desktop): an image waits to be sent on purpose unless
+    /// automatic image sending is on; everything else is sent at once.
+    pub fn on_local_capture(self: &Arc<Self>, content_type: ClipContentType, data: Vec<u8>) {
+        if image_format_of(&content_type).is_some() && !self.auto_images() {
+            if let Err(why) = self.hold_image(content_type, data) {
+                eprintln!("klip: an image was not held: {why}");
+            }
+            return;
+        }
+        self.spawn_local_clip(content_type, data);
+    }
+
     /// Prepare and send a local clip, waiting for each peer's answer. `None` when ignored
     /// (paused / empty). Used for explicit sends (`klip send`), which are never coalesced.
     pub async fn broadcast_local_clip(

@@ -94,7 +94,7 @@ impl DaemonEngine {
                 if let Ok(Ok(Some(captured))) =
                     tokio::task::spawn_blocking(move || driver.read_clip()).await
                 {
-                    sync.spawn_local_clip(captured.content_type, captured.data);
+                    sync.on_local_capture(captured.content_type, captured.data);
                 }
                 if gate.recapture.load(Ordering::SeqCst) {
                     continue;

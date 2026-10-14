@@ -5,7 +5,8 @@ use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
 use klip_proto::ipc::{
     deserialize_ipc_msg, max_request_bytes, serialize_ipc_msg, ConfigInfo, HelloInfo, IpcRequest,
-    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
+    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_SHARE_IMAGE, CAP_UNPAIR_ALL,
+    IPC_PROTOCOL_VERSION,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -223,6 +224,7 @@ impl IpcServer {
                         CAP_UNPAIR_ALL.to_string(),
                         CAP_COPY_TO_CLIPBOARD.to_string(),
                         CAP_CLEAR_HISTORY.to_string(),
+                        CAP_SHARE_IMAGE.to_string(),
                     ],
                     config: ConfigInfo {
                         device_name: cfg.device_name.clone(),
@@ -248,6 +250,54 @@ impl IpcServer {
             IpcRequest::ClearHistory => {
                 sync.clear_history();
                 IpcResponse::HistoryCleared
+            }
+            IpcRequest::GetImageState => IpcResponse::ImageState(sync.image_state()),
+            IpcRequest::SendPendingImage => {
+                let size = sync
+                    .image_state()
+                    .waiting
+                    .map(|w| w.size_bytes)
+                    .unwrap_or(0);
+                match sync.send_pending_image().await {
+                    Err(e) => IpcResponse::Error(e),
+                    Ok(reports) => {
+                        let mut delivered = Vec::new();
+                        let mut failed = Vec::new();
+                        for r in reports {
+                            match r.result {
+                                Ok(()) => delivered.push(r.peer_name),
+                                Err(e) => failed.push((r.peer_name, e)),
+                            }
+                        }
+                        IpcResponse::Sent {
+                            bytes: size,
+                            delivered,
+                            failed,
+                        }
+                    }
+                }
+            }
+            IpcRequest::SetAutoImages { enabled } => {
+                sync.set_auto_images(enabled);
+                // Keep every other setting as it is in the file (or as the daemon runs, if the file
+                // cannot be read), and change only this one.
+                let mut config = klip_core::DaemonConfig::load(&sync.paths)
+                    .unwrap_or_else(|_| sync.config.clone());
+                config.auto_send_images = enabled;
+                match config.save(&sync.paths) {
+                    Ok(()) => IpcResponse::ImageState(sync.image_state()),
+                    Err(e) => IpcResponse::Error(format!(
+                        "the setting is on for now but config.json could not be saved: {e}"
+                    )),
+                }
+            }
+            IpcRequest::GetThumbnail { id } => {
+                let sync = Arc::clone(sync);
+                match tokio::task::spawn_blocking(move || sync.thumbnail(id)).await {
+                    Ok(Ok(png)) => IpcResponse::Thumbnail(png),
+                    Ok(Err(e)) => IpcResponse::Error(e),
+                    Err(e) => IpcResponse::Error(e.to_string()),
+                }
             }
             IpcRequest::StopDaemon => {
                 shutdown.trigger();

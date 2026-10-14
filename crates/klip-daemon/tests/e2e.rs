@@ -656,7 +656,12 @@ async fn hello_reports_version_capabilities_config_and_the_request_cap() {
     let h = hello_of(a.ipc(IpcRequest::Hello { client_protocol: 2 }).await);
     assert_eq!(h.protocol, klip_proto::ipc::IPC_PROTOCOL_VERSION);
     assert_eq!(h.daemon_version, env!("CARGO_PKG_VERSION"));
-    for cap in ["unpair_all", "copy_to_clipboard", "clear_history"] {
+    for cap in [
+        "unpair_all",
+        "copy_to_clipboard",
+        "clear_history",
+        "share_image",
+    ] {
         assert!(
             h.capabilities.iter().any(|c| c == cap),
             "missing capability {cap}"
@@ -1025,7 +1030,11 @@ fn png_claiming(width: u32, height: u32) -> Vec<u8> {
 async fn an_image_copied_on_one_device_arrives_unchanged_and_is_not_echoed() {
     use klip_proto::clip::ClipContentType;
     use std::sync::atomic::Ordering::SeqCst;
-    let a = start_daemon("Alpha", fresh_dir("a-img"), false).await;
+    // Images are held by default; this test is about the automatic mode.
+    let a = start_daemon_with("Alpha", fresh_dir("a-img"), false, |c| {
+        c.auto_send_images = true
+    })
+    .await;
     let b = start_daemon("Beta", fresh_dir("b-img"), false).await;
     assert!(matches!(
         pair(&a, &b, true).await,
@@ -1162,4 +1171,219 @@ async fn copying_back_a_png_that_arrived_labelled_as_text_is_refused_by_size() {
     }
     a.stop().await;
     b.stop().await;
+}
+
+fn image_state_of(r: IpcResponse) -> klip_proto::ipc::ImageStateInfo {
+    match r {
+        IpcResponse::ImageState(s) => s,
+        other => panic!("expected ImageState, got {other:?}"),
+    }
+}
+
+fn test_png(width: u32, height: u32) -> Vec<u8> {
+    let rgba: Vec<u8> = (0..width * height * 4)
+        .map(|i| (i * 13 % 251) as u8)
+        .collect();
+    klip_diff::rgba_to_png(width, height, &rgba).unwrap()
+}
+
+#[tokio::test]
+async fn a_copied_image_is_held_until_it_is_sent_on_purpose() {
+    use klip_proto::clip::ClipContentType;
+    let a = start_daemon("Alpha", fresh_dir("a-held"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-held"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    assert!(
+        wait_until(15, || a
+            .engine
+            .sync
+            .peer_status()
+            .iter()
+            .all(|p| p.is_online))
+        .await
+    );
+
+    let png = test_png(64, 48);
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, png.clone());
+    assert!(
+        wait_until(10, || a.engine.sync.image_state().waiting.is_some()).await,
+        "the daemon should hold the copied image"
+    );
+    let state = image_state_of(a.ipc(IpcRequest::GetImageState).await);
+    let waiting = state.waiting.expect("waiting");
+    assert!(!state.auto);
+    assert_eq!(
+        (
+            waiting.width,
+            waiting.height,
+            waiting.size_bytes,
+            waiting.kind.as_str()
+        ),
+        (64, 48, png.len(), "png")
+    );
+
+    // Nothing is sent by itself, and the history only has what was really sent.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        b.clipboard.current_clip().is_none(),
+        "a held image must not be sent"
+    );
+    match a.ipc(IpcRequest::GetHistory { limit: 10 }).await {
+        IpcResponse::History(items) => assert!(items.is_empty(), "{items:?}"),
+        other => panic!("unexpected {other:?}"),
+    }
+
+    // A text copy in between is sent as usual and does not lose the held image.
+    a.clipboard.user_copy("hello while an image waits");
+    assert!(
+        wait_until(10, || b.clipboard.current_text().as_deref()
+            == Some("hello while an image waits"))
+        .await
+    );
+    assert!(a.engine.sync.image_state().waiting.is_some());
+
+    // Sending on purpose delivers the image byte for byte, reports who got it, and clears it.
+    match a.ipc(IpcRequest::SendPendingImage).await {
+        IpcResponse::Sent {
+            bytes,
+            delivered,
+            failed,
+        } => {
+            assert_eq!(bytes, png.len());
+            assert_eq!(delivered, vec!["Beta".to_string()]);
+            assert!(failed.is_empty());
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(
+        wait_until(10, || b
+            .clipboard
+            .current_clip()
+            .is_some_and(|c| c.data == png))
+        .await
+    );
+    assert!(image_state_of(a.ipc(IpcRequest::GetImageState).await)
+        .waiting
+        .is_none());
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn sending_with_nothing_held_or_nobody_reachable_keeps_what_is_held() {
+    use klip_proto::clip::ClipContentType;
+    let a = start_daemon("Alpha", fresh_dir("a-keep"), false).await;
+    match a.ipc(IpcRequest::SendPendingImage).await {
+        IpcResponse::Error(e) => assert!(e.contains("no image"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, test_png(16, 16));
+    assert!(wait_until(10, || a.engine.sync.image_state().waiting.is_some()).await);
+    // No linked device: nobody got it, so it stays for another try.
+    match a.ipc(IpcRequest::SendPendingImage).await {
+        IpcResponse::Sent {
+            delivered, failed, ..
+        } => assert!(delivered.is_empty() && failed.is_empty()),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(image_state_of(a.ipc(IpcRequest::GetImageState).await)
+        .waiting
+        .is_some());
+    a.stop().await;
+}
+
+#[tokio::test]
+async fn automatic_mode_sends_images_at_once_and_the_switch_is_saved_in_config_json() {
+    use klip_proto::clip::ClipContentType;
+    let dir_a = fresh_dir("a-auto");
+    let a = start_daemon_with("Alpha", dir_a.clone(), false, |c| c.auto_send_images = true).await;
+    let b = start_daemon("Beta", fresh_dir("b-auto"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    assert!(
+        wait_until(15, || a
+            .engine
+            .sync
+            .peer_status()
+            .iter()
+            .all(|p| p.is_online))
+        .await
+    );
+    assert!(image_state_of(a.ipc(IpcRequest::GetImageState).await).auto);
+
+    let first = test_png(20, 20);
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, first.clone());
+    assert!(
+        wait_until(10, || b
+            .clipboard
+            .current_clip()
+            .is_some_and(|c| c.data == first))
+        .await
+    );
+    assert!(image_state_of(a.ipc(IpcRequest::GetImageState).await)
+        .waiting
+        .is_none());
+
+    // Switching to manual takes effect at once and is written to config.json.
+    let s = image_state_of(a.ipc(IpcRequest::SetAutoImages { enabled: false }).await);
+    assert!(!s.auto);
+    let saved = std::fs::read_to_string(dir_a.join("config.json")).unwrap();
+    assert!(saved.contains("\"auto_send_images\": false"), "{saved}");
+    assert!(
+        saved.contains("\"device_name\": \"Alpha\"") || saved.contains("device_name"),
+        "{saved}"
+    );
+    let second = test_png(21, 21);
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, second.clone());
+    assert!(wait_until(10, || a.engine.sync.image_state().waiting.is_some()).await);
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(
+        b.clipboard.current_clip().is_some_and(|c| c.data == first),
+        "the second image must be held"
+    );
+
+    let s = image_state_of(a.ipc(IpcRequest::SetAutoImages { enabled: true }).await);
+    assert!(s.auto);
+    assert!(std::fs::read_to_string(dir_a.join("config.json"))
+        .unwrap()
+        .contains("\"auto_send_images\": true"));
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn the_waiting_image_has_a_small_preview_and_a_missing_one_is_an_error() {
+    use klip_proto::clip::ClipContentType;
+    let a = start_daemon("Alpha", fresh_dir("a-thumb"), false).await;
+    match a.ipc(IpcRequest::GetThumbnail { id: None }).await {
+        IpcResponse::Error(e) => assert!(e.contains("no image"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, test_png(800, 600));
+    assert!(wait_until(10, || a.engine.sync.image_state().waiting.is_some()).await);
+    for _ in 0..2 {
+        // The second call is answered from the cache.
+        match a.ipc(IpcRequest::GetThumbnail { id: None }).await {
+            IpcResponse::Thumbnail(png) => {
+                let (w, h, _) = klip_diff::png_to_rgba(&png).unwrap();
+                assert_eq!((w, h), (240, 180));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    match a.ipc(IpcRequest::GetThumbnail { id: Some([5; 16]) }).await {
+        IpcResponse::Error(e) => assert!(e.contains("no longer"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    a.stop().await;
 }
