@@ -11,6 +11,8 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 from . import model, theme  # noqa: E402
 from .pages import HomePage, Page  # noqa: E402
 from .pages_devices import DevicesPage, PairPage  # noqa: E402
+from .pages_history import HistoryPage, SendPage  # noqa: E402
+from .pages_more import LogPage, MorePage, SettingsPage  # noqa: E402
 from .widgets import Dot, LogoMark, button, classes, hbox, icon_button, label, vbox  # noqa: E402
 
 NAV = [("home", "Home", "go-home-symbolic"), ("devices", "Devices", "computer-symbolic"),
@@ -31,6 +33,7 @@ class MainView(Gtk.Overlay):
         self._toast_timer = None
         self._current = ""
         self.pages: dict = {}
+        self._popovers: list = []
 
         self.logo = LogoMark(30, theme.FAINT, joined=False)
         self.pill_dot = Dot(8)
@@ -94,7 +97,7 @@ class MainView(Gtk.Overlay):
         self.add_overlay(self.sheet_rev)
         self._yes_handler = None
 
-        factories = page_factories if page_factories is not None else [HomePage, DevicesPage, PairPage]
+        factories = page_factories if page_factories is not None else [HomePage, DevicesPage, PairPage, HistoryPage, SendPage, MorePage, LogPage, SettingsPage]
         for factory in factories:
             self.add_page(factory(self))
         controller.listeners.append(self.on_summary)
@@ -139,6 +142,12 @@ class MainView(Gtk.Overlay):
         self.pill_text.set_text(STATE_WORD.get(s.state, ""))
         for page in self.pages.values():
             page.update(s)
+
+    def register_popover(self, pop: Gtk.Popover) -> None:
+        self._popovers.append(pop)
+
+    def popover_open(self) -> bool:
+        return any(p.get_visible() for p in self._popovers)
 
     def attention(self, name: str) -> None:
         """Something needs the person now (a pairing request): open the window on that page."""

@@ -108,6 +108,7 @@ class HomePage(Page):
         classes(self.pause_btn, [])
         self.pop = Gtk.Popover()
         classes(self.pop, ["klip"])
+        ui.register_popover(self.pop)
         self.pop_box = vbox(spacing=2)
         self.pop_box.set_margin_start(6)
         self.pop_box.set_margin_end(6)

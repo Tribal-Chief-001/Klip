@@ -64,6 +64,7 @@ class DevicesPage(Page):
         classes(menu, ["flat", "icon"])
         pop = Gtk.Popover()
         classes(pop, ["klip"])
+        self.ui.register_popover(pop)
         inner = vbox(button("Unpair this device", ["flat", "danger"],
                             lambda p=p, pop=pop: (pop.popdown(), self._ask_unpair(p))), spacing=2)
         inner.set_margin_start(6)

@@ -31,6 +31,7 @@ class Actions:
     def open_terminal(self): pass
     def quit_tray(self): pass
     def show_window(self): pass
+    def set_busy(self, flag): pass
 
 
 def settle():
@@ -142,3 +143,27 @@ if __name__ == "__main__":
         view.pages["pair"].join_text.get_buffer().set_text("klip1" + "abcdefghij" * 8)
         settle()
     run(out, "pair_join", two, page="pair", setup=join)
+
+    hist = [{"id_hex": "%02x" % i * 16 if False else ("%02x" % i) * 16, "origin_name": o, "timestamp_ms": 5_000_000 - ago * 1000,
+             "content_preview": p, "content_len": 0 if big else 10, "size_bytes": sz, "is_sensitive": sec}
+            for i, (o, ago, p, sz, sec, big) in enumerate([
+                ("Vivo V2253", 12, "https://github.com/Tribal-Chief-001/Klip/releases/tag/v0.5.0-alpha", 62, False, False),
+                ("lucifer-pc", 95, "[Image: PNG (186183 B)]", 186183, False, False),
+                ("Vivo V2253", 400, "Meeting notes: the quick brown fox jumps over the lazy dog and then writes a very long line", 90, False, False),
+                ("lucifer-pc", 3600, "•••••••••••••••• (Sensitive Token / Key)", 40, True, False),
+                ("lucifer-pc", 7200, "[Image: PNG (5000000 B)]", 5000000, False, True)])]
+    run(out, "history", {"GetHistory": Reply(ok={"History": hist})}, page="history")
+    run(out, "history_empty", {"GetHistory": Reply(ok={"History": []})}, page="history")
+
+    def typed(view, ctl, bridge):
+        view.pages["send"].text.get_buffer().set_text("Remember to buy milk and send the report before Friday.")
+        settle()
+    run(out, "send", {}, page="send", setup=typed)
+
+    cfg = {"device_name": "lucifer-pc", "relay": "n0", "max_history_items": 50, "history_ttl_hours": 24,
+           "poll_interval_ms": 100, "max_clip_bytes": 32 * 1024 * 1024, "lan_discovery": True, "auto_send_images": False}
+    run(out, "more", {"service_state": Reply(ok={"supported": True, "installed": True, "enabled": True, "active": True}),
+                      "autostart_get": Reply(ok={"installed": False})}, page="more")
+    run(out, "settings", {"config_get": Reply(ok=cfg)}, page="settings")
+    log = "\n".join(f"2026-10-14T10:{i:02d}:11 klip: line {i} of the log with a bit of text" for i in range(40))
+    run(out, "log", {"log_tail": Reply(ok={"new_offset": 100, "text": log, "reset": False, "missing": False})}, page="log")

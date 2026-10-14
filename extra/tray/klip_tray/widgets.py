@@ -51,6 +51,8 @@ def label(text: str = "", css: Iterable[str] = (), wrap: bool = False, ellipsize
         lab.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
     if ellipsize:
         lab.set_ellipsize(Pango.EllipsizeMode.END)
+    if wrap and not max_chars:
+        max_chars = 40  # a wrapped label must not ask for the width of its whole text
     if max_chars:
         lab.set_max_width_chars(max_chars)
     if lines:

@@ -74,6 +74,11 @@ window.klip {{ background: transparent; }}
 .klip switch:checked {{ background: {LIME}; border-color: {LIME}; }}
 .klip switch:checked slider {{ background: {INK}; }}
 
+.klip spinbutton {{ background: {PANEL}; color: {TEXT}; border: 1px solid {LINE}; border-radius: 12px; box-shadow: none; }}
+.klip spinbutton entry {{ border: none; background: transparent; padding: 6px 10px; }}
+.klip spinbutton button {{ background: transparent; border: none; border-radius: 8px; padding: 2px 6px; min-width: 0; }}
+.klip combobox button.combo {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 12px; padding: 7px 12px; font-weight: 500; }}
+.klip combobox arrow {{ color: {DIM}; }}
 .klip scrolledwindow {{ background: transparent; }}
 .klip scrollbar {{ background: transparent; }}
 .klip scrollbar slider {{ background: {LINE}; border-radius: 99px; min-width: 5px; min-height: 5px; }}
@@ -99,5 +104,7 @@ window.klip {{ background: transparent; }}
 popover.klip, popover.klip.background {{ background: {PANEL_HI}; border-radius: 12px; border: 1px solid {LINE}; padding: 6px; }}
 popover.klip button {{ border-radius: 8px; }}
 popover.klip label {{ color: {TEXT}; }}
-.klip menu, .klip .menu {{ background: {PANEL_HI}; color: {TEXT}; }}
+menu, .menu, menuitem {{ background: {PANEL_HI}; color: {TEXT}; }}
+.klip .menurow {{ background: transparent; border-radius: 12px; border: 1px solid transparent; padding: 10px 12px; }}
+.klip .menurow:hover {{ background: {PANEL}; border-color: {LINE}; }}
 """
