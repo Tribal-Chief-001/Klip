@@ -490,3 +490,26 @@ async fn a_superseded_clip_is_reported_to_the_sender_not_as_delivered() {
         other => panic!("a superseded clip must not count as delivered: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn offline_for_is_none_while_connected_and_counts_up_after_the_peer_goes_away() {
+    let host = spawn_node("Laptop", true, None).await;
+    let phone = spawn_node("Phone", true, None).await;
+    pair(&host, &phone).await;
+    // A delivered clip proves the connection is up.
+    let res = host.node.send_clip(&clip_from(&host.node, "hi")).await;
+    assert!(res.iter().all(|(_, r)| r.is_ok()), "{res:?}");
+    let st = host.node.peer_statuses();
+    assert!(st[0].connected && st[0].offline_for.is_none(), "{st:?}");
+
+    phone.node.shutdown().await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while host.node.peer_statuses()[0].connected && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let st = host.node.peer_statuses();
+    assert!(!st[0].connected, "peer should be seen as gone: {st:?}");
+    assert!(st[0].offline_for.is_some());
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(host.node.peer_statuses()[0].offline_for.unwrap() >= Duration::from_secs(1));
+}

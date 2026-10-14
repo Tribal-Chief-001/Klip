@@ -105,6 +105,8 @@ pub struct PeerStatus {
     pub connected: bool,
     /// A standing problem with this peer that retrying cannot fix (for example, it unpaired us).
     pub problem: Option<String>,
+    /// How long since this peer was last seen connected; `None` while it is connected.
+    pub offline_for: Option<Duration>,
 }
 
 /// What the receiving application did with a clip; this is what the sender is told.
@@ -158,6 +160,10 @@ struct Inner {
     peers: Mutex<HashMap<EndpointId, PeerRecord>>,
     conns: Mutex<HashMap<EndpointId, Connection>>,
     problems: Mutex<HashMap<EndpointId, String>>,
+    /// When each peer was last seen connected (refreshed whenever `peer_statuses` runs, which the
+    /// 5 s maintainer tick does). Connection state is used, not `PeerDisconnected` events:
+    /// `drop_connection` removes a connection without raising one.
+    last_seen: Mutex<HashMap<EndpointId, Instant>>,
     /// Connections with a running reader task (diagnostics and leak tests).
     readers: std::sync::atomic::AtomicUsize,
     pairing: Mutex<Option<PairingWindow>>,
@@ -223,6 +229,7 @@ impl KlipNode {
             peers: Mutex::new(peers.into_iter().map(|p| (p.id, p)).collect()),
             conns: Mutex::new(HashMap::new()),
             problems: Mutex::new(HashMap::new()),
+            last_seen: Mutex::new(HashMap::new()),
             readers: std::sync::atomic::AtomicUsize::new(0),
             pairing: Mutex::new(None),
             events: tx,
@@ -251,16 +258,27 @@ impl KlipNode {
     pub fn peer_statuses(&self) -> Vec<PeerStatus> {
         let conns = self.inner.conns.lock().unwrap();
         let problems = self.inner.problems.lock().unwrap();
+        let mut seen = self.inner.last_seen.lock().unwrap();
+        let now = Instant::now();
         self.peers()
             .into_iter()
-            .map(|p| PeerStatus {
-                connected: conns
+            .map(|p| {
+                let connected = conns
                     .get(&p.id)
                     .map(|c| c.close_reason().is_none())
-                    .unwrap_or(false),
-                problem: problems.get(&p.id).cloned(),
-                id: p.id,
-                name: p.name,
+                    .unwrap_or(false);
+                // A peer never seen yet (daemon start, fresh pairing) counts as seen now.
+                let last = seen.entry(p.id).or_insert(now);
+                if connected {
+                    *last = now;
+                }
+                PeerStatus {
+                    connected,
+                    offline_for: (!connected).then(|| now.duration_since(*last)),
+                    problem: problems.get(&p.id).cloned(),
+                    id: p.id,
+                    name: p.name,
+                }
             })
             .collect()
     }
@@ -295,6 +313,7 @@ impl KlipNode {
     pub fn unpair(&self, id: &EndpointId) -> bool {
         let removed = self.inner.peers.lock().unwrap().remove(id).is_some();
         self.inner.problems.lock().unwrap().remove(id);
+        self.inner.last_seen.lock().unwrap().remove(id);
         if let Some(conn) = self.inner.conns.lock().unwrap().remove(id) {
             conn.close(CODE_UNPAIRED.into(), b"unpaired");
         }
