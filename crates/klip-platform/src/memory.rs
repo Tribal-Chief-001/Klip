@@ -41,6 +41,21 @@ impl MemoryClipboardDriver {
         });
     }
 
+    /// Simulate the user copying non-text content (an image).
+    pub fn user_copy_bytes(&self, content_type: ClipContentType, data: Vec<u8>) {
+        let fingerprint = compute_fingerprint(&data, &self.local_node);
+        *self.clip.lock().unwrap() = Some(CapturedClip {
+            content_type,
+            data,
+            fingerprint,
+        });
+    }
+
+    /// Whatever is on the clipboard now, with its content type.
+    pub fn current_clip(&self) -> Option<CapturedClip> {
+        self.clip.lock().unwrap().clone()
+    }
+
     /// Current clipboard text (what a paste would produce).
     pub fn current_text(&self) -> Option<String> {
         self.clip

@@ -995,3 +995,129 @@ async fn an_automatic_copy_that_cannot_reach_a_device_alerts_once_per_outage() {
     assert!(wait_until(60, || !a.engine.sync.is_sending()).await);
     a.stop().await;
 }
+
+/// A real PNG whose header claims `width` x `height` (CRC fixed): a few bytes that would decode to
+/// gigabytes.
+fn png_claiming(width: u32, height: u32) -> Vec<u8> {
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for b in data {
+            crc ^= u32::from(*b);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+    let mut png = klip_diff::rgba_to_png(2, 2, &[255u8; 16]).unwrap();
+    png[16..20].copy_from_slice(&width.to_be_bytes());
+    png[20..24].copy_from_slice(&height.to_be_bytes());
+    let crc = crc32(&png[12..29]);
+    png[29..33].copy_from_slice(&crc.to_be_bytes());
+    png
+}
+
+#[tokio::test]
+async fn an_image_copied_on_one_device_arrives_unchanged_and_is_not_echoed() {
+    use klip_proto::clip::ClipContentType;
+    use std::sync::atomic::Ordering::SeqCst;
+    let a = start_daemon("Alpha", fresh_dir("a-img"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-img"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    let rgba: Vec<u8> = (0..64 * 48 * 4).map(|i| (i * 7 % 251) as u8).collect();
+    let png = klip_diff::rgba_to_png(64, 48, &rgba).unwrap();
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, png.clone());
+    assert!(
+        wait_until(15, || b
+            .clipboard
+            .current_clip()
+            .is_some_and(|c| c.data == png))
+        .await,
+        "the image must arrive byte for byte"
+    );
+    assert_eq!(
+        b.clipboard.current_clip().unwrap().content_type,
+        ClipContentType::ImagePng
+    );
+    // Not echoed back: B sent nothing, A sent exactly once.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(b.engine.sync.sends_started.load(SeqCst), 0);
+    assert_eq!(a.engine.sync.sends_started.load(SeqCst), 1);
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn a_bomb_and_a_mislabelled_image_are_rejected_and_never_reach_the_clipboard() {
+    use klip_net::{ClipOutcome, EndpointId, NetEvent};
+    use klip_proto::clip::{ClipContentType, ClipPayload};
+    use klip_proto::hlc::HybridLogicalClock;
+
+    let a = start_daemon("Alpha", fresh_dir("a-bomb"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-bomb"), false).await;
+    let from = EndpointId::from_bytes(a.engine.node_id().as_bytes()).unwrap();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut tick = 0u64;
+    let mut clip = |content_type: ClipContentType, bytes: Vec<u8>| {
+        tick += 1;
+        let node = a.engine.node_id();
+        ClipPayload::new(
+            content_type,
+            bytes,
+            node,
+            HybridLogicalClock {
+                physical_time_ms: now_ms + tick * 10,
+                logical_counter: 0,
+                node_id: node,
+            },
+            false,
+        )
+    };
+    let deliver = |p: ClipPayload| {
+        let sync = Arc::clone(&b.engine.sync);
+        async move {
+            let (ack, answer) = tokio::sync::oneshot::channel();
+            sync.handle_net_event(NetEvent::Clip {
+                from,
+                payload: p,
+                ack,
+            })
+            .await;
+            answer.await.unwrap()
+        }
+    };
+
+    let bomb = clip(ClipContentType::ImagePng, png_claiming(60_000, 60_000));
+    assert_eq!(deliver(bomb).await, ClipOutcome::Rejected);
+    let small = klip_diff::rgba_to_png(4, 4, &[9u8; 64]).unwrap();
+    let mislabelled = clip(ClipContentType::ImageWebP, small.clone());
+    assert_eq!(deliver(mislabelled).await, ClipOutcome::Rejected);
+    assert_eq!(
+        deliver(clip(ClipContentType::ImagePng, b"nope".to_vec())).await,
+        ClipOutcome::Rejected
+    );
+    assert!(
+        b.clipboard.current_clip().is_none(),
+        "nothing may reach the clipboard"
+    );
+
+    // A valid image right after is still accepted.
+    assert_eq!(
+        deliver(clip(ClipContentType::ImagePng, small.clone())).await,
+        ClipOutcome::Applied
+    );
+    assert_eq!(b.clipboard.current_clip().unwrap().data, small);
+    a.stop().await;
+    b.stop().await;
+}

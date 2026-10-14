@@ -70,6 +70,14 @@ pub fn offline_label(gone: Duration) -> Option<String> {
     }
 }
 
+fn image_format_of(t: &ClipContentType) -> Option<klip_diff::ImageFormat> {
+    match t {
+        ClipContentType::ImagePng => Some(klip_diff::ImageFormat::Png),
+        ClipContentType::ImageWebP => Some(klip_diff::ImageFormat::WebP),
+        _ => None,
+    }
+}
+
 fn is_unreachable(e: &NetError) -> bool {
     matches!(e, NetError::Connect(_) | NetError::Stream(_))
 }
@@ -451,6 +459,14 @@ impl SyncCoordinator {
         // The transport already guarantees origin == sender; the clock owner must match too.
         if payload.hlc.node_id != sender || payload.origin_node != sender {
             return ClipOutcome::Rejected;
+        }
+        // An image from a paired device is still untrusted input: check its magic bytes and the size
+        // in its header (no decoding) before anything is written or our clock moves.
+        if let Some(format) = image_format_of(&payload.content_type) {
+            if let Err(why) = klip_diff::validate_image(format, &payload.content) {
+                eprintln!("klip: refused an image from {}: {why}", sender.short_id());
+                return ClipOutcome::Rejected;
+            }
         }
         let remote_hlc = payload.hlc;
         {
