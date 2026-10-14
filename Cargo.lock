@@ -2223,6 +2223,7 @@ dependencies = [
  "jni 0.21.1",
  "klip-core",
  "klip-crypto",
+ "klip-diff",
  "klip-net",
  "klip-platform",
  "klip-proto",

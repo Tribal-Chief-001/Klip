@@ -27,6 +27,7 @@ ndk-context = "0.1"
 
 [dependencies]
 klip-core = { workspace = true }
+klip-diff = { workspace = true }
 klip-proto = { workspace = true }
 klip-crypto = { workspace = true }
 klip-platform = { workspace = true }

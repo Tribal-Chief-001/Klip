@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 struct MockBridge {
     writes: Mutex<Vec<(String, bool)>>,
+    images: Mutex<Vec<(Vec<u8>, String)>>,
     fail: AtomicBool,
 }
 
@@ -22,11 +23,23 @@ impl ClipboardBridge for MockBridge {
         self.writes.lock().unwrap().push((text, sensitive));
         true
     }
+
+    fn write_image(&self, data: Vec<u8>, mime: String) -> bool {
+        if self.fail.load(Ordering::SeqCst) {
+            return false;
+        }
+        self.images.lock().unwrap().push((data, mime));
+        true
+    }
 }
 
 impl MockBridge {
     fn written(&self) -> Vec<(String, bool)> {
         self.writes.lock().unwrap().clone()
+    }
+
+    fn images(&self) -> Vec<(Vec<u8>, String)> {
+        self.images.lock().unwrap().clone()
     }
 }
 
@@ -214,4 +227,100 @@ fn cancelling_while_a_request_waits_declines_it() {
     assert!(host.status().peers.is_empty());
     host.stop();
     joiner.stop();
+}
+
+fn paired_pair(
+    tag: &str,
+) -> (
+    Arc<KlipEngine>,
+    Arc<MockBridge>,
+    Arc<KlipEngine>,
+    Arc<MockBridge>,
+) {
+    let (phone, phone_clip) = engine(&format!("{tag}p"), "Phone");
+    let (laptop, laptop_clip) = engine(&format!("{tag}l"), "Laptop");
+    pair(&laptop, &phone, true).unwrap();
+    assert!(wait_until(10, || laptop
+        .pair_poll()
+        .paired_device
+        .is_some()));
+    (phone, phone_clip, laptop, laptop_clip)
+}
+
+#[test]
+fn an_image_sent_by_one_engine_reaches_the_other_bridge_with_its_mime_type() {
+    let (phone, phone_clip, laptop, laptop_clip) = paired_pair("img1");
+    let png = klip_diff::rgba_to_png(32, 24, &vec![77u8; 32 * 24 * 4]).unwrap();
+    let report = phone.send_image(png.clone()).unwrap();
+    assert_eq!(
+        report.delivered,
+        vec!["Laptop".to_string()],
+        "{:?}",
+        report.failed.first().map(|f| &f.reason)
+    );
+    assert!(wait_until(5, || !laptop_clip.images().is_empty()));
+    assert_eq!(laptop_clip.images(), vec![(png, "image/png".to_string())]);
+
+    let webp = klip_diff::rgba_to_webp(16, 16, &vec![5u8; 16 * 16 * 4]).unwrap();
+    let report = laptop.send_image(webp.clone()).unwrap();
+    assert_eq!(report.delivered, vec!["Phone".to_string()]);
+    assert!(wait_until(5, || !phone_clip.images().is_empty()));
+    assert_eq!(phone_clip.images(), vec![(webp, "image/webp".to_string())]);
+    phone.stop();
+    laptop.stop();
+}
+
+#[test]
+fn only_real_png_and_webp_images_within_the_limits_are_sent() {
+    let (phone, _pc, laptop, laptop_clip) = paired_pair("img2");
+    // JPEG (and anything else) is not sent: the app converts to PNG first.
+    let jpeg = vec![
+        0xFF, 0xD8, 0xFF, 0xE0, 0, 16, b'J', b'F', b'I', b'F', 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
+    ];
+    assert!(phone.send_image(jpeg).is_err());
+    assert!(phone.send_image(Vec::new()).is_err());
+    assert!(phone.send_image(b"not an image".to_vec()).is_err());
+
+    // Bigger than the 12 MB limit (random pixels do not compress): refused with the limit in the message.
+    let mut state = 0x1234_5678_9ABC_DEF0u64;
+    let noise: Vec<u8> = (0..2300 * 2300 * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        })
+        .collect();
+    let big = klip_diff::rgba_to_png(2300, 2300, &noise).unwrap();
+    assert!(
+        big.len() > 12_000_000,
+        "test image is only {} bytes",
+        big.len()
+    );
+    let report = phone.send_image(big).unwrap();
+    assert!(report.delivered.is_empty());
+    assert!(
+        report.failed[0].reason.contains("limit"),
+        "{:?}",
+        report.failed[0].reason
+    );
+    assert!(laptop_clip.images().is_empty());
+    phone.stop();
+    laptop.stop();
+}
+
+#[test]
+fn a_bridge_that_cannot_store_the_image_is_reported_to_the_sender() {
+    let (phone, _pc, laptop, laptop_clip) = paired_pair("img3");
+    laptop_clip.fail.store(true, Ordering::SeqCst);
+    let png = klip_diff::rgba_to_png(8, 8, &vec![1u8; 8 * 8 * 4]).unwrap();
+    let report = phone.send_image(png).unwrap();
+    assert!(report.delivered.is_empty());
+    assert!(
+        report.failed[0].reason.contains("clipboard"),
+        "{:?}",
+        report.failed[0].reason
+    );
+    phone.stop();
+    laptop.stop();
 }

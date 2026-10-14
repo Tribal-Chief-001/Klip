@@ -36,6 +36,29 @@ impl std::fmt::Display for KlipError {
 
 impl std::error::Error for KlipError {}
 
+impl KlipEngine {
+    fn send(&self, content_type: ClipContentType, data: Vec<u8>) -> Result<SendReport, KlipError> {
+        let reports = self
+            .rt
+            .block_on(self.core.sync.broadcast_local_clip(content_type, data))
+            .ok_or_else(|| fail("sync is paused or the clip is empty"))?;
+        let mut out = SendReport {
+            delivered: vec![],
+            failed: vec![],
+        };
+        for r in reports {
+            match r.result {
+                Ok(()) => out.delivered.push(r.peer_name),
+                Err(reason) => out.failed.push(SendFailure {
+                    device: r.peer_name,
+                    reason,
+                }),
+            }
+        }
+        Ok(out)
+    }
+}
+
 fn fail<E: std::fmt::Display>(e: E) -> KlipError {
     KlipError::Failed {
         reason: e.to_string(),
@@ -48,6 +71,10 @@ pub trait ClipboardBridge: Send + Sync {
     /// Return `true` if the text is now on the clipboard. `sensitive` asks the app to set
     /// `ClipDescription.EXTRA_IS_SENSITIVE` so keyboards do not show a preview.
     fn write_text(&self, text: String, sensitive: bool) -> bool;
+
+    /// Return `true` if the image is now on the clipboard. `mime` is `image/png` or `image/webp`;
+    /// the engine has already checked the magic bytes and the size in the header.
+    fn write_image(&self, data: Vec<u8>, mime: String) -> bool;
 }
 
 #[derive(uniffi::Record)]
@@ -154,10 +181,21 @@ impl ClipboardDriver for BridgeDriver {
         data: &[u8],
         sensitive: bool,
     ) -> Result<(), PlatformError> {
-        match content_type {
-            ClipContentType::PlainTextUtf8 | ClipContentType::HtmlContent => {}
-            // Images and custom types are not supported by the Android app yet.
-            _ => return Err(PlatformError::UnsupportedFormat),
+        let image_mime = match content_type {
+            ClipContentType::PlainTextUtf8 | ClipContentType::HtmlContent => None,
+            ClipContentType::ImagePng => Some("image/png"),
+            ClipContentType::ImageWebP => Some("image/webp"),
+            // Custom types are not supported by the Android app.
+            ClipContentType::CustomMime(_) => return Err(PlatformError::UnsupportedFormat),
+        };
+        if let Some(mime) = image_mime {
+            self.echo
+                .record_injection(compute_fingerprint(data, &self.node));
+            return if self.bridge.write_image(data.to_vec(), mime.to_string()) {
+                Ok(())
+            } else {
+                Err(PlatformError::ClipboardBusy)
+            };
         }
         let text = String::from_utf8_lossy(data).into_owned();
         // Remember what we are about to write so the clipboard listener does not echo it back.
@@ -202,9 +240,9 @@ impl KlipEngine {
         let paths = KlipPaths::from_dir(data_dir);
         let mut config = DaemonConfig::load(&paths).map_err(fail)?;
         config.device_name = device_name;
-        // Android's clipboard takes about 0.9 MB at most and this app writes no images: refuse bigger
-        // clips at once instead of downloading them over mobile data first.
-        config.max_clip_bytes = 1_000_000;
+        // Images (stored as files) can be big, text can not (Android's clipboard takes about 0.9 MB):
+        // 12 MB keeps a hostile or accidental giant clip from being downloaded over mobile data.
+        config.max_clip_bytes = 12_000_000;
         config.relay = if use_relays {
             RelayMode::N0
         } else {
@@ -356,28 +394,21 @@ impl KlipEngine {
 
     /// Send text now and report, per device, what happened (share sheet, tile, "send" button).
     pub fn send_text(&self, text: String) -> Result<SendReport, KlipError> {
-        let reports = self
-            .rt
-            .block_on(
-                self.core
-                    .sync
-                    .broadcast_local_clip(ClipContentType::PlainTextUtf8, text.into_bytes()),
-            )
-            .ok_or_else(|| fail("sync is paused or the text is empty"))?;
-        let mut out = SendReport {
-            delivered: vec![],
-            failed: vec![],
-        };
-        for r in reports {
-            match r.result {
-                Ok(()) => out.delivered.push(r.peer_name),
-                Err(reason) => out.failed.push(SendFailure {
-                    device: r.peer_name,
-                    reason,
-                }),
+        self.send(ClipContentType::PlainTextUtf8, text.into_bytes())
+    }
+
+    /// Send a PNG or WebP image now (the app converts everything else first). Checked before sending:
+    /// magic bytes and the size in the header, so a hostile file never leaves the phone.
+    pub fn send_image(&self, data: Vec<u8>) -> Result<SendReport, KlipError> {
+        let (content_type, format) = match klip_diff::detect_image_format(&data) {
+            klip_diff::ImageFormat::Png => (ClipContentType::ImagePng, klip_diff::ImageFormat::Png),
+            klip_diff::ImageFormat::WebP => {
+                (ClipContentType::ImageWebP, klip_diff::ImageFormat::WebP)
             }
-        }
-        Ok(out)
+            _ => return Err(fail("only PNG and WebP images can be sent")),
+        };
+        klip_diff::validate_image(format, &data).map_err(fail)?;
+        self.send(content_type, data)
     }
 
     pub fn pause(&self, seconds: u64) {

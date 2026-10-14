@@ -153,6 +153,10 @@ impl ClipboardDriver for LinuxClipboardDriver {
 
         // Try reading image
         if let Ok(img) = cb.get_image() {
+            // Would be refused by every receiver anyway: do not spend a PNG encode on it.
+            if klip_diff::too_many_pixels(img.width as u32, img.height as u32) {
+                return Ok(None);
+            }
             if let Ok(png_bytes) =
                 klip_diff::rgba_to_png(img.width as u32, img.height as u32, &img.bytes)
             {
