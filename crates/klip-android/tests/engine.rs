@@ -324,3 +324,34 @@ fn a_bridge_that_cannot_store_the_image_is_reported_to_the_sender() {
     phone.stop();
     laptop.stop();
 }
+
+#[test]
+fn an_image_whose_header_claims_too_many_pixels_never_leaves_the_phone() {
+    let (phone, _pc, laptop, laptop_clip) = paired_pair("img4");
+    // A real PNG with its size fields overwritten (CRC fixed): a few bytes that would decode to gigabytes.
+    let mut bomb = klip_diff::rgba_to_png(2, 2, &[255u8; 16]).unwrap();
+    bomb[16..20].copy_from_slice(&60_000u32.to_be_bytes());
+    bomb[20..24].copy_from_slice(&60_000u32.to_be_bytes());
+    let mut crc = 0xFFFF_FFFFu32;
+    for b in &bomb[12..29] {
+        crc ^= u32::from(*b);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    bomb[29..33].copy_from_slice(&(!crc).to_be_bytes());
+    let err = phone
+        .send_image(bomb)
+        .err()
+        .expect("a bomb must be refused")
+        .to_string();
+    assert!(err.contains("pixels"), "{err}");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(laptop_clip.images().is_empty());
+    phone.stop();
+    laptop.stop();
+}

@@ -95,6 +95,17 @@ pub fn rgba_to_png(width: u32, height: u32, rgba_bytes: &[u8]) -> Result<Vec<u8>
 /// Decodes compressed PNG (or other supported format) bytes into raw (width, height, RGBA) pixels
 /// for setting into the host clipboard.
 pub fn png_to_rgba(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    // Read the size from the header first: a few bytes can describe gigabytes of pixels.
+    let (width, height) = image::ImageReader::new(Cursor::new(png_bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to read image header: {e}"))?
+        .into_dimensions()
+        .map_err(|e| format!("Failed to read image header: {e}"))?;
+    if too_many_pixels(width, height) {
+        return Err(format!(
+            "the image is {width} x {height} pixels; the limit is {MAX_IMAGE_PIXELS} pixels"
+        ));
+    }
     let dynamic =
         image::load_from_memory(png_bytes).map_err(|e| format!("Failed to decode image: {}", e))?;
 
@@ -329,6 +340,47 @@ mod tests {
         let crc = crc32(&png[12..29]); // "IHDR" + 13 data bytes
         png[29..33].copy_from_slice(&crc.to_be_bytes());
         png
+    }
+
+    /// A real lossless WebP whose VP8L header (14-bit width-1, 14-bit height-1) is overwritten.
+    fn webp_claiming(width: u32, height: u32) -> Vec<u8> {
+        let mut webp = rgba_to_webp(2, 2, &[255u8; 16]).unwrap();
+        let at = webp
+            .windows(4)
+            .position(|w| w == b"VP8L")
+            .expect("lossless webp")
+            + 8;
+        assert_eq!(webp[at], 0x2f, "VP8L signature");
+        let bits = (width - 1) | ((height - 1) << 14);
+        let old = u32::from_le_bytes([webp[at + 1], webp[at + 2], webp[at + 3], webp[at + 4]]);
+        let new = (old & 0xF000_0000) | bits; // keep alpha + version bits
+        webp[at + 1..at + 5].copy_from_slice(&new.to_le_bytes());
+        webp
+    }
+
+    #[test]
+    fn a_webp_bomb_header_and_the_exact_webp_limit_are_handled_like_png() {
+        assert_eq!(
+            validate_image(ImageFormat::WebP, &webp_claiming(6000, 6000)),
+            Ok((6000, 6000))
+        );
+        assert!(validate_image(ImageFormat::WebP, &webp_claiming(6000, 6001)).is_err());
+        let err = validate_image(ImageFormat::WebP, &webp_claiming(16000, 16000)).unwrap_err();
+        assert!(err.contains("16000"), "{err}");
+    }
+
+    #[test]
+    fn decoding_refuses_a_huge_image_from_its_header_before_allocating() {
+        let err = png_to_rgba(&png_claiming(8000, 8000)).unwrap_err();
+        assert!(
+            err.contains("limit"),
+            "must be refused by the pixel limit, got: {err}"
+        );
+        let err = png_to_rgba(&webp_claiming(16000, 16000)).unwrap_err();
+        assert!(err.contains("limit"), "{err}");
+        // A normal image still decodes.
+        let png = rgba_to_png(3, 2, &[7u8; 24]).unwrap();
+        assert_eq!(png_to_rgba(&png).unwrap().0, 3);
     }
 
     #[test]

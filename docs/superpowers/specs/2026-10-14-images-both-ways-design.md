@@ -19,7 +19,7 @@ a photo or screenshot on the phone cannot be sent to the laptop except by saving
 2. On the phone, share an image to Klip (Share sheet), or copy an image and tap the Klip tile or the
    notification button: it is on the laptop's clipboard.
 3. Hostile or broken images from a paired device cannot exhaust memory or disk on either side.
-4. Nothing leaks: no EXIF/GPS from phone photos, no files left behind on the phone.
+4. Nothing leaks: no EXIF/GPS from phone photos; files on the phone are short-lived (pruned when the next image arrives or Klip restarts, not on a timer).
 5. A failure is reported truthfully to the sender (no "delivered" for an image that was not applied).
 6. No change to the wire format or the control-socket protocol; older devices keep working for text.
 

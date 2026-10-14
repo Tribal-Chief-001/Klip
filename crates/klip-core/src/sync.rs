@@ -676,6 +676,11 @@ impl SyncCoordinator {
             );
         }
         let content_type = crate::history::sniff_content_type(&item.full_content);
+        // The history keeps whatever arrived, including bytes a peer labelled as text; check before the
+        // driver decodes them as an image.
+        if let Some(format) = image_format_of(&content_type) {
+            klip_diff::validate_image(format, &item.full_content)?;
+        }
         let driver = Arc::clone(&self.driver);
         let sensitive = item.is_sensitive;
         let data = item.full_content;

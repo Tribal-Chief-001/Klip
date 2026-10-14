@@ -1121,3 +1121,45 @@ async fn a_bomb_and_a_mislabelled_image_are_rejected_and_never_reach_the_clipboa
     a.stop().await;
     b.stop().await;
 }
+
+#[tokio::test]
+async fn copying_back_a_png_that_arrived_labelled_as_text_is_refused_by_size() {
+    use klip_net::{ClipOutcome, EndpointId, NetEvent};
+    use klip_proto::clip::{ClipContentType, ClipPayload};
+    use klip_proto::hlc::HybridLogicalClock;
+
+    let a = start_daemon("Alpha", fresh_dir("a-relabel"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-relabel"), false).await;
+    let from = EndpointId::from_bytes(a.engine.node_id().as_bytes()).unwrap();
+    let node = a.engine.node_id();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    // Bomb bytes labelled as plain text skip the image check on the way in (they are text to us)...
+    let payload = ClipPayload::new(
+        ClipContentType::PlainTextUtf8,
+        png_claiming(60_000, 60_000),
+        node,
+        HybridLogicalClock {
+            physical_time_ms: now_ms + 10,
+            logical_counter: 0,
+            node_id: node,
+        },
+        false,
+    );
+    let id = payload.id;
+    let (ack, answer) = tokio::sync::oneshot::channel();
+    b.engine
+        .sync
+        .handle_net_event(NetEvent::Clip { from, payload, ack })
+        .await;
+    assert_eq!(answer.await.unwrap(), ClipOutcome::Applied);
+    // ...but copying it back out of the history would decode it as an image: refused by size.
+    match b.ipc(IpcRequest::CopyToClipboard { id }).await {
+        IpcResponse::Error(e) => assert!(e.contains("pixels"), "{e}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    a.stop().await;
+    b.stop().await;
+}
