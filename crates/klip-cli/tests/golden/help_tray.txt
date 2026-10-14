@@ -1,0 +1,14 @@
+The tray icon and window (Linux): start it, or make it start when you log in
+
+Usage: klip tray [COMMAND]
+
+Commands:
+  start      Start the tray in the background (the default)
+  run        Run the tray in this terminal (what start-at-login runs)
+  install    Start the tray every time you log in
+  uninstall  Stop starting the tray at login
+  status     Show whether the tray can run here and whether it starts at login
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

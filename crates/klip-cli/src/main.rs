@@ -78,6 +78,11 @@ enum Commands {
     },
     /// Install the auto-start service for your OS
     InstallService,
+    /// The tray icon and window (Linux): start it, or make it start when you log in
+    Tray {
+        #[command(subcommand)]
+        action: Option<TrayAction>,
+    },
     /// JSON bridge to the daemon for the tray app (reads requests on stdin, one JSON per line)
     #[command(hide = true)]
     Api,
@@ -89,6 +94,28 @@ enum Commands {
         #[arg(value_enum)]
         mode: Option<ImageMode>,
     },
+}
+
+#[derive(Subcommand)]
+enum TrayAction {
+    /// Start the tray in the background (the default)
+    Start {
+        /// Open the window right away
+        #[arg(long)]
+        show: bool,
+    },
+    /// Run the tray in this terminal (what start-at-login runs)
+    Run {
+        /// Open the window right away
+        #[arg(long)]
+        show: bool,
+    },
+    /// Start the tray every time you log in
+    Install,
+    /// Stop starting the tray at login
+    Uninstall,
+    /// Show whether the tray can run here and whether it starts at login
+    Status,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -230,6 +257,53 @@ fn print_image_state(state: &klip_proto::ipc::ImageStateInfo) {
     }
 }
 
+#[cfg(unix)]
+fn tray_command(action: TrayAction) -> AnyResult<()> {
+    use klip_cli::tray;
+    let entry = tray::autostart_path().ok_or("cannot find your home directory")?;
+    match action {
+        TrayAction::Start { show } => {
+            let pid = tray::start_detached(show)?;
+            println!("{} Klip tray started (PID {pid}).", "✓".green().bold());
+        }
+        TrayAction::Run { show } => tray::run_foreground(show)?,
+        TrayAction::Install => {
+            let exe = std::env::current_exe()?;
+            tray::install_autostart(&entry, &exe.to_string_lossy())?;
+            println!(
+                "{} The tray will start when you log in ({}).",
+                "✓".green().bold(),
+                entry.display()
+            );
+        }
+        TrayAction::Uninstall => {
+            if tray::uninstall_autostart(&entry)? {
+                println!(
+                    "{} The tray will no longer start at login.",
+                    "✓".green().bold()
+                );
+            } else {
+                println!("The tray was not set to start at login.");
+            }
+        }
+        TrayAction::Status => {
+            match tray::python_ready() {
+                Ok(()) => println!("Tray program: ready (Python with GTK 3 and XApp)"),
+                Err(why) => println!("Tray program: not ready. {why}"),
+            }
+            println!(
+                "Start at login: {}",
+                if tray::autostart_installed(&entry) {
+                    "yes"
+                } else {
+                    "no"
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn run(cli: Cli) -> AnyResult<()> {
     match cli.command {
         Commands::Start { foreground } => start(foreground).await?,
@@ -334,6 +408,12 @@ async fn run(cli: Cli) -> AnyResult<()> {
             }
         }
         Commands::InstallService => install_service()?,
+        #[cfg(unix)]
+        Commands::Tray { action } => {
+            tray_command(action.unwrap_or(TrayAction::Start { show: false }))?
+        }
+        #[cfg(not(unix))]
+        Commands::Tray { .. } => return Err("the tray is only available on Linux".into()),
         #[cfg(unix)]
         Commands::Api => klip_cli::bridge::run(klip_daemon::config::user_paths()).await,
         #[cfg(not(unix))]

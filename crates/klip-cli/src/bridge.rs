@@ -133,6 +133,8 @@ async fn dispatch(paths: &KlipPaths, request: &Value) -> Result<Value, BridgeErr
         "daemon_restart" => daemon_restart(paths).await,
         "service_state" => Ok(service_state()),
         "service_set" => service_set(&params),
+        "autostart_get" => autostart_state(),
+        "autostart_set" => autostart_set(&params),
         _ => Err(format!("unknown method {method}").into()),
     }
 }
@@ -410,4 +412,29 @@ fn service_set(params: &Value) -> Result<Value, BridgeError> {
         return Err("systemd could not disable klip.service".into());
     }
     Ok(service_state())
+}
+
+// ------------------------------------------------------------------- the tray's own login entry
+
+fn autostart_state() -> Result<Value, BridgeError> {
+    let path = crate::tray::autostart_path().ok_or("cannot find your home directory")?;
+    Ok(json!({
+        "installed": crate::tray::autostart_installed(&path),
+        "path": path.display().to_string(),
+    }))
+}
+
+fn autostart_set(params: &Value) -> Result<Value, BridgeError> {
+    let enabled = params
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .ok_or("autostart_set needs \"enabled\": true or false")?;
+    let path = crate::tray::autostart_path().ok_or("cannot find your home directory")?;
+    if enabled {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        crate::tray::install_autostart(&path, &exe.to_string_lossy())?;
+    } else {
+        crate::tray::uninstall_autostart(&path)?;
+    }
+    autostart_state()
 }

@@ -61,6 +61,7 @@ fn help_of_every_subcommand() {
         ),
         ("help_share.txt", vec!["share", "--help"]),
         ("help_images.txt", vec!["images", "--help"]),
+        ("help_tray.txt", vec!["tray", "--help"]),
     ] {
         check(name, &args, 0);
     }
