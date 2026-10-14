@@ -27,7 +27,10 @@ for how long a device has been gone.
   timer fires every night the laptop is closed and teaches the owner to ignore it.
 - Only "could not reach" failures count (`NetError::Connect`, `NetError::Stream`). `PeerRefused`
   (paused, clipboard unavailable, superseded) has its own meaning and its own message today.
-- Grace: no alert if the device was seen connected less than 60 s ago (Wi-Fi hiccup).
+- No grace period. A copy that could not be delivered (after the fresh-connection retry) is a fact, not
+  a guess, and the owner should re-copy it. A grace would hide exactly the first minute after a phone
+  dies. A Wi-Fi hiccup therefore alerts once, with "not connected right now" instead of a duration;
+  the once-per-outage rule keeps this quiet.
 - One alert per outage: the flag is cleared when a delivery to that device succeeds.
 - No setting, no sound, no phone-side alert, no outage history, no macOS/Windows support, no TUI/CLI
   duration column. Each of these is cheap to add later and none is needed for the problem above.
@@ -48,22 +51,24 @@ for how long a device has been gone.
 
 ### klip-core (`sync.rs`)
 - New `type UndeliveredHook = Arc<dyn Fn(&str, Duration) + Send + Sync>` and
-  `SyncCoordinator::set_undelivered_hook(&self, hook)`; `set_alert_grace(Duration)` for tests
-  (default 60 s).
+  `SyncCoordinator::set_undelivered_hook(&self, hook)`; `pub fn is_sending()` (true while a send is in flight,
+  for tests) and `pub fn offline_label(Duration) -> Option<String>` ("5 min", "2 h", `None` under a
+  minute), shared by the daemon and the Android library.
 - `deliver(&payload, notify: bool)`: `drain_outbox` passes `true`, `broadcast_local_clip` passes
-  `false`. Per peer result: `Ok` clears the peer's `alerted` flag; `Err(Connect | Stream)` with
-  `offline_for >= grace` and the flag unset sets the flag and calls the hook with the peer name and
-  `offline_for`. The check uses the `NetError` before it is turned into a string.
+  `false`. Per peer result: `Ok` clears the peer's `alerted` flag; `Err(Connect | Stream)` with the
+  flag unset sets the flag and calls the hook with the peer name and `offline_for`. The check uses the `NetError` before it is turned into a string.
 - `alerted: Mutex<HashSet<NodeId>>`. An unpaired peer is removed from it.
 
-### klip-daemon (`engine.rs`)
-- On start, installs a hook that runs `notify-send` (Linux only, `cfg(target_os = "linux")`):
-  fixed title `Klip`, body `"<name> did not get your last copy. Not connected for <N> min."`,
-  arguments passed as argv (no shell), `<`, `>`, `&` escaped in the name, spawned detached and
+### klip-daemon (new `notify.rs`) and klip-cli
+- The `klip` binary installs, before `run()`, a hook that runs `notify-send` (Linux only,
+  `cfg(target_os = "linux")`; not installed by the engine, so tests never pop real notifications):
+  fixed title `Klip`, body `"<name> did not get your last copy. Not connected for <N> min."` (or "It is not connected right
+  now." under a minute),
+  arguments passed as argv (no shell, `--` before the positionals), `<`, `>`, `&` escaped in the name, spawned detached and
   never awaited. A missing `notify-send` or no display is ignored.
 
 ### klip-android (`lib.rs`) and the app
-- `PeerInfo` gets `offline_secs: Option<u64>` built from `PeerStatus::offline_for`; `KlipEngine::status()` also calls
+- `PeerInfo` gets `offline: Option<String>` (the `offline_label`), built from `PeerStatus::offline_for`; `KlipEngine::status()` also calls
   `core.sync.net.peer_statuses()` and matches by node id, so `PeerStatusInfo` does not change.
 - `StatusText.compute()`: when no device is online, the title and compact line append the coarse
   duration ("5 min", "2 h"; under one minute nothing). Coarse so the notification text (and its
@@ -72,9 +77,9 @@ for how long a device has been gone.
 
 ## Errors and edge cases
 
-- Fresh daemon start: peers count as "seen" at start, so no alert in the first 60 s.
+- Fresh daemon start: peers count as "seen" at start, so a first failure says "not connected right now".
 - Laptop suspend: `Instant` does not advance during suspend, so durations are understated, never
-  overstated; after resume the first failed copy still alerts once the grace has passed.
+  overstated; after resume the first failed copy alerts.
 - Several devices down: one alert per device, each with its own name.
 - Peer unpaired meanwhile: no alert (`UnknownPeer` is not counted).
 - Device name from a peer is already control-character-stripped and limited to 64 characters
@@ -84,11 +89,14 @@ for how long a device has been gone.
 
 1. Core/daemon e2e: two paired daemons, stop one, send two copies: the hook is called exactly once
    with the right name; restart it, one delivery succeeds, stop it again, a copy: called again.
-2. Grace: a copy that fails 5 s after the peer disconnected does not call the hook.
+2. Pure unit tests: one alert per outage is re-armed by a success; only `Connect`/`Stream` errors count
+   (not `PeerRefused`, `UnknownPeer`, `TooLarge`); `offline_label` boundaries (59 s, 60 s, 119 min,
+   120 min).
 3. `klip send` (explicit) to a down peer does not call the hook.
-4. `notify-send` argument building: name `<b>x</b> & y` is escaped and ends up as a single argv item.
-5. Android: unit test for the duration text ("", "5 min", "2 h") if a JVM test target exists;
-   otherwise verified by compiling and by the emulator, and reported as not verified on a phone.
+4. `notify-send` argument building: name `<b>x</b> & y` is escaped, `--` comes before the positionals,
+   a missing `notify-send` is ignored.
+5. Android: the text is formatted in Rust (`offline_label`, tested above); the Kotlin side only appends
+   it, so it is verified by compiling and reported as not verified on a phone.
 6. Existing suites stay green (291 tests); no snapshot changes expected.
 
 ## Not verified until built
