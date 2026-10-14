@@ -78,6 +78,9 @@ enum Commands {
     },
     /// Install the auto-start service for your OS
     InstallService,
+    /// JSON bridge to the daemon for the tray app (reads requests on stdin, one JSON per line)
+    #[command(hide = true)]
+    Api,
     /// Send the image you copied last to all linked devices (bind it to a keyboard shortcut)
     Share,
     /// Show, or choose, whether copied images are sent at once or wait until you send them
@@ -331,6 +334,10 @@ async fn run(cli: Cli) -> AnyResult<()> {
             }
         }
         Commands::InstallService => install_service()?,
+        #[cfg(unix)]
+        Commands::Api => klip_cli::bridge::run(klip_daemon::config::user_paths()).await,
+        #[cfg(not(unix))]
+        Commands::Api => return Err("the tray bridge is only available on Linux and macOS".into()),
         Commands::Share => match rpc_hint(IpcRequest::SendPendingImage).await? {
             IpcResponse::Sent {
                 bytes,
