@@ -197,13 +197,15 @@ async fn rpc(req: IpcRequest) -> AnyResult<IpcResponse> {
 async fn rpc_hint(req: IpcRequest) -> AnyResult<IpcResponse> {
     match DaemonClient::send_request(&req).await {
         Ok(IpcResponse::Error(e)) => {
-            if e.starts_with("no image") || e.starts_with("sync is paused") {
-                Err(e.into())
-            } else {
+            // An older daemon cannot decode the new request and says so; everything else is its own
+            // reason and is shown as it is.
+            if e.contains("Deserialization") || e.contains("variant") {
                 Err(format!(
                     "{e}. If the running daemon is older than this klip, restart it: klip stop && klip start"
                 )
                 .into())
+            } else {
+                Err(e.into())
             }
         }
         Ok(other) => Ok(other),
@@ -268,7 +270,7 @@ fn tray_command(action: TrayAction) -> AnyResult<()> {
         }
         TrayAction::Run { show } => tray::run_foreground(show)?,
         TrayAction::Install => {
-            let exe = std::env::current_exe()?;
+            let exe = tray::exe_path()?;
             tray::install_autostart(&entry, &exe.to_string_lossy())?;
             println!(
                 "{} The tray will start when you log in ({}).",

@@ -74,6 +74,20 @@ const CHECK_IMPORTS: &str =
     "import gi; gi.require_version('Gtk','3.0'); gi.require_version('Gdk','3.0'); \
 gi.require_version('XApp','1.0'); from gi.repository import Gtk, Gdk, XApp";
 
+/// `current_exe` says "/path/klip (deleted)" after the file was replaced while it runs (an upgrade):
+/// the program is at the path without the note.
+pub fn clean_exe(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_suffix(" (deleted)") {
+        Some(plain) => PathBuf::from(plain),
+        None => path.to_path_buf(),
+    }
+}
+
+pub fn exe_path() -> io::Result<PathBuf> {
+    std::env::current_exe().map(|p| clean_exe(&p))
+}
+
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -106,7 +120,8 @@ pub fn install_files(root: &Path, version: &str) -> io::Result<PathBuf> {
         if fs::read_to_string(&path).is_ok_and(|c| c == *content) {
             continue;
         }
-        let tmp = package.join(format!(".{name}.tmp"));
+        // Two first starts at once must not share a half-written file.
+        let tmp = package.join(format!(".{name}.{}.tmp", std::process::id()));
         fs::write(&tmp, content)?;
         fs::rename(&tmp, &path)?;
     }
@@ -135,7 +150,7 @@ fn python_command(show: bool) -> Result<Command, String> {
     let root = data_root().ok_or("cannot find your home directory")?;
     let dir = install_files(&root, env!("CARGO_PKG_VERSION"))
         .map_err(|e| format!("cannot write the tray files: {e}"))?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = exe_path().map_err(|e| e.to_string())?;
     let mut cmd = Command::new("python3");
     cmd.args(["-m", "klip_tray"]);
     if show {
@@ -178,7 +193,7 @@ pub fn start_detached(show: bool) -> Result<u32, String> {
 pub fn desktop_entry(exe: &str) -> Result<String, String> {
     if exe
         .chars()
-        .any(|c| matches!(c, '"' | '`' | '$' | '\\' | '\n' | '\r'))
+        .any(|c| matches!(c, '"' | '`' | '$' | '\\' | '\n' | '\r' | '%'))
     {
         return Err(
             "the path to klip has characters a desktop entry cannot hold safely; \
@@ -325,6 +340,18 @@ mod tests {
         ] {
             assert!(desktop_entry(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_replaced_binary_is_not_written_into_the_entry_as_deleted() {
+        assert_eq!(
+            clean_exe(Path::new("/usr/bin/klip (deleted)")),
+            PathBuf::from("/usr/bin/klip")
+        );
+        assert_eq!(
+            clean_exe(Path::new("/usr/bin/klip")),
+            PathBuf::from("/usr/bin/klip")
+        );
     }
 
     #[test]

@@ -151,13 +151,13 @@ fn config_can_be_read_and_written_and_a_bad_one_is_refused() {
     let mut cfg = r["ok"].clone();
     assert_eq!(cfg["relay"], "lan");
     assert_eq!(cfg["auto_send_images"], false);
-    cfg["auto_send_images"] = json!(true);
+    cfg["history_ttl_hours"] = json!(5);
     cfg["max_history_items"] = json!(9);
     let r = b.call(json!({"id": 2, "method": "config_set", "params": {"config": cfg}}));
     assert!(r["ok"].is_object(), "{r}");
     let file = std::fs::read_to_string(d.dir.join("config.json")).unwrap();
     assert!(
-        file.contains("\"auto_send_images\": true") && file.contains("\"max_history_items\": 9"),
+        file.contains("\"history_ttl_hours\": 5") && file.contains("\"max_history_items\": 9"),
         "{file}"
     );
 
@@ -288,4 +288,39 @@ fn start_at_login_writes_the_unit_and_enables_or_disables_it_without_touching_th
     assert!(std::fs::read_to_string(&log)
         .unwrap()
         .contains("--user disable klip.service"));
+}
+
+#[test]
+fn saving_settings_never_changes_the_image_mode_that_the_switch_owns() {
+    let d = Isolated::start("br11", LAN_ONLY);
+    let mut b = Bridge::start(&d);
+    // The Settings page loaded the config while images were manual...
+    let stale = b.call(json!({"id": 1, "method": "config_get"}))["ok"].clone();
+    assert_eq!(stale["auto_send_images"], false);
+    // ...then the person switched images to automatic elsewhere (the tray menu, `klip images auto`).
+    let r = b.call(json!({"id": 2, "ipc": {"SetAutoImages": {"enabled": true}}}));
+    assert_eq!(r["ok"]["ImageState"]["auto"], true, "{r}");
+    // Saving the page's stale copy must not put the old mode back.
+    let mut cfg = stale;
+    cfg["max_history_items"] = json!(12);
+    let r = b.call(json!({"id": 3, "method": "config_set", "params": {"config": cfg}}));
+    assert!(r["ok"].is_object(), "{r}");
+    let file = std::fs::read_to_string(d.dir.join("config.json")).unwrap();
+    assert!(file.contains("\"auto_send_images\": true"), "{file}");
+    assert!(file.contains("\"max_history_items\": 12"), "{file}");
+}
+
+#[test]
+fn a_long_session_of_many_requests_keeps_answering() {
+    // The bridge lives as long as the tray does: finished request tasks must not pile up or slow it.
+    let d = Isolated::start("br12", LAN_ONLY);
+    let mut b = Bridge::start(&d);
+    for round in 0..8 {
+        for i in 0..100 {
+            b.send_line(&json!({"id": round * 100 + i, "ipc": "GetStatus"}).to_string());
+        }
+        for _ in 0..100 {
+            assert!(b.read()["ok"]["Status"].is_object());
+        }
+    }
 }

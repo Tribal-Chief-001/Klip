@@ -10,6 +10,9 @@ use tokio::net::UnixStream;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Joining a device waits for the other side's human to approve it.
 const PAIR_JOIN_TIMEOUT: Duration = Duration::from_secs(120);
+/// The daemon takes the held image out of its slot and sends it before it answers: a big image over a
+/// slow link needs time, and giving up early would report a failure for something still going through.
+const SHARE_IMAGE_TIMEOUT: Duration = Duration::from_secs(120);
 /// What daemons that predate the `Hello` call accept in one request.
 pub const OLD_DAEMON_REQUEST_CAP: usize = 8 * 1024 * 1024;
 /// Answers bigger than this are refused as implausible (history holds at most ~8 MiB of content).
@@ -53,6 +56,7 @@ pub struct DaemonClient {
 fn timeout_for(req: &IpcRequest) -> Duration {
     match req {
         IpcRequest::PairJoin { .. } => PAIR_JOIN_TIMEOUT,
+        IpcRequest::SendPendingImage => SHARE_IMAGE_TIMEOUT,
         IpcRequest::SendClip { text } => {
             DEFAULT_TIMEOUT + Duration::from_secs((text.len() / (256 * 1024)) as u64)
         }
@@ -169,6 +173,14 @@ impl DaemonClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sharing_an_image_gets_time_to_send_a_big_one() {
+        // The daemon takes the held image out of its slot and then sends it: a client that gave up
+        // after 15 s would report a failure for something that is still going through.
+        assert!(timeout_for(&IpcRequest::SendPendingImage) >= Duration::from_secs(120));
+        assert!(timeout_for(&IpcRequest::GetStatus) <= Duration::from_secs(20));
+    }
+
     use super::*;
 
     #[test]

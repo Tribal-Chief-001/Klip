@@ -1387,3 +1387,103 @@ async fn the_waiting_image_has_a_small_preview_and_a_missing_one_is_an_error() {
     }
     a.stop().await;
 }
+
+#[tokio::test]
+async fn switching_images_to_automatic_never_overwrites_a_config_json_the_person_broke() {
+    let dir = fresh_dir("a-broken-cfg");
+    let a = start_daemon("Alpha", dir.clone(), false).await;
+    // A hand edit with a typo: the daemon refuses to read it (unknown key).
+    let broken = r#"{"relay": "lan", "devise_name": "typo"}"#;
+    std::fs::write(dir.join("config.json"), broken).unwrap();
+    match a.ipc(IpcRequest::SetAutoImages { enabled: true }).await {
+        IpcResponse::Error(e) => assert!(e.contains("config.json"), "{e}"),
+        other => panic!("expected an explanation, got {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.json")).unwrap(),
+        broken,
+        "the person's file is untouched"
+    );
+    assert!(
+        image_state_of(a.ipc(IpcRequest::GetImageState).await).auto,
+        "the setting still applies until the daemon restarts"
+    );
+    a.stop().await;
+}
+
+#[tokio::test]
+async fn a_held_image_survives_a_paused_daemon_and_garbage_is_never_held() {
+    use klip_proto::clip::ClipContentType;
+    let a = start_daemon("Alpha", fresh_dir("a-pause-img"), false).await;
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, b"this is not a png".to_vec());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(
+        image_state_of(a.ipc(IpcRequest::GetImageState).await)
+            .waiting
+            .is_none(),
+        "garbage is not held"
+    );
+
+    a.ipc(IpcRequest::Pause { duration_secs: 600 }).await;
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, test_png(10, 10));
+    assert!(wait_until(10, || a.engine.sync.image_state().waiting.is_some()).await);
+    match a.ipc(IpcRequest::SendPendingImage).await {
+        IpcResponse::Error(e) => assert!(e.contains("paused"), "{e}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(
+        image_state_of(a.ipc(IpcRequest::GetImageState).await)
+            .waiting
+            .is_some(),
+        "still held after the refusal"
+    );
+    a.stop().await;
+}
+
+#[tokio::test]
+async fn a_held_image_that_nobody_received_stays_held_for_another_try() {
+    use klip_proto::clip::ClipContentType;
+    let a = start_daemon("Alpha", fresh_dir("a-unreach"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-unreach"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    assert!(
+        wait_until(15, || a
+            .engine
+            .sync
+            .peer_status()
+            .iter()
+            .all(|p| p.is_online))
+        .await
+    );
+    b.stop().await;
+    assert!(
+        wait_until(15, || a
+            .engine
+            .sync
+            .peer_status()
+            .iter()
+            .all(|p| !p.is_online))
+        .await
+    );
+    a.clipboard
+        .user_copy_bytes(ClipContentType::ImagePng, test_png(12, 12));
+    assert!(wait_until(10, || a.engine.sync.image_state().waiting.is_some()).await);
+    match a.ipc(IpcRequest::SendPendingImage).await {
+        IpcResponse::Sent {
+            delivered, failed, ..
+        } => assert!(delivered.is_empty() && failed.len() == 1, "{failed:?}"),
+        other => panic!("unexpected {other:?}"),
+    }
+    assert!(
+        image_state_of(a.ipc(IpcRequest::GetImageState).await)
+            .waiting
+            .is_some(),
+        "not lost: try again later"
+    );
+    a.stop().await;
+}

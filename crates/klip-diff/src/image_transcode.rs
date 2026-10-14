@@ -31,6 +31,25 @@ pub fn is_uncompressed_image(bytes: &[u8]) -> bool {
     matches!(detect_image_format(bytes), ImageFormat::Bmp)
 }
 
+/// Largest image the daemon decodes only to make a small preview.
+const MAX_PREVIEW_PIXELS: u64 = 16_000_000;
+
+/// Read the size from the header first: a few bytes can describe gigabytes of pixels. Refuses what is
+/// above [`MAX_IMAGE_PIXELS`].
+fn header_size(bytes: &[u8]) -> Result<(u32, u32), String> {
+    let (width, height) = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to read image header: {e}"))?
+        .into_dimensions()
+        .map_err(|e| format!("Failed to read image header: {e}"))?;
+    if too_many_pixels(width, height) {
+        return Err(format!(
+            "the image is {width} x {height} pixels; the limit is {MAX_IMAGE_PIXELS} pixels"
+        ));
+    }
+    Ok((width, height))
+}
+
 /// Largest image Klip accepts or sends, in pixels (about 8K). 36 Mpx is 144 MB once decoded to RGBA.
 pub const MAX_IMAGE_PIXELS: u64 = 36_000_000;
 
@@ -68,10 +87,16 @@ pub fn thumbnail_png(bytes: &[u8], max_side: u32) -> Result<Vec<u8>, String> {
     if max_side == 0 {
         return Err("the thumbnail size must be at least 1 pixel".to_string());
     }
-    let (width, height, rgba) = png_to_rgba(bytes)?;
-    let img = RgbaImage::from_raw(width, height, rgba)
-        .ok_or_else(|| "Failed to construct RgbaImage from buffer".to_string())?;
-    let dynamic = DynamicImage::ImageRgba8(img);
+    let (width, height) = header_size(bytes)?;
+    // An image can be sent at 36 Mpx, but decoding that for a small picture would use a lot of memory
+    // inside the daemon (a systemd unit limits it): above this the person simply gets no preview.
+    if u64::from(width) * u64::from(height) > MAX_PREVIEW_PIXELS {
+        return Err(format!(
+            "the image is {width} x {height} pixels: too large to preview"
+        ));
+    }
+    let dynamic =
+        image::load_from_memory(bytes).map_err(|e| format!("Failed to decode image: {e}"))?;
     let dynamic = if width > max_side || height > max_side {
         dynamic.thumbnail(max_side, max_side)
     } else {
@@ -117,17 +142,7 @@ pub fn rgba_to_png(width: u32, height: u32, rgba_bytes: &[u8]) -> Result<Vec<u8>
 /// Decodes compressed PNG (or other supported format) bytes into raw (width, height, RGBA) pixels
 /// for setting into the host clipboard.
 pub fn png_to_rgba(png_bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
-    // Read the size from the header first: a few bytes can describe gigabytes of pixels.
-    let (width, height) = image::ImageReader::new(Cursor::new(png_bytes))
-        .with_guessed_format()
-        .map_err(|e| format!("Failed to read image header: {e}"))?
-        .into_dimensions()
-        .map_err(|e| format!("Failed to read image header: {e}"))?;
-    if too_many_pixels(width, height) {
-        return Err(format!(
-            "the image is {width} x {height} pixels; the limit is {MAX_IMAGE_PIXELS} pixels"
-        ));
-    }
+    header_size(png_bytes)?;
     let dynamic =
         image::load_from_memory(png_bytes).map_err(|e| format!("Failed to decode image: {}", e))?;
 
@@ -429,6 +444,15 @@ mod tests {
         assert!(thumbnail_png(b"not an image", 240).is_err());
         assert!(thumbnail_png(b"", 240).is_err());
         assert!(thumbnail_png(&rgba_to_png(2, 2, &[1u8; 16]).unwrap(), 0).is_err());
+    }
+
+    #[test]
+    fn a_preview_of_a_huge_image_is_refused_before_anything_is_decoded() {
+        // 8000 x 2500 = 20 Mpx: fine to send, too big to decode just for a small picture.
+        let err = thumbnail_png(&png_claiming(8000, 2500), 240).unwrap_err();
+        assert!(err.contains("too large to preview"), "{err}");
+        let ok = rgba_to_png(300, 200, &vec![3u8; 300 * 200 * 4]).unwrap();
+        assert!(thumbnail_png(&ok, 240).is_ok());
     }
 
     #[test]

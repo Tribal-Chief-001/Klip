@@ -279,10 +279,18 @@ impl IpcServer {
             }
             IpcRequest::SetAutoImages { enabled } => {
                 sync.set_auto_images(enabled);
-                // Keep every other setting as it is in the file (or as the daemon runs, if the file
-                // cannot be read), and change only this one.
-                let mut config = klip_core::DaemonConfig::load(&sync.paths)
-                    .unwrap_or_else(|_| sync.config.clone());
+                // Change only this one setting and keep the rest of the file as it is. A file the
+                // person broke by hand (a typo) is left exactly as it is: rewriting it from the running
+                // settings would silently throw their edit away.
+                let mut config = match klip_core::DaemonConfig::load(&sync.paths) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        return IpcResponse::Error(format!(
+                            "the setting is on for now, but config.json has a problem and was left as it is \
+                             ({e}); fix it, then switch again"
+                        ))
+                    }
+                };
                 config.auto_send_images = enabled;
                 match config.save(&sync.paths) {
                     Ok(()) => IpcResponse::ImageState(sync.image_state()),

@@ -152,7 +152,10 @@ pub fn restrict_to_owner(path: &Path, mode: u32) {
 /// Atomically write a secret file that is created with mode 0600 (never briefly world-readable):
 /// temp file, fsync, rename. The old file stays untouched when any step fails.
 pub fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
+    // A name of its own per call: two saves at once (two clients, two threads) must not share a file.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp{}-{n}", std::process::id()));
     let written = (|| {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);

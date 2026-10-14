@@ -67,6 +67,8 @@ pub async fn run(paths: KlipPaths) {
         if line.trim().is_empty() {
             continue;
         }
+        // Reap the answers that are done: a tray keeps this bridge for days.
+        while tasks.try_join_next().is_some() {}
         let tx = tx.clone();
         let paths = paths.clone();
         tasks.spawn(async move {
@@ -112,7 +114,7 @@ async fn dispatch(paths: &KlipPaths, request: &Value) -> Result<Value, BridgeErr
     if let Some(ipc) = request.get("ipc") {
         let request: IpcRequest = serde_json::from_value(ipc.clone())
             .map_err(|e| BridgeError::from(format!("bad request: {e}")))?;
-        return Ok(response_json(&call(&request).await?));
+        return Ok(response_json(call(&request).await?));
     }
     let method = request
         .get("method")
@@ -153,13 +155,33 @@ async fn call(request: &IpcRequest) -> Result<IpcResponse, BridgeError> {
     }
 }
 
-fn response_json(response: &IpcResponse) -> Value {
-    let mut v = serde_json::to_value(response).unwrap_or(Value::Null);
+fn response_json(response: IpcResponse) -> Value {
+    // History carries every clip's contents (up to 8 MiB in all). Emptying them *before* turning the
+    // answer into JSON keeps a refresh from building millions of JSON numbers; the lengths are put back.
+    let mut lengths = Vec::new();
+    let response = match response {
+        IpcResponse::History(mut items) => {
+            for item in &mut items {
+                lengths.push(item.full_content.len());
+                item.full_content = Vec::new();
+            }
+            IpcResponse::History(items)
+        }
+        other => other,
+    };
+    let mut v = serde_json::to_value(&response).unwrap_or(Value::Null);
     // A thumbnail is a PNG: base64 is far lighter than a JSON array of numbers.
-    if let IpcResponse::Thumbnail(png) = response {
+    if let IpcResponse::Thumbnail(png) = &response {
         v = json!({"Thumbnail": data_encoding::BASE64.encode(png)});
     }
     decorate(&mut v);
+    if let Some(items) = v.get_mut("History").and_then(Value::as_array_mut) {
+        for (item, len) in items.iter_mut().zip(&lengths) {
+            if let Some(o) = item.as_object_mut() {
+                o.insert("content_len".to_string(), (*len).into());
+            }
+        }
+    }
     v
 }
 
@@ -224,9 +246,12 @@ fn config_get(paths: &KlipPaths) -> Result<Value, BridgeError> {
 }
 
 fn config_set(paths: &KlipPaths, params: &Value) -> Result<Value, BridgeError> {
-    let config: DaemonConfig =
+    let mut config: DaemonConfig =
         serde_json::from_value(params.get("config").cloned().unwrap_or_default())
             .map_err(|e| BridgeError::from(format!("not a valid configuration: {e}")))?;
+    // The image mode belongs to its own switch (`SetAutoImages`, `klip images`): a page that loaded
+    // the settings a while ago must not put an old mode back when it saves.
+    config.auto_send_images = DaemonConfig::load(paths)?.auto_send_images;
     config.save(paths)?;
     Ok(json!({}))
 }
@@ -431,7 +456,7 @@ fn autostart_set(params: &Value) -> Result<Value, BridgeError> {
         .ok_or("autostart_set needs \"enabled\": true or false")?;
     let path = crate::tray::autostart_path().ok_or("cannot find your home directory")?;
     if enabled {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = crate::tray::exe_path().map_err(|e| e.to_string())?;
         crate::tray::install_autostart(&path, &exe.to_string_lossy())?;
     } else {
         crate::tray::uninstall_autostart(&path)?;
