@@ -90,6 +90,32 @@
             </intent-filter>
         </activity>
 
+        <!-- "Klip" in the Share sheet for images. -->
+        <activity
+            android:name=".ShareImageActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="@string/share_label"
+            android:theme="@style/Theme.Klip.Transparent">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Images received from other devices are put on the clipboard as URIs of files in the cache. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.clips"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/clip_paths" />
+        </provider>
+
         <!-- Quick Settings tile: tap to send the current clipboard. -->
         <service
             android:name=".KlipTileService"

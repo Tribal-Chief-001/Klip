@@ -63,14 +63,26 @@ class CopyTrampolineActivity : Activity() {
 
     private fun readAndSend() {
         val quiet = intent.getBooleanExtra(EXTRA_QUIET, false)
-        val text = try {
-            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+        val clip = try {
+            (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).primaryClip?.takeIf { it.itemCount > 0 }
         } catch (e: Throwable) {
             null
         }
+        val item = clip?.getItemAt(0)
+        val text = item?.text?.toString()
         val app = applicationContext
         if (text.isNullOrEmpty()) {
+            val uri = item?.uri
+            // An image on the clipboard: sent when the person asks (tile, notification button), never
+            // automatically.
+            if (!quiet && uri != null && clip.description.hasMimeType("image/*")) {
+                try {
+                    SendHelper.sendImage(app, ImageSender.readBounded(app, uri))
+                } catch (e: Throwable) {
+                    toast(app, "Klip: ${e.message}")
+                }
+                return
+            }
             if (!quiet) toast(app, "Klip: the clipboard is empty")
             return
         }

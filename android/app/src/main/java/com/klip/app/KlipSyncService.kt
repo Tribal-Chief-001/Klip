@@ -118,6 +118,7 @@ class KlipSyncService : Service() {
         clipboard.addPrimaryClipChangedListener(clipListener)
         acquireMulticastLock()
         startEngine()
+        scope.launch { ClipImages.prune(this@KlipSyncService) }
         ClipHelperServer.start(this)
         scope.launch { delay(3_000); AutoCopy.startWithRoot(this@KlipSyncService) }
         registerReceiver(screenReceiver, IntentFilter().apply {

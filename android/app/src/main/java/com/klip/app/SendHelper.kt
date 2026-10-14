@@ -5,9 +5,14 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 
-/** Sends text to the linked devices from a short-lived entry point (share sheet, text menu, tile). */
+/** Sends text or an image to the linked devices from a short-lived entry point (share sheet, text menu, tile). */
 object SendHelper {
-    fun sendText(ctx: Context, text: String) {
+    fun sendText(ctx: Context, text: String) = send(ctx) { it.sendText(text) }
+
+    /** [raw] is whatever the other app gave us; it is converted to PNG/WebP on the worker thread. */
+    fun sendImage(ctx: Context, raw: ByteArray) = send(ctx) { it.sendImage(ImageSender.prepare(raw)) }
+
+    private fun send(ctx: Context, action: (uniffi.klip_android.KlipEngine) -> uniffi.klip_android.SendReport) {
         val app = ctx.applicationContext
         val engine = KlipRuntime.engine
         if (engine == null) {
@@ -17,7 +22,7 @@ object SendHelper {
         }
         Thread {
             val msg = try {
-                val r = engine.sendText(text)
+                val r = action(engine)
                 when {
                     r.delivered.isNotEmpty() && r.failed.isEmpty() -> "Klip: sent to ${r.delivered.joinToString()}"
                     r.delivered.isNotEmpty() ->

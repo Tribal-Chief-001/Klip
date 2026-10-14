@@ -63,6 +63,20 @@ class ClipboardWriter(
         }
     }
 
+    override fun writeImage(data: ByteArray, mime: String): Boolean {
+        // Like writeText: nothing may be thrown out of here (the engine is built with panic = abort).
+        return try {
+            val uri = ClipImages.store(ctx, data, mime)
+            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newUri(ctx.contentResolver, "Klip image", uri))
+            onApplied("image (${data.size / 1024} KB)")
+            true
+        } catch (e: Throwable) {
+            Log.w(TAG, "image clipboard write failed: ${e.message}")
+            false
+        }
+    }
+
     /** The text travels in the notification's intent (a Binder transaction too), so only small clips use it. */
     private fun offerTapToCopy(text: String, sensitive: Boolean): Boolean = try {
         postTapToCopy(text, sensitive)
