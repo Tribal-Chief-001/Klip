@@ -82,9 +82,7 @@ pub fn read_log_chunk(path: &Path, offset: Option<u64>) -> Result<LogChunk, Stri
 /// Validate, then write `config.json` atomically with mode 0600 (the old file stays untouched when
 /// validation or any write step fails).
 pub fn write_config_atomic(paths: &KlipPaths, cfg: &DaemonConfig) -> Result<(), String> {
-    cfg.validate()?;
-    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())? + "\n";
-    klip_crypto::identity::write_private_file(&paths.config_file(), json.as_bytes())
+    cfg.save(paths)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

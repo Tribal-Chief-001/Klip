@@ -6,7 +6,10 @@ use klip_net::{ClipOutcome, EndpointId, KlipNode, NetError, NetEvent, PairDecisi
 use klip_platform::driver::ClipboardDriver;
 use klip_proto::clip::{ClipContentType, ClipPayload};
 use klip_proto::hlc::{HybridLogicalClock, NodeId};
-use klip_proto::ipc::{DaemonStatusInfo, PairPollInfo, PeerStatusInfo, PendingPairInfo};
+use klip_proto::ipc::{
+    DaemonStatusInfo, ImageStateInfo, PairPollInfo, PeerStatusInfo, PendingPairInfo,
+    WaitingImageInfo,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -98,6 +101,67 @@ fn first_failure_of_outage(
     }
 }
 
+/// How long a copied image waits to be sent on purpose.
+const PENDING_IMAGE_TTL: Duration = Duration::from_secs(10 * 60);
+/// Longest side of a preview picture.
+const THUMBNAIL_SIDE: u32 = 240;
+
+/// A copied image waiting for the person to send it (see `DaemonConfig::auto_send_images`).
+struct PendingImage {
+    content_type: ClipContentType,
+    data: Vec<u8>,
+    width: u32,
+    height: u32,
+    since: Instant,
+    thumb: Option<Vec<u8>>,
+}
+
+/// The one held image, with its expiry rules. Pure (the clock is a parameter) so it can be tested.
+#[derive(Default)]
+struct PendingSlot {
+    image: Option<PendingImage>,
+}
+
+impl PendingSlot {
+    /// A newer image replaces the older one.
+    fn hold(&mut self, image: PendingImage) {
+        self.image = Some(image);
+    }
+
+    fn expire(&mut self, now: Instant) {
+        if let Some(i) = &self.image {
+            if now.saturating_duration_since(i.since) >= PENDING_IMAGE_TTL {
+                self.image = None;
+            }
+        }
+    }
+
+    fn fresh(&mut self, now: Instant) -> Option<&PendingImage> {
+        self.expire(now);
+        self.image.as_ref()
+    }
+
+    fn take(&mut self, now: Instant) -> Option<PendingImage> {
+        self.expire(now);
+        self.image.take()
+    }
+
+    /// Put back an image whose send did not reach anybody, unless a newer one was copied meanwhile.
+    fn restore(&mut self, image: PendingImage) {
+        if self.image.is_none() {
+            self.image = Some(image);
+        }
+    }
+}
+
+/// `(width, height)` of an image that may be held: PNG or WebP, really that format, within the pixel limit.
+fn held_image_info(content_type: &ClipContentType, data: &[u8]) -> Result<(u32, u32), String> {
+    match image_format_of(content_type) {
+        Some(format) => klip_diff::validate_image(format, data),
+        None => Err("only PNG and WebP images can be held".to_string()),
+    }
+}
+
 struct PendingPair {
     peer: NodeId,
     device_name: String,
@@ -143,6 +207,9 @@ pub struct SyncCoordinator {
     /// Local clips that were never sent because a newer one replaced them.
     pub coalesced_clips: AtomicU64,
     undelivered_hook: Mutex<Option<UndeliveredHook>>,
+    /// Copied images are sent at once (`true`) or held until sent on purpose (`false`).
+    auto_images: AtomicBool,
+    pending_image: Mutex<PendingSlot>,
     /// Devices already alerted about in their current outage.
     alerted: Mutex<HashSet<NodeId>>,
 }
@@ -160,6 +227,7 @@ impl SyncCoordinator {
             config.max_history_items,
             config.history_ttl_hours.saturating_mul(3_600_000),
         );
+        let auto_images = config.auto_send_images;
         let clock = Mutex::new(HybridLogicalClock::new(identity.node_id));
         Self {
             config,
@@ -182,6 +250,8 @@ impl SyncCoordinator {
             sends_started: AtomicU64::new(0),
             coalesced_clips: AtomicU64::new(0),
             undelivered_hook: Mutex::new(None),
+            auto_images: AtomicBool::new(auto_images),
+            pending_image: Mutex::new(PendingSlot::default()),
             alerted: Mutex::new(HashSet::new()),
         }
     }
@@ -209,6 +279,114 @@ impl SyncCoordinator {
             false
         } else {
             true
+        }
+    }
+
+    // ------------------------------------------------------------------ held images
+
+    pub fn auto_images(&self) -> bool {
+        self.auto_images.load(Ordering::SeqCst)
+    }
+
+    /// Memory only; the daemon also saves `config.json`.
+    pub fn set_auto_images(&self, on: bool) {
+        self.auto_images.store(on, Ordering::SeqCst);
+    }
+
+    /// Keep a copied image until it is sent on purpose; the newest one wins. Not in the history yet.
+    pub fn hold_image(&self, content_type: ClipContentType, data: Vec<u8>) -> Result<(), String> {
+        let (width, height) = held_image_info(&content_type, &data)?;
+        self.pending_image.lock().unwrap().hold(PendingImage {
+            content_type,
+            data,
+            width,
+            height,
+            since: Instant::now(),
+            thumb: None,
+        });
+        Ok(())
+    }
+
+    pub fn image_state(&self) -> ImageStateInfo {
+        let now = Instant::now();
+        let mut slot = self.pending_image.lock().unwrap();
+        ImageStateInfo {
+            auto: self.auto_images(),
+            waiting: slot.fresh(now).map(|i| WaitingImageInfo {
+                size_bytes: i.data.len(),
+                width: i.width,
+                height: i.height,
+                age_secs: now.saturating_duration_since(i.since).as_secs(),
+                kind: match i.content_type {
+                    ClipContentType::ImageWebP => "webp",
+                    _ => "png",
+                }
+                .to_string(),
+            }),
+        }
+    }
+
+    /// Send the held image to every device and report per device. The image stays held when nobody
+    /// got it (no device, all unreachable, sync paused), so the person can try again.
+    pub async fn send_pending_image(&self) -> Result<Vec<DeliveryReport>, String> {
+        let image = self
+            .pending_image
+            .lock()
+            .unwrap()
+            .take(Instant::now())
+            .ok_or_else(|| {
+                "no image is waiting to be sent (an image you copy waits for 10 minutes)"
+                    .to_string()
+            })?;
+        let sent = self
+            .broadcast_local_clip(image.content_type.clone(), image.data.clone())
+            .await;
+        match sent {
+            None => {
+                self.pending_image.lock().unwrap().restore(image);
+                Err("sync is paused".to_string())
+            }
+            Some(reports) => {
+                if !reports.iter().any(|r| r.result.is_ok()) {
+                    self.pending_image.lock().unwrap().restore(image);
+                }
+                Ok(reports)
+            }
+        }
+    }
+
+    /// A small PNG of the held image (`None`) or of a stored history image. Blocking (decodes the
+    /// image): call it off the async workers.
+    pub fn thumbnail(&self, id: Option<[u8; 16]>) -> Result<Vec<u8>, String> {
+        match id {
+            Some(id) => {
+                let item = self
+                    .history
+                    .get_by_id(id)
+                    .ok_or_else(|| "that clip is no longer in the history".to_string())?;
+                if item.full_content.is_empty() {
+                    return Err("that clip was too large to keep in the history".to_string());
+                }
+                klip_diff::thumbnail_png(&item.full_content, THUMBNAIL_SIDE)
+            }
+            None => {
+                let (data, since) = {
+                    let mut slot = self.pending_image.lock().unwrap();
+                    let image = slot
+                        .fresh(Instant::now())
+                        .ok_or_else(|| "no image is waiting".to_string())?;
+                    if let Some(t) = &image.thumb {
+                        return Ok(t.clone());
+                    }
+                    (image.data.clone(), image.since)
+                };
+                let thumb = klip_diff::thumbnail_png(&data, THUMBNAIL_SIDE)?;
+                let mut slot = self.pending_image.lock().unwrap();
+                if let Some(image) = slot.image.as_mut().filter(|i| i.since == since) {
+                    image.thumb = Some(thumb.clone());
+                }
+                Ok(thumb)
+            }
         }
     }
 
@@ -761,6 +939,73 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending(kind: ClipContentType, tag: u8, since: Instant) -> PendingImage {
+        PendingImage {
+            content_type: kind,
+            data: vec![tag; 4],
+            width: 10,
+            height: 5,
+            since,
+            thumb: None,
+        }
+    }
+
+    #[test]
+    fn a_held_image_is_replaced_by_a_newer_one_and_expires_after_ten_minutes() {
+        let now = Instant::now();
+        let mut slot = PendingSlot::default();
+        assert!(slot.fresh(now).is_none());
+        slot.hold(pending(ClipContentType::ImagePng, 1, now));
+        slot.hold(pending(ClipContentType::ImageWebP, 2, now));
+        assert_eq!(
+            slot.fresh(now).unwrap().data,
+            vec![2; 4],
+            "the newer image wins"
+        );
+
+        let nine = now + Duration::from_secs(9 * 60);
+        assert!(slot.fresh(nine).is_some());
+        let eleven = now + Duration::from_secs(11 * 60);
+        assert!(slot.fresh(eleven).is_none(), "gone after ten minutes");
+        assert!(
+            slot.take(eleven).is_none(),
+            "and it cannot be taken any more"
+        );
+    }
+
+    #[test]
+    fn taking_a_held_image_empties_the_slot_and_putting_it_back_keeps_its_age() {
+        let t0 = Instant::now();
+        let mut slot = PendingSlot::default();
+        slot.hold(pending(ClipContentType::ImagePng, 3, t0));
+        let image = slot.take(t0 + Duration::from_secs(60)).unwrap();
+        assert!(slot.fresh(t0).is_none());
+        slot.restore(image);
+        let again = slot.fresh(t0 + Duration::from_secs(120)).unwrap();
+        assert_eq!(again.since, t0, "the original capture time is kept");
+        // A newer image copied meanwhile must not be overwritten by the restored older one.
+        let newer = pending(ClipContentType::ImagePng, 9, t0 + Duration::from_secs(130));
+        let mut slot = PendingSlot::default();
+        slot.hold(newer);
+        slot.restore(pending(ClipContentType::ImagePng, 3, t0));
+        assert_eq!(
+            slot.fresh(t0 + Duration::from_secs(140)).unwrap().data,
+            vec![9; 4]
+        );
+    }
+
+    #[test]
+    fn only_png_and_webp_can_be_held_and_they_must_be_real_images() {
+        let png = klip_diff::rgba_to_png(6, 4, &[9u8; 96]).unwrap();
+        assert_eq!(
+            held_image_info(&ClipContentType::ImagePng, &png),
+            Ok((6, 4))
+        );
+        assert!(held_image_info(&ClipContentType::PlainTextUtf8, &png).is_err());
+        assert!(held_image_info(&ClipContentType::ImageWebP, &png).is_err());
+        assert!(held_image_info(&ClipContentType::ImagePng, b"nope").is_err());
+    }
 
     #[test]
     fn offline_label_is_blank_under_a_minute_then_minutes_then_hours() {

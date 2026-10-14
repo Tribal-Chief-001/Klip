@@ -80,6 +80,9 @@ pub struct DaemonConfig {
     pub max_clip_bytes: usize,
     /// Announce this device on the LAN via mDNS so paired devices find it without internet.
     pub lan_discovery: bool,
+    /// Send copied images to the other devices at once. Off (the default): a copied image waits until
+    /// it is sent on purpose (`klip share`, the tray). Text is always sent automatically.
+    pub auto_send_images: bool,
 }
 
 impl Default for DaemonConfig {
@@ -92,6 +95,7 @@ impl Default for DaemonConfig {
             poll_interval_ms: 100,
             max_clip_bytes: 32 * 1024 * 1024,
             lan_discovery: true,
+            auto_send_images: false,
         }
     }
 }
@@ -109,6 +113,13 @@ impl DaemonConfig {
             serde_json::from_str(&data).map_err(|e| format!("{}: {e}", file.display()))?;
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    /// Validate, then write `config.json` atomically (mode 0600); the old file stays when anything fails.
+    pub fn save(&self, paths: &KlipPaths) -> Result<(), String> {
+        self.validate()?;
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())? + "\n";
+        klip_crypto::identity::write_private_file(&paths.config_file(), json.as_bytes())
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -177,6 +188,49 @@ mod tests {
         let _ = fs::remove_dir_all(short.dir());
         let _ = fs::remove_dir_all(std::env::temp_dir().join("x".repeat(60)));
         let _ = fs::remove_dir_all(std::env::temp_dir().join("z".repeat(70)));
+    }
+
+    #[test]
+    fn images_are_manual_by_default_and_the_choice_round_trips_through_save() {
+        let p = tmp("images");
+        assert!(!DaemonConfig::load(&p).unwrap().auto_send_images);
+        fs::write(
+            p.config_file(),
+            r#"{"auto_send_images": true, "device_name": "Desk"}"#,
+        )
+        .unwrap();
+        let mut cfg = DaemonConfig::load(&p).unwrap();
+        assert!(cfg.auto_send_images);
+        cfg.auto_send_images = false;
+        cfg.max_history_items = 7;
+        cfg.save(&p).unwrap();
+        let back = DaemonConfig::load(&p).unwrap();
+        assert!(!back.auto_send_images);
+        assert_eq!(
+            (back.device_name.as_str(), back.max_history_items),
+            ("Desk", 7)
+        );
+        let _ = fs::remove_dir_all(p.dir());
+    }
+
+    #[test]
+    fn save_refuses_an_invalid_config_and_keeps_the_old_file() {
+        let p = tmp("save-invalid");
+        DaemonConfig::default().save(&p).unwrap();
+        let before = fs::read_to_string(p.config_file()).unwrap();
+        let bad = DaemonConfig {
+            max_history_items: 0,
+            ..DaemonConfig::default()
+        };
+        assert!(bad.save(&p).is_err());
+        assert_eq!(fs::read_to_string(p.config_file()).unwrap(), before);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(p.config_file()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = fs::remove_dir_all(p.dir());
     }
 
     #[test]
