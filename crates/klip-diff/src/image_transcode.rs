@@ -31,6 +31,37 @@ pub fn is_uncompressed_image(bytes: &[u8]) -> bool {
     matches!(detect_image_format(bytes), ImageFormat::Bmp)
 }
 
+/// Largest image Klip accepts or sends, in pixels (about 8K). 36 Mpx is 144 MB once decoded to RGBA.
+pub const MAX_IMAGE_PIXELS: u64 = 36_000_000;
+
+/// True when a `width` x `height` image is above [`MAX_IMAGE_PIXELS`] (no overflow for any input).
+pub fn too_many_pixels(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
+}
+
+/// Check an incoming image *without decoding it*: the magic bytes must match `expected` (PNG or
+/// WebP) and the header's size must be within [`MAX_IMAGE_PIXELS`]. A decompression bomb is a few
+/// bytes of header and is refused here. Returns `(width, height)`.
+pub fn validate_image(expected: ImageFormat, bytes: &[u8]) -> Result<(u32, u32), String> {
+    let (format, name) = match expected {
+        ImageFormat::Png => (ImgFormat::Png, "PNG"),
+        ImageFormat::WebP => (ImgFormat::WebP, "WebP"),
+        _ => return Err("only PNG and WebP images are accepted".to_string()),
+    };
+    if detect_image_format(bytes) != expected {
+        return Err(format!("the data is not a {name} image"));
+    }
+    let (width, height) = image::ImageReader::with_format(Cursor::new(bytes), format)
+        .into_dimensions()
+        .map_err(|e| format!("unreadable {name} header: {e}"))?;
+    if too_many_pixels(width, height) {
+        return Err(format!(
+            "the image is {width} x {height} pixels; the limit is {MAX_IMAGE_PIXELS} pixels"
+        ));
+    }
+    Ok((width, height))
+}
+
 /// Encodes raw RGBA pixel data (e.g. from arboard::ImageData) into standard compressed PNG container bytes.
 pub fn rgba_to_png(width: u32, height: u32, rgba_bytes: &[u8]) -> Result<Vec<u8>, String> {
     if width == 0 || height == 0 {
@@ -273,5 +304,71 @@ mod tests {
         assert_eq!(dec_w, width as u32);
         assert_eq!(dec_h, height as u32);
         assert_eq!(dec_rgba, rgba);
+    }
+
+    /// A real PNG whose width/height fields are overwritten (CRC fixed), to describe huge images
+    /// without making them.
+    fn png_claiming(width: u32, height: u32) -> Vec<u8> {
+        fn crc32(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for b in data {
+                crc ^= u32::from(*b);
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 {
+                        (crc >> 1) ^ 0xEDB8_8320
+                    } else {
+                        crc >> 1
+                    };
+                }
+            }
+            !crc
+        }
+        let mut png = rgba_to_png(2, 2, &[255u8; 16]).unwrap();
+        png[16..20].copy_from_slice(&width.to_be_bytes());
+        png[20..24].copy_from_slice(&height.to_be_bytes());
+        let crc = crc32(&png[12..29]); // "IHDR" + 13 data bytes
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        png
+    }
+
+    #[test]
+    fn real_png_and_webp_pass_validation_with_their_size() {
+        let rgba = vec![200u8; 8 * 4 * 4];
+        let png = rgba_to_png(8, 4, &rgba).unwrap();
+        assert_eq!(validate_image(ImageFormat::Png, &png), Ok((8, 4)));
+        let webp = rgba_to_webp(8, 4, &rgba).unwrap();
+        assert_eq!(validate_image(ImageFormat::WebP, &webp), Ok((8, 4)));
+    }
+
+    #[test]
+    fn a_mislabelled_or_broken_image_is_refused() {
+        let rgba = vec![1u8; 4 * 4 * 4];
+        let png = rgba_to_png(4, 4, &rgba).unwrap();
+        let webp = rgba_to_webp(4, 4, &rgba).unwrap();
+        assert!(validate_image(ImageFormat::WebP, &png).is_err());
+        assert!(validate_image(ImageFormat::Png, &webp).is_err());
+        assert!(validate_image(ImageFormat::Bmp, &png).is_err());
+        assert!(validate_image(ImageFormat::Png, b"").is_err());
+        assert!(validate_image(ImageFormat::Png, b"not an image at all").is_err());
+        assert!(
+            validate_image(ImageFormat::Png, &png[..20]).is_err(),
+            "truncated header"
+        );
+    }
+
+    #[test]
+    fn the_pixel_limit_is_exact_and_a_decompression_bomb_header_is_refused() {
+        assert_eq!(
+            validate_image(ImageFormat::Png, &png_claiming(6000, 6000)),
+            Ok((6000, 6000)),
+            "exactly the limit is allowed"
+        );
+        assert!(validate_image(ImageFormat::Png, &png_claiming(6000, 6001)).is_err());
+        let bomb = png_claiming(60_000, 60_000);
+        assert!(bomb.len() < 100, "the bomb is a few bytes");
+        let err = validate_image(ImageFormat::Png, &bomb).unwrap_err();
+        assert!(err.contains("60000"), "{err}");
+        assert!(!too_many_pixels(6000, 6000) && too_many_pixels(6000, 6001));
+        assert!(too_many_pixels(u32::MAX, u32::MAX), "no overflow");
     }
 }
