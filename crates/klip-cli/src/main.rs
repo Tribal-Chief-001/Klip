@@ -299,6 +299,10 @@ async fn start(foreground: bool) -> AnyResult<()> {
             engine.node_id().fingerprint().cyan(),
             engine.sync.relay_mode_label()
         );
+        #[cfg(target_os = "linux")]
+        engine
+            .sync
+            .set_undelivered_hook(klip_daemon::notify::hook());
         engine.run().await?;
         return Ok(());
     }

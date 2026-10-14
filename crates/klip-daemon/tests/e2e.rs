@@ -919,3 +919,65 @@ async fn a_retried_clip_counts_as_applied_but_an_older_clip_is_superseded() {
     a.stop().await;
     b.stop().await;
 }
+
+#[tokio::test]
+async fn an_automatic_copy_that_cannot_reach_a_device_alerts_once_per_outage() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let a = start_daemon("Alpha", fresh_dir("a-alert"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-alert"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    let alerts: Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let seen = Arc::clone(&alerts);
+    a.engine
+        .sync
+        .set_undelivered_hook(Arc::new(move |name: &str, _gone: Duration| {
+            seen.lock().unwrap().push(name.to_string())
+        }));
+    assert!(
+        wait_until(15, || a
+            .engine
+            .sync
+            .peer_status()
+            .iter()
+            .all(|p| p.is_online))
+        .await
+    );
+    b.stop().await;
+    assert!(
+        wait_until(15, || a
+            .engine
+            .sync
+            .peer_status()
+            .iter()
+            .all(|p| !p.is_online))
+        .await
+    );
+
+    // An explicit send reports its own error and raises no alert.
+    let (ok, bad) = sent_report(
+        a.ipc(IpcRequest::SendClip {
+            text: "explicit".into(),
+        })
+        .await,
+    );
+    assert!(ok.is_empty() && bad.len() == 1, "{ok:?} {bad:?}");
+    assert!(alerts.lock().unwrap().is_empty());
+
+    // The first automatic copy alerts, with the device name only.
+    a.clipboard.user_copy("one");
+    assert!(
+        wait_until(40, || !alerts.lock().unwrap().is_empty()).await,
+        "no alert for a copy that could not be delivered"
+    );
+    // A burst of further copies in the same outage stays quiet.
+    a.clipboard.user_copy("two");
+    assert!(wait_until(40, || a.engine.sync.sends_started.load(SeqCst) >= 2).await);
+    a.clipboard.user_copy("three");
+    assert!(wait_until(60, || a.engine.sync.sends_started.load(SeqCst) >= 3).await);
+    assert!(wait_until(60, || !a.engine.sync.is_sending()).await);
+    assert_eq!(*alerts.lock().unwrap(), vec!["Beta".to_string()]);
+    a.stop().await;
+}

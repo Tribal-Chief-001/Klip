@@ -2,6 +2,8 @@ pub mod config;
 pub mod engine;
 pub mod instance_lock;
 pub mod ipc_server;
+#[cfg(target_os = "linux")]
+pub mod notify;
 pub mod services;
 
 pub use config::{
