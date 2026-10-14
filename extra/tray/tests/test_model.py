@@ -269,4 +269,4 @@ class IconClicks(unittest.TestCase):
     def test_a_click_on_a_closed_window_opens_it(self):
         from klip_tray.model import click_action
         self.assertEqual(click_action(False, False, False, 5_000), "show")
-        self.assertEqual(click_action(False, True, False, 1e9), "show", "open but behind another window: bring it up")
+        self.assertEqual(click_action(False, True, False, 1e9), "hide", "open but not focused: a click still closes it")

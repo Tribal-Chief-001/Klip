@@ -254,9 +254,11 @@ AUTO_HIDE_ECHO_MS = 600  # a click on the icon that took the focus away also rea
 def click_action(open_at_press: bool, visible: bool, active: bool, ms_since_auto_hide: float) -> str:
     """What a left click on the tray icon does: "hide", "show" or "ignore".
 
-    Pressing the icon moves the focus, so the window may already have lost it (or even hidden itself)
-    by the time the click arrives. What counts is whether it was open and focused when the press began."""
-    if open_at_press or (visible and active):
+    Like a panel menu: a click while the window is open closes it. Pressing the icon moves the focus,
+    so by the time the click arrives the window may have lost it or even hidden itself; what counts is
+    that it was open when the press began. (`active` is not used: an open window that the window
+    manager did not focus must still close on the next click.)"""
+    if open_at_press or visible:
         return "hide"
     if not visible and ms_since_auto_hide < AUTO_HIDE_ECHO_MS:
         return "ignore"  # this very click closed it: do not open it again

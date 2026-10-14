@@ -16,6 +16,9 @@ def main(argv=None) -> int:
               f"python3-gi gir1.2-gtk-3.0 gir1.2-xapp-1.0).\n({e})", file=sys.stderr)
         return 2
     setup_logging()
+    from gi.repository import GLib
+    GLib.set_prgname("klip-tray")  # the window class the desktop shows (taskbar, alt-tab), not "__main__.py"
+    GLib.set_application_name("Klip")
     app = TrayApp(args.klip, args.show)
     return app.run([sys.argv[0]])
 

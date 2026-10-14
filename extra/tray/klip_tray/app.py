@@ -16,6 +16,12 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("XApp", "1.0")
 from gi.repository import Gdk, Gio, GLib, Gtk, XApp  # noqa: E402
 
+try:
+    gi.require_version("GdkX11", "3.0")
+    from gi.repository import GdkX11  # noqa: E402
+except (ImportError, ValueError):  # not on X11: the click's own timestamp is all there is
+    GdkX11 = None
+
 from . import icons, model, theme  # noqa: E402
 from .bridge import Bridge  # noqa: E402
 from .controller import Controller  # noqa: E402
@@ -69,7 +75,8 @@ class KlipWindow(Gtk.Window):
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
         self.set_keep_above(True)
-        self.set_type_hint(Gdk.WindowTypeHint.DIALOG)
+        self.set_type_hint(Gdk.WindowTypeHint.UTILITY)  # no taskbar entry, still takes the focus
+        self.set_role("klip-tray")
         full = (WIDTH + 2 * FRAME_MARGIN_X, HEIGHT + FRAME_MARGIN_TOP + FRAME_MARGIN_BOTTOM)
         self.set_size_request(*full)
         self.set_default_size(*full)
@@ -108,11 +115,26 @@ class KlipWindow(Gtk.Window):
             self.hide_window()
         return False
 
-    def show_window(self, x: int = 0, y: int = 0, panel: int = 3) -> None:
+    def _server_time(self) -> int:
+        """A timestamp the window manager accepts as "the user just did this" (0 would be refused)."""
+        gdk = self.get_window()
+        if GdkX11 is not None and gdk is not None and isinstance(gdk, GdkX11.X11Window):
+            return GdkX11.x11_get_server_time(gdk)
+        return Gtk.get_current_event_time()
+
+    def bring_up(self, time: int = 0) -> None:
+        """Show on top and give it the focus; with the click's timestamp the window manager obeys."""
+        self.set_skip_taskbar_hint(True)
+        self.present_with_time(time or self._server_time())
+        gdk = self.get_window()
+        if gdk is not None:
+            gdk.focus(time or self._server_time())
+
+    def show_window(self, x: int = 0, y: int = 0, panel: int = 3, time: int = 0) -> None:
         self.position(x, y, panel)
         self._shown_at = GLib.get_monotonic_time()
         self.show_all()
-        self.present_with_time(Gtk.get_current_event_time() or 0)
+        self.bring_up(time)
         self.view.window_shown(True)
 
     def hide_window(self) -> None:
@@ -176,6 +198,7 @@ class TrayApp(Gtk.Application):
         self.bridge: Optional[Bridge] = None
         self._icon_paths: dict = {}
         self._click = (0, 0, 3)
+        self._click_time = 0
         self._open_at_press = False
         self._support_checks = 0
         self._first_activate = True
@@ -244,18 +267,20 @@ class TrayApp(Gtk.Application):
         self.icon.set_secondary_menu(self.menu)
         self.icon.set_visible(True)
 
-    def _icon_press(self, _icon, x, y, button, _time, panel) -> None:
+    def _icon_press(self, _icon, x, y, button, time, panel) -> None:
         self._click = (int(x), int(y), int(panel))
+        self._click_time = int(time)
         w = self.window
-        self._open_at_press = bool(w is not None and w.get_visible() and w.is_active())
+        self._open_at_press = bool(w is not None and w.get_visible())
 
     def _icon_release(self, _icon, _x, _y, button, _time, _panel) -> None:
         if button == 2:  # middle click: send the waiting image
             self.send_waiting_image()
 
-    def _icon_activate(self, _icon, button, _time) -> None:
+    def _icon_activate(self, _icon, button, time) -> None:
         if button != 1:
             return
+        self._click_time = int(time) or self._click_time
         self.toggle_window()
 
     def _check_tray_support(self) -> bool:
@@ -359,16 +384,20 @@ class TrayApp(Gtk.Application):
         if self.window is None:
             self.view = MainView(self.controller, Actions(self))
             self.window = KlipWindow(self.view)
+            icon = icons.path_for(self._icon_paths, "connected", False)
+            if icon:
+                self.window.set_icon_from_file(icon)  # the taskbar and alt-tab show this, not a gear
             self.add_window(self.window)
         return self.window
 
     def show_window(self, page: Optional[str] = None) -> None:
         window = self._ensure_window()
         x, y, panel = self._click
+        time, self._click_time = self._click_time, 0
         if not window.get_visible():
-            window.show_window(x, y, panel)
+            window.show_window(x, y, panel, time)
         else:
-            window.present_with_time(Gtk.get_current_event_time() or 0)
+            window.bring_up(time)
         if page and self.view:
             self.view.navigate(page)
         self.controller.refresh()
