@@ -43,7 +43,7 @@
 
 ## The tray app
 
-On Linux (built for Linux Mint Cinnamon, uses the XApp status icon) Klip has a small tray icon with a menu. Everything else (devices, pairing, history, send, log, settings) is the [terminal app](#the-terminal-app). The tray is a small Python/GTK program inside the `klip` binary: nothing extra to download, about 27 MB of RAM and almost no CPU while idle.
+On Linux (built for Linux Mint Cinnamon, but any desktop with a StatusNotifier panel works) Klip has a small tray icon with a menu. Everything else (devices, pairing, history, send, log, settings) is the [terminal app](#the-terminal-app). The tray is part of the `klip` binary (no Python, no GTK, nothing extra to install): it keeps a few MB in memory and uses almost no CPU while idle.
 
 ```bash
 klip tray install     # start it every time you log in
@@ -53,7 +53,7 @@ klip tray             # start it now (in the background)
 - **The icon** is monochrome like the other panel icons (the desktop paints it in the panel's colour); the shape is the state: a solid line between the two dots = connected, dots = waiting for a device, two bars = paused, faded = stopped or no devices; a dot in the corner = an image is waiting to be sent. Hover for the details.
 - **Left or right click** opens the same menu: the state, send the last copied image, send images automatically, pause or resume, open the terminal app, quit the tray (start Klip, when it is stopped). **Middle click** sends the waiting image.
 - **Images are manual**: a copied image is held for 10 minutes (the last one only) and is sent when you use the menu, middle-click the icon, or run `klip share` (bind it to a keyboard shortcut in your desktop's keyboard settings). Prefer the old behaviour? Tick *Send images automatically* in the menu, or run `klip images auto`. Text is always sent automatically.
-- It needs Python 3 with GTK 3 and XApp (already on Linux Mint; on Debian/Ubuntu: `sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-xapp-1.0`). `klip tray status` says whether it can run. Quitting the tray never stops Klip itself.
+- It talks to the panel over D-Bus (StatusNotifierItem). `klip tray status` says whether it is running. Quitting the tray never stops Klip itself.
 
 ## The terminal app
 
@@ -100,10 +100,10 @@ The Pair screen shows the QR code beside the ticket. If the window is too small 
 
 | Part | State | Evidence |
 |---|---|---|
-| Core engine (pairing, sync, conflict resolution) | ✅ working | 351 automated Rust tests (plus 44 Python tests for the tray app) in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
+| Core engine (pairing, sync, conflict resolution) | ✅ working | 360 automated Rust tests (including the tray) in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
 | **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | The terminal app's own tests: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
-| **Tray app** (`klip tray`, Linux Mint Cinnamon) | 🟡 tested without a real panel | 44 Python tests (state, bridge client, controller, icons), an integration test of the tray controller and the `klip api` bridge against real daemons, and the app run on the author's desktop. The menu and icon were looked at by the author; see the release notes. |
+| **Tray app** (`klip tray`, Linux) | 🟡 tested without a real panel | Unit tests of every state and menu, and end-to-end tests of the real tray on a private D-Bus session against an isolated daemon (click through the menu, check what the daemon did, quit, a second tray refused). See the release notes for what was and was not seen on the author's real panel. |
 | **Android app** | 🟡 emulator (Android 14) + one real phone (Vivo, reported by the author) | Emulator: pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect, reboot, notification, setup screens. Real phone (author's report): laptop → phone arrives by itself; phone → laptop works with Share → Klip, the notification button or the app's Send button. **Not verified:** background persistence over hours, reboot, camera QR scan, the tile, battery cost on a real phone |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
 | macOS, Windows | 🔴 compile-checked in CI only | never run; the Windows CLI cannot control the daemon yet |
@@ -310,7 +310,7 @@ systemctl --user status klip.service
 ## Build & test from source
 
 ```bash
-cargo test --workspace                      # 351 tests
+cargo test --workspace                      # 360 tests
 cargo clippy --workspace --all-targets -- -D warnings
 android/build-core.sh arm64-v8a             # Rust engine + Kotlin bindings (needs cargo-ndk, NDK r28+)
 cd android && ./gradlew assembleDebug

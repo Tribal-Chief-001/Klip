@@ -83,9 +83,6 @@ enum Commands {
         #[command(subcommand)]
         action: Option<TrayAction>,
     },
-    /// JSON bridge to the daemon for the tray app (reads requests on stdin, one JSON per line)
-    #[command(hide = true)]
-    Api,
     /// Send the image you copied last to all linked devices (bind it to a keyboard shortcut)
     Share,
     /// Show, or choose, whether copied images are sent at once or wait until you send them
@@ -251,8 +248,8 @@ fn print_image_state(state: &klip_proto::ipc::ImageStateInfo) {
     }
 }
 
-#[cfg(unix)]
-fn tray_command(action: TrayAction) -> AnyResult<()> {
+#[cfg(target_os = "linux")]
+async fn tray_command(action: TrayAction) -> AnyResult<()> {
     use klip_cli::tray;
     let entry = tray::autostart_path().ok_or("cannot find your home directory")?;
     match action {
@@ -260,7 +257,7 @@ fn tray_command(action: TrayAction) -> AnyResult<()> {
             let pid = tray::start_detached()?;
             println!("{} Klip tray started (PID {pid}).", "✓".green().bold());
         }
-        TrayAction::Run => tray::run_foreground()?,
+        TrayAction::Run => tray::run().await?,
         TrayAction::Install => {
             let exe = tray::exe_path()?;
             tray::install_autostart(&entry, &exe.to_string_lossy())?;
@@ -281,10 +278,14 @@ fn tray_command(action: TrayAction) -> AnyResult<()> {
             }
         }
         TrayAction::Status => {
-            match tray::python_ready() {
-                Ok(()) => println!("Tray program: ready (Python with GTK 3 and XApp)"),
-                Err(why) => println!("Tray program: not ready. {why}"),
-            }
+            println!(
+                "Tray: {}",
+                if tray::is_running() {
+                    "running"
+                } else {
+                    "not running (klip tray starts it)"
+                }
+            );
             println!(
                 "Start at login: {}",
                 if tray::autostart_installed(&entry) {
@@ -402,14 +403,10 @@ async fn run(cli: Cli) -> AnyResult<()> {
             }
         }
         Commands::InstallService => install_service()?,
-        #[cfg(unix)]
-        Commands::Tray { action } => tray_command(action.unwrap_or(TrayAction::Start))?,
-        #[cfg(not(unix))]
+        #[cfg(target_os = "linux")]
+        Commands::Tray { action } => tray_command(action.unwrap_or(TrayAction::Start)).await?,
+        #[cfg(not(target_os = "linux"))]
         Commands::Tray { .. } => return Err("the tray is only available on Linux".into()),
-        #[cfg(unix)]
-        Commands::Api => klip_cli::bridge::run(klip_daemon::config::user_paths()).await,
-        #[cfg(not(unix))]
-        Commands::Api => return Err("the tray bridge is only available on Linux and macOS".into()),
         Commands::Share => match rpc_hint(IpcRequest::SendPendingImage).await? {
             IpcResponse::Sent {
                 bytes,

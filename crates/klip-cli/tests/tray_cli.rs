@@ -1,8 +1,6 @@
-//! `klip tray install|uninstall|status` and the bridge's autostart methods, with HOME and
-//! XDG_CONFIG_HOME pointed at a temp directory (the real login entries are never touched).
-#![cfg(unix)]
-use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+//! `klip tray install|uninstall|status|start`, with HOME and XDG_CONFIG_HOME pointed at a temp
+//! directory (the real login entries are never touched).
+#![cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -24,7 +22,6 @@ impl Env {
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_DATA_HOME", self.home.join(".local/share"))
             .env("KLIP_CONFIG_DIR", self.home.join("klipdir"))
-            .env_remove("PYTHONPATH")
             .stdin(Stdio::null());
         c
     }
@@ -89,37 +86,31 @@ fn a_foreign_entry_with_the_same_name_is_refused_and_left_alone() {
 }
 
 #[test]
-fn the_bridge_can_read_and_set_the_login_entry_for_the_tray() {
-    let e = Env::new("bridge");
-    let mut child = e
-        .command()
-        .arg("api")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let mut out = BufReader::new(child.stdout.take().unwrap());
-    let mut call = |req: Value| -> Value {
-        writeln!(stdin, "{req}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        out.read_line(&mut line).unwrap();
-        serde_json::from_str(&line).unwrap()
-    };
-    assert_eq!(
-        call(json!({"id": 1, "method": "autostart_get"}))["ok"]["installed"],
-        false
+fn a_running_tray_is_seen_by_status_and_a_second_one_is_refused() {
+    let e = Env::new("lock");
+    let dir = e.home.join("klipdir");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(
+        text(&e.run(&["tray", "status"])).contains("Tray: not running"),
+        "{}",
+        text(&e.run(&["tray", "status"]))
     );
-    let r = call(json!({"id": 2, "method": "autostart_set", "params": {"enabled": true}}));
-    assert_eq!(r["ok"]["installed"], true, "{r}");
-    assert!(e.entry().exists());
-    let r = call(json!({"id": 3, "method": "autostart_set", "params": {"enabled": false}}));
-    assert_eq!(r["ok"]["installed"], false, "{r}");
-    assert!(!e.entry().exists());
-    let r = call(json!({"id": 4, "method": "autostart_set", "params": {}}));
-    assert!(r["err"].as_str().unwrap().contains("enabled"), "{r}");
-    drop(stdin);
-    let _ = child.wait();
+    // Stand in for a running tray: hold the lock it holds.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("tray.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    assert!(text(&e.run(&["tray", "status"])).contains("Tray: running"));
+    for args in [&["tray", "start"][..], &["tray", "run"][..], &["tray"][..]] {
+        let out = e.run(args);
+        assert!(!out.status.success(), "{args:?}: {}", text(&out));
+        assert!(
+            text(&out).contains("already running"),
+            "{args:?}: {}",
+            text(&out)
+        );
+    }
 }

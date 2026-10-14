@@ -7,6 +7,13 @@ use klip_proto::ipc::{IpcRequest, IpcResponse, IPC_PROTOCOL_VERSION};
 use klip_tui::api::*;
 use std::time::Duration;
 
+/// A detached child still needs its exit status collected, or it stays a zombie of a long-lived caller.
+fn reap_later(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
 pub struct IpcDaemonApi {
     client: DaemonClient,
     paths: KlipPaths,
@@ -215,6 +222,7 @@ impl DaemonApi for IpcDaemonApi {
         for _ in 0..120 {
             tokio::time::sleep(Duration::from_millis(250)).await;
             if self.status().await.is_ok() {
+                reap_later(child);
                 return Ok(pid);
             }
             if let Ok(Some(status)) = child.try_wait() {
@@ -224,6 +232,7 @@ impl DaemonApi for IpcDaemonApi {
                 )));
             }
         }
+        reap_later(child);
         Err(ApiError::Refused(format!(
             "Klip did not come up within 30 s. See the log: {}",
             log_path.display()

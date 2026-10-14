@@ -45,6 +45,20 @@ fn run(program: &str, args: &[String]) {
     }
 }
 
+/// A desktop notification with a short message of our own (the tray's failures), never clip content.
+pub fn say(text: &str) {
+    run(
+        "notify-send",
+        &[
+            "--app-name=Klip".to_string(),
+            "--expire-time=10000".to_string(),
+            "--".to_string(),
+            "Klip".to_string(),
+            escape_markup(text),
+        ],
+    );
+}
+
 pub fn hook() -> UndeliveredHook {
     Arc::new(|name: &str, gone: Duration| run("notify-send", &args(name, gone)))
 }

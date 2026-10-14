@@ -41,20 +41,18 @@ jobs:
 
       - name: Run complete test suite
         run: cargo test --workspace --verbose
-
-      # The tray app's logic tests need no display; the GTK tests skip themselves on a runner without one.
-      - name: Tray app tests (Python)
-        run: python3 -m unittest discover -s extra/tray/tests -t extra/tray
+        env:
+          KLIP_REQUIRE_DBUS_TESTS: "1"
 
       - name: Compile hardened release binary
         run: cargo build --release --bin klip
 
-      - name: Verify binary size budget (< 8.5MB)
+      - name: Verify binary size budget (< 9.5MiB)
         run: |
           BINARY_SIZE=$(stat -c%s target/release/klip)
           echo "Release binary size: $BINARY_SIZE bytes"
-          if [ $BINARY_SIZE -gt 8912896 ]; then
-            echo "Binary size exceeded 8.5MB performance budget!"
+          if [ $BINARY_SIZE -gt 9961472 ]; then
+            echo "Binary size exceeded the 9.5MiB budget!"
             exit 1
           fi
 
