@@ -136,97 +136,12 @@ class Summaries(unittest.TestCase):
             self.assertIn(s.state, ("no_devices", "waiting", "stopped"))
 
 
-class History(unittest.TestCase):
-    def item(self, **kw):
-        base = {"id_hex": "ab" * 16, "origin_name": "Vivo V2253", "timestamp_ms": 1_000_000,
-                "content_preview": "hello world", "content_len": 11, "size_bytes": 11, "is_sensitive": False}
-        base.update(kw)
-        return base
-
-    def test_rows_get_a_kind_an_age_and_a_size(self):
-        rows = m.history_rows([self.item(), self.item(content_preview="[Image: PNG (186183 B)]",
-                                                      content_len=186183, size_bytes=186183, id_hex="cd" * 16),
-                               self.item(is_sensitive=True, content_preview="••••", id_hex="ef" * 16)],
-                              now_ms=1_000_000 + 125_000)
-        self.assertEqual([r.kind for r in rows], ["text", "image", "secret"])
-        self.assertEqual(rows[0].age, "2 min ago")
-        self.assertEqual(rows[1].size_text, "181.8 KiB")
-        self.assertTrue(rows[0].can_copy and rows[1].can_copy)
-
-    def test_a_clip_too_large_to_keep_cannot_be_copied_back(self):
-        row = m.history_rows([self.item(content_len=0, size_bytes=5_000_000,
-                                        content_preview="[Image: PNG (5000000 B)]")], now_ms=2_000_000)[0]
-        self.assertFalse(row.can_copy)
-        self.assertEqual(row.kind, "image")
-
-    def test_search_matches_preview_and_device_case_insensitively(self):
-        rows = m.history_rows([self.item(content_preview="Invoice 42"), self.item(content_preview="other",
-                                                                                 origin_name="Laptop", id_hex="11" * 16)],
-                              now_ms=2_000_000)
-        self.assertEqual(len(m.filter_rows(rows, "invoice")), 1)
-        self.assertEqual(len(m.filter_rows(rows, "LAPTOP")), 1)
-        self.assertEqual(len(m.filter_rows(rows, "")), 2)
-        self.assertEqual(len(m.filter_rows(rows, "nothing")), 0)
-
-    def test_secrets_are_never_searchable_by_their_hidden_text(self):
-        rows = m.history_rows([self.item(is_sensitive=True, content_preview="•••• (Sensitive Token / Key)")],
-                              now_ms=2_000_000)
-        self.assertEqual(len(m.filter_rows(rows, "sensitive")), 0)
-
-
-class Tickets(unittest.TestCase):
-    def test_a_pasted_ticket_survives_borders_quotes_and_line_breaks(self):
-        raw = '"│ klip1ABCDEFGHIJKLMNOPQRSTUV │\n│ 234567abcdefghijkl │"'
-        self.assertTrue(m.looks_like_ticket(raw))
-        self.assertEqual(m.clean_ticket(raw), "klip1abcdefghijklmnopqrstuv234567abcdefghijkl")
-
-    def test_other_text_is_not_a_ticket(self):
-        for bad in ("", "hello", "klip1", "klip1!!!", "k" * 3000, "klip2abcdefghijklmnopqrstuvwxyz"):
-            self.assertFalse(m.looks_like_ticket(bad), bad)
-
-
 class Pause(unittest.TestCase):
     def test_the_pause_choices(self):
         labels = [label for label, _ in m.PAUSE_CHOICES]
         self.assertEqual(labels, ["10 minutes", "1 hour", "8 hours", "Until I resume"])
         self.assertEqual(m.PAUSE_CHOICES[0][1], 600)
         self.assertGreater(m.PAUSE_CHOICES[-1][1], 365 * 24 * 3600)
-
-
-class Settings(unittest.TestCase):
-    def good(self):
-        return {"device_name": "Laptop", "relay": "n0", "max_history_items": 50, "history_ttl_hours": 24,
-                "poll_interval_ms": 100, "max_clip_bytes": 32 * 1024 * 1024, "lan_discovery": True,
-                "auto_send_images": False}
-
-    def test_a_good_configuration_passes(self):
-        self.assertEqual(m.config_problems(self.good()), [])
-
-    def test_each_rule_of_the_daemon_is_checked_before_saving(self):
-        for key, value, word in (("device_name", "  ", "name"), ("poll_interval_ms", 5, "poll"),
-                                 ("max_clip_bytes", 0, "clip"), ("max_clip_bytes", 300 * 1024 * 1024, "clip"),
-                                 ("history_ttl_hours", 9000, "hours"), ("max_history_items", 0, "history"),
-                                 ("relay", "wan", "relay")):
-            cfg = self.good()
-            cfg[key] = value
-            problems = m.config_problems(cfg)
-            self.assertTrue(any(word in p.lower() for p in problems), (key, problems))
-
-    def test_whole_numbers_are_read_from_text(self):
-        self.assertEqual(m.to_int(" 42 ", 0, 100), 42)
-        for bad in ("", "x", "1.5", "-1", "101"):
-            with self.assertRaises(ValueError):
-                m.to_int(bad, 0, 100)
-
-
-class Sizes(unittest.TestCase):
-    def test_text_that_is_too_big_is_refused_before_it_is_sent(self):
-        self.assertIsNone(m.send_problem("hello", limit=1000))
-        self.assertIsNotNone(m.send_problem("", limit=1000))
-        self.assertIsNotNone(m.send_problem("   \n", limit=1000))
-        self.assertIn("1,000 B", m.send_problem("x" * 2000, limit=1000))
-        self.assertIsNone(m.send_problem("é" * 400, limit=1000))
-        self.assertIsNotNone(m.send_problem("é" * 600, limit=1000), "limits count bytes, not letters")
 
 
 class SentReports(unittest.TestCase):
@@ -253,20 +168,3 @@ class SentReports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class IconClicks(unittest.TestCase):
-    def test_a_click_while_it_is_open_closes_it_even_if_the_press_took_the_focus(self):
-        from klip_tray.model import click_action
-        self.assertEqual(click_action(True, True, False, 1e9), "hide")  # focus left on the press
-        self.assertEqual(click_action(False, True, True, 1e9), "hide")
-        self.assertEqual(click_action(True, False, False, 100), "hide")  # it hid itself before the click arrived
-
-    def test_the_click_that_made_it_hide_itself_does_not_open_it_again(self):
-        from klip_tray.model import click_action
-        self.assertEqual(click_action(False, False, False, 100), "ignore")
-
-    def test_a_click_on_a_closed_window_opens_it(self):
-        from klip_tray.model import click_action
-        self.assertEqual(click_action(False, False, False, 5_000), "show")
-        self.assertEqual(click_action(False, True, False, 1e9), "hide", "open but not focused: a click still closes it")

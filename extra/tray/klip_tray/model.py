@@ -5,7 +5,6 @@ The daemon's answers arrive as JSON from `klip api` (see crates/klip-cli/src/bri
 from __future__ import annotations
 
 import dataclasses
-import re
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------------- formatting
@@ -179,112 +178,7 @@ def summarize(status: Any, images: Any, down: bool = False, caps: Optional[list]
                    image, auto, daemon_old, bool(status.get("pairing_open")))
 
 
-# ------------------------------------------------------------------------------------- history
-
-
-@dataclasses.dataclass(frozen=True)
-class HistoryRow:
-    id_hex: str
-    kind: str  # text | image | secret
-    preview: str
-    origin: str
-    age: str
-    size_text: str
-    can_copy: bool
-
-
-def history_rows(items: list, now_ms: int) -> list:
-    rows = []
-    for it in items or []:
-        if not isinstance(it, dict):
-            continue
-        preview = str(it.get("content_preview") or "")
-        kind = "secret" if it.get("is_sensitive") else ("image" if preview.startswith("[Image:") else "text")
-        age = ago(max(0, now_ms - _int(it.get("timestamp_ms"))) // 1000)
-        rows.append(HistoryRow(str(it.get("id_hex") or ""), kind, preview, str(it.get("origin_name") or ""),
-                               age, size(_int(it.get("size_bytes"))), _int(it.get("content_len")) > 0))
-    return rows
-
-
-def filter_rows(rows: list, query: str) -> list:
-    q = (query or "").strip().lower()
-    if not q:
-        return list(rows)
-    return [r for r in rows if q in r.origin.lower() or (r.kind != "secret" and q in r.preview.lower())]
-
-
-# --------------------------------------------------------------------------------------- input
-
-
-def clean_ticket(text: str) -> str:
-    """Whatever a copy and paste brings along (spaces, box borders, quotes) is dropped."""
-    return "".join(c for c in text if c.isascii() and c.isalnum()).lower()
-
-
-def looks_like_ticket(text: str) -> bool:
-    t = clean_ticket(text)
-    return t.startswith("klip1") and 20 <= len(t) <= 2048
-
-
 PAUSE_CHOICES = [("10 minutes", 600), ("1 hour", 3600), ("8 hours", 28_800), ("Until I resume", 315_360_000)]
-
-
-def to_int(text: str, lo: int, hi: int) -> int:
-    t = (text or "").strip()
-    if not re.fullmatch(r"\d+", t):
-        raise ValueError("enter a whole number")
-    n = int(t)
-    if not lo <= n <= hi:
-        raise ValueError(f"enter a number from {lo} to {hi}")
-    return n
-
-
-def send_problem(text: str, limit: int) -> Optional[str]:
-    if not text.strip():
-        return "Type something to send."
-    n = len(text.encode("utf-8"))
-    if n > limit:
-        return f"That is {size(n)}; the limit is {size(limit)}."
-    return None
-
-
-AUTO_HIDE_ECHO_MS = 600  # a click on the icon that took the focus away also reaches us as "activate"
-
-
-def click_action(open_at_press: bool, visible: bool, active: bool, ms_since_auto_hide: float) -> str:
-    """What a left click on the tray icon does: "hide", "show" or "ignore".
-
-    Like a panel menu: a click while the window is open closes it. Pressing the icon moves the focus,
-    so by the time the click arrives the window may have lost it or even hidden itself; what counts is
-    that it was open when the press began. (`active` is not used: an open window that the window
-    manager did not focus must still close on the next click.)"""
-    if open_at_press or visible:
-        return "hide"
-    if not visible and ms_since_auto_hide < AUTO_HIDE_ECHO_MS:
-        return "ignore"  # this very click closed it: do not open it again
-    return "show"
-
-
-def config_problems(cfg: dict) -> list:
-    """The daemon's own rules (DaemonConfig::validate), checked before anything is saved."""
-    problems = []
-    name = str(cfg.get("device_name") or "").strip()
-    if not name:
-        problems.append("The device name cannot be empty.")
-    elif len(name) > 64:
-        problems.append("The device name can have at most 64 characters.")
-    if cfg.get("relay") not in ("n0", "lan"):
-        problems.append("The relay mode must be n0 or lan.")
-    if _int(cfg.get("poll_interval_ms")) < 20:
-        problems.append("The polling interval must be at least 20 ms.")
-    clip = _int(cfg.get("max_clip_bytes"))
-    if clip < 1 or clip > 256 * 1024 * 1024:
-        problems.append("The clip size limit must be between 1 byte and 256 MiB.")
-    if _int(cfg.get("history_ttl_hours")) > 24 * 365:
-        problems.append("Keep clips for at most 8760 hours (one year); 0 keeps them until the limits push them out.")
-    if _int(cfg.get("max_history_items")) < 1:
-        problems.append("The history must keep at least 1 item.")
-    return problems
 
 
 def describe_sent(payload: Any) -> tuple[bool, str]:

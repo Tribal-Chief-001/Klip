@@ -1,4 +1,4 @@
-The tray icon and window (Linux): start it, or make it start when you log in
+The tray icon (Linux): start it, or make it start when you log in
 
 Usage: klip tray [COMMAND]
 

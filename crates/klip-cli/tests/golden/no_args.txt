@@ -13,7 +13,7 @@ Commands:
   history          Show recently synced clips
   send             Send a text to all linked devices right now
   install-service  Install the auto-start service for your OS
-  tray             The tray icon and window (Linux): start it, or make it start when you log in
+  tray             The tray icon (Linux): start it, or make it start when you log in
   share            Send the image you copied last to all linked devices (bind it to a keyboard shortcut)
   images           Show, or choose, whether copied images are sent at once or wait until you send them
   help             Print this message or the help of the given subcommand(s)

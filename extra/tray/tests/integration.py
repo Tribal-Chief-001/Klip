@@ -1,4 +1,4 @@
-"""The whole tray stack except GTK, against real daemons.
+"""The tray controller and the real `klip api` bridge, against real daemons (no GTK).
 
   KLIP_BIN=target/debug/klip KLIP_PEER_BIN=target/debug/examples/emulator_peer \
       python3 -m unittest tests.integration -v
@@ -7,6 +7,7 @@ Daemon A (the test peer, an in-memory clipboard that can "copy" an image) is the
 controller drives through the real `klip api` bridge; daemon B is an ordinary `klip` the test pairs
 with. Everything stays on this machine (LAN mode); the real daemon and phone are never involved.
 """
+import base64
 import json
 import os
 import shutil
@@ -112,9 +113,12 @@ class RealStack(unittest.TestCase):
         self.assertIsNone(r.err, r)
         return r.ok
 
+    def a(self, ipc, timeout=None):
+        r = self.bridge_a.call({"ipc": ipc}, timeout)
+        self.assertIsNone(r.err, r)
+        return r.ok
+
     def refresh(self):
-        done = threading.Event()
-        listener = lambda s: None
         self.ctl.refresh()
         wait_for(lambda: not self.ctl._polling, 10, "a poll to finish")
 
@@ -126,7 +130,7 @@ class RealStack(unittest.TestCase):
 
     # --- the story, in order (unittest runs methods alphabetically, so the names carry the order)
 
-    def test_01_pairing_through_the_controller_with_approval_on_the_other_side(self):
+    def test_01_the_tray_sees_the_daemon_pair_and_connect(self):
         self.refresh()
         self.assertEqual(self.ctl.summary.state, "no_devices")
         self.assertTrue(self.ctl.summary.device_fingerprint)
@@ -135,14 +139,13 @@ class RealStack(unittest.TestCase):
         self.assertGreater(qr.ok["size"], 20)
 
         result = []
-        joiner = threading.Thread(target=lambda: result.append(sync(self.ctl.pair_join, ticket)))
+        joiner = threading.Thread(target=lambda: result.append(self.a({"PairJoin": {"ticket": ticket}}, 120)))
         joiner.start()
         pending = wait_for(lambda: self.b("PairPoll")["PairPoll"]["pending"], 30, "B to see the request")
         self.assertEqual(pending["device_name"], "Ay")
         self.assertEqual(self.b({"PairDecide": {"accept": True}})["PairPoll"]["pending"], None)
         joiner.join(60)
-        self.assertTrue(result[0].ok, result[0])
-        self.assertEqual(result[0].value["peer_name"], "Bee")
+        self.assertEqual(result[0]["PairSuccess"]["peer_name"], "Bee")
         wait_for(lambda: (self.refresh() or True) and self.ctl.summary.state == "connected", 30, "A to show connected")
         self.assertEqual(self.ctl.summary.title, "Connected to Bee")
         self.assertEqual(self.ctl.summary.peers[0].name, "Bee")
@@ -153,8 +156,8 @@ class RealStack(unittest.TestCase):
         self.inject(data)
         wait_for(lambda: (self.refresh() or True) and self.ctl.summary.image, 20, "A to hold the image")
         self.assertTrue(self.ctl.summary.badge, "a held image badges the tray icon")
-        thumb = sync(self.ctl.thumbnail, None)
-        self.assertTrue(thumb.ok and thumb.value.startswith(b"\x89PNG"), thumb)
+        thumb = self.a({"GetThumbnail": {"id": None}})["Thumbnail"]
+        self.assertTrue(base64.b64decode(thumb).startswith(b"\x89PNG"))
         time.sleep(1.0)
         history_b = self.b({"GetHistory": {"limit": 10}})["History"]
         self.assertEqual([h for h in history_b if h["content_preview"].startswith("[Image")], [],
@@ -185,39 +188,13 @@ class RealStack(unittest.TestCase):
         self.assertTrue(sync(self.ctl.set_auto_images, False).ok)
         self.assertIs(read_json(os.path.join(self.a_dir, "config.json"))["auto_send_images"], False)
 
-    def test_04_text_history_reveal_and_copy_back(self):
-        out = sync(self.ctl.send_text, "hello from the tray controller")
-        self.assertEqual(out.value, "Sent to Bee")
-        wait_for(lambda: any(h["content_preview"] == "hello from the tray controller"
-                             for h in self.b({"GetHistory": {"limit": 50}})["History"]), 15, "the text to arrive")
-        history = sync(self.ctl.history)
-        self.assertTrue(history.ok)
-        row = next(r for r in history.value if r.preview == "hello from the tray controller")
-        self.assertEqual((row.kind, row.can_copy), ("text", True))
-        self.assertEqual(sync(self.ctl.history_text, row.id_hex).value, "hello from the tray controller")
-        self.assertTrue(sync(self.ctl.copy_back, row.id_hex).ok)
-        image_row = next(r for r in history.value if r.kind == "image")
-        thumb = sync(self.ctl.thumbnail, image_row.id_hex)
-        self.assertTrue(thumb.ok and thumb.value.startswith(b"\x89PNG"), thumb)
-        self.assertFalse(sync(self.ctl.send_text, "   ").ok)
-
-    def test_05_pause_settings_and_the_daemon_going_away_and_coming_back(self):
+    def test_04_pause_and_the_daemon_going_away_and_coming_back(self):
         self.assertTrue(sync(self.ctl.pause, 120).ok)
         self.refresh()
         self.assertEqual(self.ctl.summary.state, "paused")
         self.assertTrue(sync(self.ctl.resume).ok)
         self.refresh()
         self.assertEqual(self.ctl.summary.state, "connected")
-
-        cfg = sync(self.ctl.config_get).value
-        self.assertTrue(cfg["device_name"], "the saved name (A runs as Ay but has no config.json of its own)")
-        cfg["max_history_items"] = 33
-        self.assertTrue(sync(self.ctl.config_set, cfg).ok)
-        self.assertEqual(read_json(os.path.join(self.a_dir, "config.json"))["max_history_items"], 33)
-        cfg["max_history_items"] = 0
-        bad = sync(self.ctl.config_set, cfg)
-        self.assertFalse(bad.ok)
-        self.assertIn("history", bad.error)
 
         # The daemon goes away: the tray says "stopped", and recovers by itself when it is back.
         self.peer.kill()
@@ -230,11 +207,10 @@ class RealStack(unittest.TestCase):
                  30, "the daemon to be seen again")
         self.assertNotEqual(self.ctl.summary.state, "stopped")
 
-    def test_06_unpairing(self):
+    def test_05_unpairing(self):
         wait_for(lambda: (self.refresh() or True) and self.ctl.summary.peers, 30, "the peer after the restart")
         fp = self.ctl.summary.peers[0].fingerprint
-        out = sync(self.ctl.unpair, fp)
-        self.assertTrue(out.ok, out)
+        self.a({"Unpair": {"selector": fp}})
         self.refresh()
         self.assertEqual(self.ctl.summary.state, "no_devices")
 

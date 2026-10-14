@@ -1,4 +1,4 @@
-"""`python3 -m klip_tray [--show] [--klip PATH]` (started by `klip tray`)."""
+"""`python3 -m klip_tray [--klip PATH]` (started by `klip tray`)."""
 import argparse
 import os
 import sys
@@ -6,7 +6,6 @@ import sys
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="klip tray")
-    parser.add_argument("--show", action="store_true", help="open the window at start")
     parser.add_argument("--klip", default=os.environ.get("KLIP_BIN", "klip"), help="the klip program to talk to")
     args = parser.parse_args(argv)
     try:
@@ -17,10 +16,9 @@ def main(argv=None) -> int:
         return 2
     setup_logging()
     from gi.repository import GLib
-    GLib.set_prgname("klip-tray")  # the window class the desktop shows (taskbar, alt-tab), not "__main__.py"
+    GLib.set_prgname("klip-tray")  # the name the desktop shows, not "__main__.py"
     GLib.set_application_name("Klip")
-    app = TrayApp(args.klip, args.show)
-    return app.run([sys.argv[0]])
+    return TrayApp(args.klip).run([sys.argv[0]])
 
 
 if __name__ == "__main__":

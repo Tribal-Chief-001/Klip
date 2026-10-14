@@ -78,7 +78,7 @@ enum Commands {
     },
     /// Install the auto-start service for your OS
     InstallService,
-    /// The tray icon and window (Linux): start it, or make it start when you log in
+    /// The tray icon (Linux): start it, or make it start when you log in
     Tray {
         #[command(subcommand)]
         action: Option<TrayAction>,
@@ -99,17 +99,9 @@ enum Commands {
 #[derive(Subcommand)]
 enum TrayAction {
     /// Start the tray in the background (the default)
-    Start {
-        /// Open the window right away
-        #[arg(long)]
-        show: bool,
-    },
+    Start,
     /// Run the tray in this terminal (what start-at-login runs)
-    Run {
-        /// Open the window right away
-        #[arg(long)]
-        show: bool,
-    },
+    Run,
     /// Start the tray every time you log in
     Install,
     /// Stop starting the tray at login
@@ -134,7 +126,7 @@ enum HistoryAction {
     },
 }
 
-#[tokio::main]
+#[tokio::main(worker_threads = 2)] // iroh idles at a fraction of the wakeups with 2 workers instead of one per core
 async fn main() {
     // `klip history | head` must end quietly instead of panicking on a closed pipe.
     #[cfg(unix)]
@@ -264,11 +256,11 @@ fn tray_command(action: TrayAction) -> AnyResult<()> {
     use klip_cli::tray;
     let entry = tray::autostart_path().ok_or("cannot find your home directory")?;
     match action {
-        TrayAction::Start { show } => {
-            let pid = tray::start_detached(show)?;
+        TrayAction::Start => {
+            let pid = tray::start_detached()?;
             println!("{} Klip tray started (PID {pid}).", "✓".green().bold());
         }
-        TrayAction::Run { show } => tray::run_foreground(show)?,
+        TrayAction::Run => tray::run_foreground()?,
         TrayAction::Install => {
             let exe = tray::exe_path()?;
             tray::install_autostart(&entry, &exe.to_string_lossy())?;
@@ -411,9 +403,7 @@ async fn run(cli: Cli) -> AnyResult<()> {
         }
         Commands::InstallService => install_service()?,
         #[cfg(unix)]
-        Commands::Tray { action } => {
-            tray_command(action.unwrap_or(TrayAction::Start { show: false }))?
-        }
+        Commands::Tray { action } => tray_command(action.unwrap_or(TrayAction::Start))?,
         #[cfg(not(unix))]
         Commands::Tray { .. } => return Err("the tray is only available on Linux".into()),
         #[cfg(unix)]

@@ -38,22 +38,21 @@
 - You decide what is linked: pairing needs a one-time QR/ticket **and** your approval on the other device.
 - Honest feedback: when you send something, Klip tells you whether the other device really put it on its clipboard, or why not.
 - If a copy cannot reach a device, Klip says so at that moment: a desktop notification on the laptop (once per outage), and the phone's notification shows how long the laptop has been gone.
-- **A tray icon with a window (Linux):** devices, pairing with a QR code, history, send, log and settings, without a terminal; it starts at login (see below).
+- **A tray icon (Linux):** a small menu to send the waiting image, pause, switch automatic images and open the terminal app; it starts at login (see below).
 - **A full-screen app:** run `klip` on a terminal to see devices, pair, browse the history, send text, read the log and change settings without remembering commands.
 
 ## The tray app
 
-On Linux (built for Linux Mint Cinnamon, uses the XApp status icon) Klip has a tray icon and a window that do everything the terminal can. It is a small Python/GTK program inside the `klip` binary: nothing extra to download.
+On Linux (built for Linux Mint Cinnamon, uses the XApp status icon) Klip has a small tray icon with a menu. Everything else (devices, pairing, history, send, log, settings) is the [terminal app](#the-terminal-app). The tray is a small Python/GTK program inside the `klip` binary: nothing extra to download, about 27 MB of RAM and almost no CPU while idle.
 
 ```bash
 klip tray install     # start it every time you log in
 klip tray             # start it now (in the background)
 ```
 
-- **The icon** shows the state at a glance: lime = connected, amber = waiting for a device, grey dots = stopped or no devices, two bars = paused; an orange dot = an image is waiting to be sent. Hover for the details.
-- **Left click** opens the window; **right click** opens a menu (send the last image, pause, send images automatically, add a device, open the terminal app, quit); **middle click** sends the waiting image.
-- **The window**: *Home* (state, the waiting image with a preview and a Send button, pause), *Devices* (unpair), *Pair* (show a QR code, join with a ticket, approve a request with its fingerprint), *History* (search, copy back, send again, reveal a secret on purpose, thumbnails), *Send* (text or a text file), and under *More*: the log, settings (name, network, limits), restart Klip, and the start-at-login switches. It hides when you click elsewhere or press Esc.
-- **Images are manual**: a copied image is held for 10 minutes (the last one only) and is sent when you press *Send* in the window, middle-click the icon, or run `klip share` (bind it to a keyboard shortcut in your desktop's keyboard settings). Prefer the old behaviour? Switch *Send images automatically* on in the window or the menu, or run `klip images auto`. Text is always sent automatically.
+- **The icon** is monochrome like the other panel icons (the desktop paints it in the panel's colour); the shape is the state: a solid line between the two dots = connected, dots = waiting for a device, two bars = paused, faded = stopped or no devices; a dot in the corner = an image is waiting to be sent. Hover for the details.
+- **Left or right click** opens the same menu: the state, send the last copied image, send images automatically, pause or resume, open the terminal app, quit the tray (start Klip, when it is stopped). **Middle click** sends the waiting image.
+- **Images are manual**: a copied image is held for 10 minutes (the last one only) and is sent when you use the menu, middle-click the icon, or run `klip share` (bind it to a keyboard shortcut in your desktop's keyboard settings). Prefer the old behaviour? Tick *Send images automatically* in the menu, or run `klip images auto`. Text is always sent automatically.
 - It needs Python 3 with GTK 3 and XApp (already on Linux Mint; on Debian/Ubuntu: `sudo apt install python3-gi gir1.2-gtk-3.0 gir1.2-xapp-1.0`). `klip tray status` says whether it can run. Quitting the tray never stops Klip itself.
 
 ## The terminal app
@@ -101,10 +100,10 @@ The Pair screen shows the QR code beside the ticket. If the window is too small 
 
 | Part | State | Evidence |
 |---|---|---|
-| Core engine (pairing, sync, conflict resolution) | ✅ working | 351 automated Rust tests (plus 99 Python tests for the tray app) in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
+| Core engine (pairing, sync, conflict resolution) | ✅ working | 351 automated Rust tests (plus 44 Python tests for the tray app) in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
 | **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | The terminal app's own tests: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
-| **Tray app** (`klip tray`, Linux Mint Cinnamon) | 🟡 tested without a real panel | 99 Python tests (35 of them drive the GTK window in a nested X server), screenshots of every page reviewed, an integration test of the whole stack against real daemons, and the app run against a real daemon. See the release notes for what was and was not seen on the author's real panel. |
+| **Tray app** (`klip tray`, Linux Mint Cinnamon) | 🟡 tested without a real panel | 44 Python tests (state, bridge client, controller, icons), an integration test of the tray controller and the `klip api` bridge against real daemons, and the app run on the author's desktop. The menu and icon were looked at by the author; see the release notes. |
 | **Android app** | 🟡 emulator (Android 14) + one real phone (Vivo, reported by the author) | Emulator: pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect, reboot, notification, setup screens. Real phone (author's report): laptop → phone arrives by itself; phone → laptop works with Share → Klip, the notification button or the app's Send button. **Not verified:** background persistence over hours, reboot, camera QR scan, the tile, battery cost on a real phone |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
 | macOS, Windows | 🔴 compile-checked in CI only | never run; the Windows CLI cannot control the daemon yet |
@@ -178,9 +177,9 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 | I want to… | Do this |
 |---|---|
 | Copy text on the computer, paste on the phone | Just copy. It arrives on the phone's clipboard by itself. |
-| Copy an image on the computer, paste on the phone | Copy it, then press *Send* in the tray window (or middle-click the tray icon, or run `klip share`). Images wait for you on purpose. |
+| Copy an image on the computer, paste on the phone | Copy it, then use *Send the last copied image* in the tray menu (or middle-click the tray icon, or run `klip share`). Images wait for you on purpose. |
 | Copy on the phone, paste on the computer | Share → Klip, or tile / notification button (Android can't notice a copy by itself — see [why](#phone--computer-android-limits)). |
-| Do everything in a window | the tray icon (`klip tray install` to start it at login) |
+| A quick menu in the panel | the tray icon (`klip tray install` to start it at login) |
 | Do everything in one terminal screen | `klip` (the full-screen app: devices, pair, history, send, log, settings) |
 | See what happened | `klip status`, `klip history` |
 | Send text without copying | `klip send "text"` |
@@ -267,7 +266,7 @@ systemctl --user status klip.service
 | `klip send "<text>"` | send text now, with per-device result (`klip send -` reads standard input) |
 | `klip share` | send the image you copied last (held for 10 minutes), with a per-device result |
 | `klip images [auto\|manual]` | show or choose whether copied images are sent at once or wait for `klip share` |
-| `klip tray [start\|run\|install\|uninstall\|status]` | the tray icon and window (Linux): start it, or make it start at login |
+| `klip tray [start\|run\|install\|uninstall\|status]` | the tray icon (Linux): start it, or make it start at login |
 | `klip install-service` | create the auto-start unit for your OS |
 
 ## Limits & honesty
@@ -285,7 +284,7 @@ systemctl --user status klip.service
 **Behaviour**
 
 - **Both devices must be online at the same time.** There is no mailbox or push service: a clip copied while the other device is off is not delivered later. (A deliberate choice: no server of ours.)
-- **Images (v0.5.0, manual since v0.6.0):** a PNG/WebP copied on the computer waits until you send it (tray window, middle click, `klip share`, or switch on automatic sending); then it lands on the phone's clipboard and pastes into other apps. From the phone, **Share → Klip** an image, or copy an image and tap the tile or the notification button; anything that is not PNG/WebP (JPEG, HEIC...) is converted to PNG first, which also removes EXIF/GPS data, applies the photo's rotation, and scales it down if it would be over the limit. Never automatic from the phone (Android does not let Klip read the clipboard in the background). Limits: 12 MB on the phone (32 MiB on a computer), at most 36 megapixels (about 8K); a bigger image, a file that is not really a PNG/WebP, or a "decompression bomb" is refused before it is decoded, and the sender is told. Received images are kept as files in the app's cache; old ones are removed when the next image arrives or when Klip restarts (the newest 4 are kept, none older than an hour at that moment), so the last received image can stay there longer. Animated GIFs and several images at once are not supported. Tested on the author's phone: a screenshot copied on the Linux computer arrives on the phone and pastes into WhatsApp.
+- **Images (v0.5.0, manual since v0.6.0):** a PNG/WebP copied on the computer waits until you send it (tray menu, middle click, `klip share`, or switch on automatic sending); then it lands on the phone's clipboard and pastes into other apps. From the phone, **Share → Klip** an image, or copy an image and tap the tile or the notification button; anything that is not PNG/WebP (JPEG, HEIC...) is converted to PNG first, which also removes EXIF/GPS data, applies the photo's rotation, and scales it down if it would be over the limit. Never automatic from the phone (Android does not let Klip read the clipboard in the background). Limits: 12 MB on the phone (32 MiB on a computer), at most 36 megapixels (about 8K); a bigger image, a file that is not really a PNG/WebP, or a "decompression bomb" is refused before it is decoded, and the sender is told. Received images are kept as files in the app's cache; old ones are removed when the next image arrives or when Klip restarts (the newest 4 are kept, none older than an hour at that moment), so the last received image can stay there longer. Animated GIFs and several images at once are not supported. Tested on the author's phone: a screenshot copied on the Linux computer arrives on the phone and pastes into WhatsApp.
 - Clips are limited to 32 MiB by default (12 MB on the phone). **Android is stricter for text: a text clip over about 0.9 MB cannot be put on the phone's clipboard** (Android passes it through one Binder transaction of about 1 MB). The sender is told "the other device could not write its clipboard"; nothing crashes (it did before 0.3.6: see the [release notes](https://github.com/Tribal-Chief-001/Klip/releases/tag/v0.3.6-alpha)).
 - **What is preserved.** Text is sent as UTF-8 bytes and written back unchanged: tabs, indentation, trailing spaces, blank lines, CRLF and bare CR, emoji, CJK, right-to-left text, combining and zero-width characters, a BOM, links with query strings, and very long lines. Tested between two desktop daemons with a 400 KB+ source-like file (byte for byte), and on an Android 14 emulator with 57 KB, 249 KB and 504 KB code files (accepted; a 504 KB clip made the round trip phone → laptop with the same size and the same start; no full byte-for-byte comparison on Android).
 - **What is not.** Only *plain text* is synced between phone and computer: rich formatting (bold, colours, syntax highlighting copied from a web page or an editor), HTML tables and files are not carried over a phone (images are, see above). A copy that an app marks as sensitive (password managers) is not sent automatically by the optional helper.

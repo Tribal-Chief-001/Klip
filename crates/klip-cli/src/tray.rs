@@ -39,34 +39,6 @@ pub const FILES: &[(&str, &str)] = &[
         "model.py",
         include_str!("../../../extra/tray/klip_tray/model.py"),
     ),
-    (
-        "pages.py",
-        include_str!("../../../extra/tray/klip_tray/pages.py"),
-    ),
-    (
-        "pages_devices.py",
-        include_str!("../../../extra/tray/klip_tray/pages_devices.py"),
-    ),
-    (
-        "pages_history.py",
-        include_str!("../../../extra/tray/klip_tray/pages_history.py"),
-    ),
-    (
-        "pages_more.py",
-        include_str!("../../../extra/tray/klip_tray/pages_more.py"),
-    ),
-    (
-        "theme.py",
-        include_str!("../../../extra/tray/klip_tray/theme.py"),
-    ),
-    (
-        "widgets.py",
-        include_str!("../../../extra/tray/klip_tray/widgets.py"),
-    ),
-    (
-        "window.py",
-        include_str!("../../../extra/tray/klip_tray/window.py"),
-    ),
 ];
 
 const MARKER: &str = "# Created by `klip tray install`; `klip tray uninstall` removes it.";
@@ -145,7 +117,7 @@ pub fn python_ready() -> Result<(), String> {
         .to_string())
 }
 
-fn python_command(show: bool) -> Result<Command, String> {
+fn python_command() -> Result<Command, String> {
     python_ready()?;
     let root = data_root().ok_or("cannot find your home directory")?;
     let dir = install_files(&root, env!("CARGO_PKG_VERSION"))
@@ -153,9 +125,6 @@ fn python_command(show: bool) -> Result<Command, String> {
     let exe = exe_path().map_err(|e| e.to_string())?;
     let mut cmd = Command::new("python3");
     cmd.args(["-m", "klip_tray"]);
-    if show {
-        cmd.arg("--show");
-    }
     let path = match std::env::var_os("PYTHONPATH") {
         Some(old) if !old.is_empty() => {
             let mut p = dir.into_os_string();
@@ -173,14 +142,14 @@ fn python_command(show: bool) -> Result<Command, String> {
 }
 
 /// Replace this process with the tray (what the start-at-login entry runs).
-pub fn run_foreground(show: bool) -> Result<(), String> {
-    let mut cmd = python_command(show)?;
+pub fn run_foreground() -> Result<(), String> {
+    let mut cmd = python_command()?;
     Err(format!("cannot start python3: {}", cmd.exec()))
 }
 
 /// Start the tray in the background and return its process id.
-pub fn start_detached(show: bool) -> Result<u32, String> {
-    let mut cmd = python_command(show)?;
+pub fn start_detached() -> Result<u32, String> {
+    let mut cmd = python_command()?;
     cmd.stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0);
