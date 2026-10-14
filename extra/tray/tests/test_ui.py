@@ -242,6 +242,14 @@ class UiTests(unittest.TestCase):
         self.assertTrue(page.empty.get_visible())
         self.assertFalse(page.unpair_all_btn.get_visible())
 
+    def test_rebuilding_the_device_list_does_not_leak_popovers(self):
+        view = self.make(GetStatus=Reply(ok={"Status": status([peer("Vivo", True, "ABCD-EFGH-JKLM")])}))
+        base = len(view._popovers)
+        for i in range(30):
+            self.bridge.script["GetStatus"] = Reply(ok={"Status": status([peer("Vivo", i % 2 == 0, "ABCD-EFGH-JKLM")])})
+            self.ctl.refresh()
+        self.assertLessEqual(len(view._popovers), base + 1)
+
     # -------------------------------------------------------------------------------- pair
 
     def test_showing_a_code_draws_the_qr_and_leaving_the_page_cancels_it(self):
@@ -280,6 +288,45 @@ class UiTests(unittest.TestCase):
         self.assertEqual(self.calls("PairDecide")[0]["ipc"], {"PairDecide": {"accept": True}})
         self.assertFalse(page.request_card.get_visible())
 
+    def test_leaving_clears_the_pasted_ticket_and_a_copied_one(self):
+        from klip_tray.widgets import clipboard_set
+        view = self.make(PairStart=Reply(ok={"PairTicket": {"ticket": "klip1" + "b" * 60, "expires_in_secs": 120,
+                                                            "host_fingerprint": "J73D-FACE-MFHA"}}),
+                         qr=Reply(ok={"size": 21, "modules": "01" * 220 + "0"}),
+                         PairPoll=Reply(ok={"PairPoll": {"window_open": True, "seconds_left": 118, "pending": None,
+                                                         "paired": None}}),
+                         PairCancel=Reply(ok={"PairCancelled": None}))
+        page = view.pages["pair"]
+        view.navigate("pair")
+        page._start_show()
+        page._copy_ticket()
+        settle()
+        page.leave()
+        settle()
+        display = Gdk.Display.get_default()
+        text = Gtk.Clipboard.get_default(display).wait_for_text()
+        self.assertNotEqual(text, "klip1" + "b" * 60, "the one-time ticket does not linger on the clipboard")
+        page._start_join()
+        page.join_text.get_buffer().set_text("klip1" + "c" * 40)
+        page.leave()
+        buf = page.join_text.get_buffer()
+        self.assertEqual(buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False), "")
+
+    def test_a_join_that_waits_keeps_the_window_open_and_survives_it_being_hidden(self):
+        view = self.make(PairJoin=Reply(ok={"PairSuccess": {"peer_name": "Laptop", "peer_fingerprint": "X"}}))
+        page = view.pages["pair"]
+        view.navigate("pair")
+        page._start_join()
+        page.join_text.get_buffer().set_text("klip1" + "abcdefghij" * 5)
+        self.bridge.held = []
+        page._join()
+        self.assertIn(("busy", True), self.actions.calls, "the window must not hide while we wait for approval")
+        page.on_hide()
+        self.assertEqual(page._mode, "join", "hiding the window must not drop the join in progress")
+        self.bridge.release()
+        self.assertIn(("busy", False), self.actions.calls)
+        self.assertIn("Linked with Laptop", view.toast_label.get_text())
+
     def test_joining_checks_the_ticket_first_and_reports_the_result(self):
         view = self.make(PairJoin=Reply(ok={"PairSuccess": {"peer_name": "Laptop", "peer_fingerprint": "X"}}))
         page = view.pages["pair"]
@@ -294,6 +341,39 @@ class UiTests(unittest.TestCase):
         self.assertEqual(len(self.calls("PairJoin")), 1)
         self.assertEqual(view.current, "devices")
         self.assertIn("Linked with Laptop", view.toast_label.get_text())
+
+    def test_a_failed_switch_goes_back_to_what_the_daemon_says(self):
+        view = self.make(SetAutoImages=Reply(ok={"Error": "unknown variant"}))
+        home = view.pages["home"]
+        self.assertFalse(home.auto_switch.get_active())
+        home.auto_switch.set_active(True)
+        settle()
+        self.assertIn("unknown variant", view.toast_label.get_text())
+        self.assertFalse(home.auto_switch.get_active(), "shown again as the daemon has it")
+
+    def test_hiding_the_window_closes_the_confirmation_sheet_and_open_menus(self):
+        view = self.make()
+        view.confirm("Sure?", "Do it", lambda: None)
+        view.window_shown(False)
+        self.assertFalse(view.confirming(), "a stale question must not wait for the next opening")
+        pop = view.pages["home"].pop
+        pop.popup()
+        settle()
+        view.close_popovers()
+        import time
+        end = time.time() + 2
+        while pop.get_visible() and time.time() < end:  # the popover fades out over a moment
+            settle()
+            time.sleep(0.05)
+        self.assertFalse(pop.get_visible())
+
+    def test_the_home_thumbnail_is_asked_again_after_a_failed_fetch(self):
+        view = self.make(GetImageState=Reply(ok={"ImageState": IMG}), GetThumbnail=Reply(err="Klip did not answer in time"))
+        home = view.pages["home"]
+        self.assertIsNone(home.thumb.get_pixbuf())
+        self.bridge.script["GetThumbnail"] = Reply(ok={"Thumbnail": base64.b64encode(tiny_png()).decode()})
+        home.update(view.controller.summary)
+        self.assertIsNotNone(home.thumb.get_pixbuf())
 
     # ------------------------------------------------------------------------------ history
 
@@ -358,6 +438,18 @@ class UiTests(unittest.TestCase):
         view.sheet_yes.emit("clicked")
         self.assertEqual(len(self.calls("ClearHistory")), 1)
 
+    def test_hiding_the_window_forgets_a_revealed_secret(self):
+        view = self.make(**self.history_script())
+        view.navigate("history")
+        page = view.pages["history"]
+        secret = page._all[2]
+        page._toggle_reveal(secret)
+        self.assertEqual(page._views[secret.id_hex][1].get_text(), "the real secret")
+        view.window_shown(False)  # Esc, a click elsewhere, the close button
+        view.window_shown(True)
+        self.assertNotIn("real secret", page._views[secret.id_hex][1].get_text())
+        self.assertEqual(page._revealed, {})
+
     def test_history_refresh_only_updates_ages_when_the_clips_are_the_same(self):
         view = self.make(**self.history_script())
         view.navigate("history")
@@ -382,6 +474,18 @@ class UiTests(unittest.TestCase):
         self.assertEqual(self.calls("SendClip")[0]["ipc"], {"SendClip": {"text": "hello"}})
         self.assertEqual(page._contents(), "", "a sent text is cleared so it is not sent twice")
         self.assertIn("Sent to Vivo", page.result.get_text())
+
+    def test_a_second_send_while_one_is_going_is_ignored(self):
+        self.bridge = None
+        view = self.make()
+        page = view.pages["send"]
+        self.bridge.held = []
+        page.text.get_buffer().set_text("once")
+        page._send()
+        page._send()
+        self.assertEqual(len(self.calls("SendClip")), 1, "Ctrl+Enter twice must not send twice")
+        self.bridge.script["SendClip"] = Reply(ok={"Sent": {"bytes": 4, "delivered": ["Vivo"], "failed": []}})
+        self.bridge.release()
 
     def test_a_failed_send_keeps_the_text(self):
         view = self.make(SendClip=Reply(ok={"Sent": {"bytes": 5, "delivered": [], "failed": [["Vivo", "cannot reach peer"]]}}))
@@ -434,6 +538,20 @@ class UiTests(unittest.TestCase):
         self.assertEqual(sent["max_history_items"], 20)
         self.assertIs(sent["auto_send_images"], True, "a setting this page does not show is kept as it was")
         self.assertTrue(page.restart_btn.get_visible())
+
+    def test_saving_settings_only_changes_what_the_person_changed(self):
+        cfg = dict(self.CFG, max_clip_bytes=1_500_000, max_history_items=5000, poll_interval_ms=9000)
+        view = self.make(config_get=Reply(ok=cfg), config_set=Reply(ok={}))
+        view.navigate("settings")
+        settle()
+        page = view.pages["settings"]
+        page.name_entry.set_text("Renamed")
+        page._save()
+        sent = [c for c in self.bridge.calls if c.get("method") == "config_set"][0]["params"]["config"]
+        self.assertEqual(sent["device_name"], "Renamed")
+        self.assertEqual(sent["max_clip_bytes"], 1_500_000, "a value the spin button cannot show is not rounded")
+        self.assertEqual(sent["max_history_items"], 5000)
+        self.assertEqual(sent["poll_interval_ms"], 9000)
 
     def test_settings_refuse_bad_values_with_the_reason(self):
         view = self.make(config_get=Reply(ok=dict(self.CFG)))

@@ -111,6 +111,41 @@ class ControllerTests(unittest.TestCase):
         c.refresh()
         self.assertEqual(self.bridge.names().count("Hello"), 2)
 
+    def test_a_failed_hello_is_asked_again_instead_of_calling_the_daemon_old(self):
+        c = self.make()
+        self.bridge.script["Hello"] = Reply(err="Klip did not answer in time")
+        c.refresh()
+        self.assertIsNone(c.caps, "an unknown is not 'old'")
+        self.assertFalse(c.summary.daemon_old)
+        self.bridge.script["Hello"] = Reply(ok={"Hello": HELLO})
+        c.refresh()
+        self.assertEqual(c.caps, ["share_image"])
+        self.assertEqual(self.bridge.names().count("Hello"), 2)
+
+    def test_after_starting_restarting_or_stopping_the_daemon_its_abilities_are_asked_again(self):
+        c = self.make()
+        c.refresh()
+        self.bridge.script["daemon_restart"] = Reply(ok={"message": "restarted"})
+        self.bridge.script["daemon_start"] = Reply(ok={"message": "started"})
+        self.bridge.script["StopDaemon"] = Reply(ok={"DaemonStopping": None})
+        for action in (c.daemon_restart, c.daemon_start, c.stop_daemon):
+            before = len(self.bridge.calls)
+            action(None)
+            asked = [self.bridge.key(x) for x in self.bridge.calls[before:]]
+            self.assertIn("Hello", asked, "a restarted daemon may be a newer one")
+
+    def test_a_poll_never_stays_stuck_when_building_the_picture_fails(self):
+        from klip_tray import model
+        c = self.make()
+        original = model.summarize
+        model.summarize = lambda *a, **k: 1 / 0
+        try:
+            c.refresh()
+        finally:
+            model.summarize = original
+        c.refresh()
+        self.assertEqual(c.summary.state, "connected", "the next poll works again")
+
     def test_a_daemon_that_does_not_know_images_is_called_old(self):
         c = self.make()
         self.bridge.script["GetImageState"] = Reply(ok={"Error": "unknown variant"})

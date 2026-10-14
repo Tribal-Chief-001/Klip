@@ -67,6 +67,7 @@ class HomePage(Page):
         self._thumb_key = None
         self._busy = False
         self._updating = False
+        self._thumb_tries = 0
 
         # Status.
         self.dot = Dot(14)
@@ -171,10 +172,19 @@ class HomePage(Page):
         def done(out):
             if not out.ok:
                 self.ui.toast(out.error, bad=True)
+                GLib.idle_add(self._show_real_switch)  # after GTK has set the state the person asked for
             else:
                 self.ui.toast("Images are sent automatically" if state else "Images wait until you send them")
 
         self.ui.controller.set_auto_images(state, done)
+
+    def _show_real_switch(self) -> bool:
+        self._updating = True
+        want = self.ui.controller.summary.auto_images
+        self.auto_switch.set_active(want)
+        self.auto_switch.set_state(want)
+        self._updating = False
+        return False
 
     def _build_pause_menu(self, paused: bool) -> None:
         for child in self.pop_box.get_children():
@@ -237,6 +247,7 @@ class HomePage(Page):
             key = (s.image.size_bytes, s.image.width, s.image.height, s.image.kind)
             if key != self._thumb_key:
                 self._thumb_key = key
+                self._thumb_tries = 0
                 self.thumb.clear()
                 self.ui.controller.thumbnail(None, self._thumb_arrived)
         else:
@@ -248,6 +259,9 @@ class HomePage(Page):
 
     def _thumb_arrived(self, out) -> None:
         if not out.ok:
+            self._thumb_tries += 1
+            if self._thumb_tries < 3:  # a slow daemon: ask again with the next update
+                self._thumb_key = None
             return
         pix = pixbuf_from_png(out.value, 92)
         if pix is not None:

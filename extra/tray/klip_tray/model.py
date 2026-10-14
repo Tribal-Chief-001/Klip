@@ -248,6 +248,21 @@ def send_problem(text: str, limit: int) -> Optional[str]:
     return None
 
 
+AUTO_HIDE_ECHO_MS = 600  # a click on the icon that took the focus away also reaches us as "activate"
+
+
+def click_action(open_at_press: bool, visible: bool, active: bool, ms_since_auto_hide: float) -> str:
+    """What a left click on the tray icon does: "hide", "show" or "ignore".
+
+    Pressing the icon moves the focus, so the window may already have lost it (or even hidden itself)
+    by the time the click arrives. What counts is whether it was open and focused when the press began."""
+    if open_at_press or (visible and active):
+        return "hide"
+    if not visible and ms_since_auto_hide < AUTO_HIDE_ECHO_MS:
+        return "ignore"  # this very click closed it: do not open it again
+    return "show"
+
+
 def config_problems(cfg: dict) -> list:
     """The daemon's own rules (DaemonConfig::validate), checked before anything is saved."""
     problems = []

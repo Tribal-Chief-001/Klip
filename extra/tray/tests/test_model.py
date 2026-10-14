@@ -253,3 +253,20 @@ class SentReports(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IconClicks(unittest.TestCase):
+    def test_a_click_while_it_is_open_closes_it_even_if_the_press_took_the_focus(self):
+        from klip_tray.model import click_action
+        self.assertEqual(click_action(True, True, False, 1e9), "hide")  # focus left on the press
+        self.assertEqual(click_action(False, True, True, 1e9), "hide")
+        self.assertEqual(click_action(True, False, False, 100), "hide")  # it hid itself before the click arrived
+
+    def test_the_click_that_made_it_hide_itself_does_not_open_it_again(self):
+        from klip_tray.model import click_action
+        self.assertEqual(click_action(False, False, False, 100), "ignore")
+
+    def test_a_click_on_a_closed_window_opens_it(self):
+        from klip_tray.model import click_action
+        self.assertEqual(click_action(False, False, False, 5_000), "show")
+        self.assertEqual(click_action(False, True, False, 1e9), "show", "open but behind another window: bring it up")

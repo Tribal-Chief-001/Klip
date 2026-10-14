@@ -101,10 +101,10 @@ The Pair screen shows the QR code beside the ticket. If the window is too small 
 
 | Part | State | Evidence |
 |---|---|---|
-| Core engine (pairing, sync, conflict resolution) | ✅ working | 343 automated Rust tests (plus 84 Python tests for the tray app) in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
+| Core engine (pairing, sync, conflict resolution) | ✅ working | 351 automated Rust tests (plus 99 Python tests for the tray app) in the whole workspace (real network endpoints, two full daemons, pairing, unpair, pause, bad input, random-input decoding) run in CI; a two-daemon crash/restart chaos script was run by hand (not in CI) |
 | **Terminal app (TUI)** (`klip` with no arguments) | 🟡 Linux, tested in a pseudo-terminal and against two real daemons | The terminal app's own tests: screens as text snapshots at 60×16 and 100×30, 56,000 random key/mouse/paste/resize/reply events (no panic), the real binary in a pseudo-terminal (terminal restored after quit, SIGTERM, SIGHUP and a panic; `TERM=dumb`; resize), and a run with two real daemons (pair → send → copy back → pause → unpair all). Also run read-only against a real v0.3.6 daemon. **Not verified:** how it looks in kitty, gnome-terminal, alacritty, tmux or over SSH; macOS; Windows (not built: the CLI cannot reach the daemon there). |
 | **Linux (X11)** daemon + CLI | ✅ tested on a real machine | pairing, clipboard in both directions through the real X11 clipboard, restart, unpair |
-| **Tray app** (`klip tray`, Linux Mint Cinnamon) | 🟡 tested without a real panel | 84 Python tests (25 of them drive the GTK window in a nested X server), screenshots of every page reviewed, an integration test of the whole stack against real daemons, and the app run against a real daemon. See the release notes for what was and was not seen on the author's real panel. |
+| **Tray app** (`klip tray`, Linux Mint Cinnamon) | 🟡 tested without a real panel | 99 Python tests (35 of them drive the GTK window in a nested X server), screenshots of every page reviewed, an integration test of the whole stack against real daemons, and the app run against a real daemon. See the release notes for what was and was not seen on the author's real panel. |
 | **Android app** | 🟡 emulator (Android 14) + one real phone (Vivo, reported by the author) | Emulator: pairing through the n0 relay, sync both ways, background clipboard write, restart/reconnect, reboot, notification, setup screens. Real phone (author's report): laptop → phone arrives by itself; phone → laptop works with Share → Klip, the notification button or the app's Send button. **Not verified:** background persistence over hours, reboot, camera QR scan, the tile, battery cost on a real phone |
 | Linux Wayland | 🟡 partial | works through XWayland apps only; GNOME needs more work |
 | macOS, Windows | 🔴 compile-checked in CI only | never run; the Windows CLI cannot control the daemon yet |
@@ -311,7 +311,7 @@ systemctl --user status klip.service
 ## Build & test from source
 
 ```bash
-cargo test --workspace                      # 343 tests
+cargo test --workspace                      # 351 tests
 cargo clippy --workspace --all-targets -- -D warnings
 android/build-core.sh arm64-v8a             # Rust engine + Kotlin bindings (needs cargo-ndk, NDK r28+)
 cd android && ./gradlew assembleDebug

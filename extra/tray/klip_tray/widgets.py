@@ -228,6 +228,15 @@ def clipboard_set(text: str) -> None:
         Gtk.Clipboard.get_default(display).set_text(text, -1)
 
 
+def clipboard_clear_if(text: str) -> None:
+    """Take a secret back off the clipboard, but only if it is still what we put there."""
+    display = Gdk.Display.get_default()
+    if display is not None and text:
+        cb = Gtk.Clipboard.get_default(display)
+        if cb.wait_for_text() == text:
+            cb.clear()
+
+
 class Ticker:
     """A repeating timer that can be started and stopped without ever running twice."""
 

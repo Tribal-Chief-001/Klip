@@ -61,6 +61,7 @@ class KlipWindow(Gtk.Window):
         self.view = view
         self.busy = False
         self._shown_at = 0
+        self.auto_hidden_at = -10**12  # monotonic µs of the last hide caused by losing the focus
         self._hide_timer = 0
         self.set_title("Klip")
         self.set_decorated(False)
@@ -103,6 +104,7 @@ class KlipWindow(Gtk.Window):
         recently = GLib.get_monotonic_time() - self._shown_at < 500_000
         if self.get_visible() and not self.is_active() and not self.busy and not recently \
                 and not self.view.popover_open():
+            self.auto_hidden_at = GLib.get_monotonic_time()
             self.hide_window()
         return False
 
@@ -174,6 +176,8 @@ class TrayApp(Gtk.Application):
         self.bridge: Optional[Bridge] = None
         self._icon_paths: dict = {}
         self._click = (0, 0, 3)
+        self._open_at_press = False
+        self._support_checks = 0
         self._first_activate = True
         self._menu_items: dict = {}
 
@@ -242,6 +246,8 @@ class TrayApp(Gtk.Application):
 
     def _icon_press(self, _icon, x, y, button, _time, panel) -> None:
         self._click = (int(x), int(y), int(panel))
+        w = self.window
+        self._open_at_press = bool(w is not None and w.get_visible() and w.is_active())
 
     def _icon_release(self, _icon, _x, _y, button, _time, _panel) -> None:
         if button == 2:  # middle click: send the waiting image
@@ -253,12 +259,20 @@ class TrayApp(Gtk.Application):
         self.toggle_window()
 
     def _check_tray_support(self) -> bool:
-        """With no panel to hold the icon, a window is the only way in."""
-        if self.icon is not None and self.icon.get_state() == XApp.StatusIconState.NO_SUPPORT:
-            log.warning("no system tray found; opening the window instead")
-            self.show_window()
-            if self.view:
-                self.view.toast("No system tray found: using this window instead.")
+        """With no panel to hold the icon, a window is the only way in.
+
+        At login the panel may start a few seconds after us, so this asks again for half a minute
+        before it gives up on the tray."""
+        if self.icon is None or self.icon.get_state() != XApp.StatusIconState.NO_SUPPORT:
+            return False
+        self._support_checks += 1
+        if self._support_checks < 6:
+            GLib.timeout_add(5000, self._check_tray_support)
+            return False
+        log.warning("no system tray found; opening the window instead")
+        self.show_window()
+        if self.view:
+            self.view.toast("No system tray found: using this window instead.")
         return False
 
     # ---------------------------------------------------------------------------------- menu
@@ -360,9 +374,14 @@ class TrayApp(Gtk.Application):
         self.controller.refresh()
 
     def toggle_window(self) -> None:
-        if self.window is not None and self.window.get_visible() and self.window.is_active():
-            self.window.hide_window()
-        else:
+        w = self.window
+        since = (GLib.get_monotonic_time() - w.auto_hidden_at) / 1000 if w is not None else 10**9
+        action = model.click_action(self._open_at_press, bool(w and w.get_visible()),
+                                    bool(w and w.is_active()), since)
+        self._open_at_press = False
+        if action == "hide":
+            w.hide_window()
+        elif action == "show":
             self.show_window()
 
     def send_waiting_image(self) -> None:

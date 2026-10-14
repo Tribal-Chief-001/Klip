@@ -10,7 +10,8 @@ from gi.repository import GLib, Gtk  # noqa: E402
 
 from . import model, theme  # noqa: E402
 from .pages import PAD, Page, back_header  # noqa: E402
-from .widgets import (Dot, QrView, Ticker, button, card, classes, clipboard_set, hbox, icon_button,  # noqa: E402
+from .widgets import (Dot, QrView, Ticker, button, card, classes, clipboard_clear_if, clipboard_set, hbox,  # noqa: E402
+                      icon_button,
                       label, scrolled, show, vbox)
 
 
@@ -21,6 +22,7 @@ class DevicesPage(Page):
     def __init__(self, ui):
         super().__init__(ui)
         self._key = None
+        self._pops: list = []
         add = button("Add device", ["primary"], lambda: ui.navigate("pair"))
         self.heading = hbox(label("Devices", ["title"]), spacing=8)
         self.heading.pack_end(add, False, False, 0)
@@ -47,8 +49,11 @@ class DevicesPage(Page):
         if key == self._key:
             return
         self._key = key
+        for pop in self._pops:
+            self.ui.unregister_popover(pop)
+        self._pops = []
         for child in self.list.get_children():
-            self.list.remove(child)
+            child.destroy()
         for p in s.peers:
             self.list.pack_start(self._row(p), False, False, 0)
         self.list.show_all()
@@ -65,6 +70,7 @@ class DevicesPage(Page):
         pop = Gtk.Popover()
         classes(pop, ["klip"])
         self.ui.register_popover(pop)
+        self._pops.append(pop)
         inner = vbox(button("Unpair this device", ["flat", "danger"],
                             lambda p=p, pop=pop: (pop.popdown(), self._ask_unpair(p))), spacing=2)
         inner.set_margin_start(6)
@@ -103,6 +109,7 @@ class PairPage(Page):
         super().__init__(ui)
         self._mode = "choose"  # choose | show | join
         self._ticket = ""
+        self._copied = ""
         self._seconds_left = 0
         self._join_busy = False
         self._poll = Ticker(self._poll_once)
@@ -187,13 +194,18 @@ class PairPage(Page):
 
     def leave(self) -> None:
         """Hide the secret: a shown code is cancelled when the page or the window closes."""
+        if self._join_busy:
+            return  # waiting for the other person to approve: the join goes on
         if self._mode == "show":
             self.ui.controller.pair_cancel()
         self._poll.stop()
         self._tick.stop()
+        clipboard_clear_if(self._copied)
+        self._copied = ""
         self._ticket = ""
         self.ticket_label.set_text("")
         self.qr.set_modules(0, "")
+        self.join_text.get_buffer().set_text("")
         self._set_mode("choose")
 
     def _back(self) -> None:
@@ -233,6 +245,7 @@ class PairPage(Page):
     def _copy_ticket(self) -> None:
         if self._ticket:
             clipboard_set(self._ticket)
+            self._copied = self._ticket
             self.ui.toast("Ticket copied")
 
     def _count_down(self) -> None:
@@ -330,12 +343,14 @@ class PairPage(Page):
             self.join_status.get_style_context().add_class("bad")
             return
         self._join_busy = True
+        self.ui.actions.set_busy(True)  # losing focus must not hide the window while we wait
         self.link_btn.set_sensitive(False)
         self.join_status.get_style_context().remove_class("bad")
         self.join_status.set_text("Waiting for the other device to approve… (up to 90 seconds)")
 
         def done(out):
             self._join_busy = False
+            self.ui.actions.set_busy(False)
             self.link_btn.set_sensitive(True)
             if out.ok:
                 name = (out.value or {}).get("peer_name", "the device")

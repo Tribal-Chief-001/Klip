@@ -210,6 +210,7 @@ class SettingsPage(Page):
     def __init__(self, ui):
         super().__init__(ui)
         self._loaded: Optional[dict] = None
+        self._at_load: dict = {}
         self.name_entry = Gtk.Entry()
         self.name_entry.set_max_length(64)
         self.relay = Gtk.ComboBoxText()
@@ -276,10 +277,10 @@ class SettingsPage(Page):
         self.history_hours.set_value(int(c.get("history_ttl_hours", 24)))
         self.clip_mb.set_value(max(1, int(c.get("max_clip_bytes", 32 * 1024 * 1024)) // (1024 * 1024)))
         self.poll_ms.set_value(int(c.get("poll_interval_ms", 100)))
+        self._at_load = self._shown()
 
-    def _collect(self) -> dict:
-        cfg = dict(self._loaded or {})
-        cfg.update({
+    def _shown(self) -> dict:
+        return {
             "device_name": self.name_entry.get_text().strip(),
             "relay": self.relay.get_active_id() or "n0",
             "lan_discovery": self.lan_switch.get_active(),
@@ -287,10 +288,21 @@ class SettingsPage(Page):
             "history_ttl_hours": int(self.history_hours.get_value()),
             "max_clip_bytes": int(self.clip_mb.get_value()) * 1024 * 1024,
             "poll_interval_ms": int(self.poll_ms.get_value()),
-        })
+        }
+
+    def _collect(self) -> dict:
+        """The loaded settings with only the fields the person changed: a value the form cannot show
+        exactly (1.5 MB, 9000 clips) is kept as it was, not rounded or clamped."""
+        cfg = dict(self._loaded or {})
+        for key, value in self._shown().items():
+            if value != self._at_load.get(key):
+                cfg[key] = value
         return cfg
 
     def _save(self) -> None:
+        if self._loaded is None:
+            self.error.set_text("The settings have not been read yet.")
+            return
         cfg = self._collect()
         self.error.set_text("")
 
@@ -299,6 +311,7 @@ class SettingsPage(Page):
                 self.error.set_text(out.error)
                 return
             self._loaded = cfg
+            self._at_load = self._shown()
             self.note.set_text("Saved. Klip applies these settings the next time it starts.")
             show(self.restart_btn, True)
             self.ui.toast("Settings saved")

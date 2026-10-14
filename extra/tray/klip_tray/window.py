@@ -146,6 +146,15 @@ class MainView(Gtk.Overlay):
     def register_popover(self, pop: Gtk.Popover) -> None:
         self._popovers.append(pop)
 
+    def unregister_popover(self, pop: Gtk.Popover) -> None:
+        if pop in self._popovers:
+            self._popovers.remove(pop)
+        pop.destroy()
+
+    def close_popovers(self) -> None:
+        for pop in self._popovers:
+            pop.popdown()
+
     def popover_open(self) -> bool:
         return any(p.get_visible() for p in self._popovers)
 
@@ -157,6 +166,9 @@ class MainView(Gtk.Overlay):
     def window_shown(self, shown: bool) -> None:
         """The window opened or hid: poll faster while it is open; the page on screen follows."""
         self.controller.set_fast(shown)
+        if not shown:  # a stale question or an open menu must not be waiting at the next opening
+            self.hide_confirm()
+            self.close_popovers()
         page = self.pages.get(self._current)
         if page:
             page.on_show() if shown else page.on_hide()

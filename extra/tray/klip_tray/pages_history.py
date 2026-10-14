@@ -62,6 +62,15 @@ class HistoryPage(Page):
 
     def on_hide(self) -> None:
         self._ticker.stop()
+        self._forget_secrets()
+
+    def _forget_secrets(self) -> None:
+        """A revealed secret goes back to hidden whenever the page or the window is left."""
+        revealed, self._revealed = self._revealed, {}
+        for row in self._all:
+            view = self._views.get(row.id_hex)
+            if view and row.id_hex in revealed:
+                view[1].set_text(self._preview_text(row))
 
     def refresh(self) -> None:
         self.ui.controller.history(self._arrived)
@@ -282,6 +291,8 @@ class SendPage(Page):
         return False
 
     def _send(self) -> None:
+        if self._busy:
+            return
         text = self._contents()
         problem = model.send_problem(text, self._limit())
         if problem:

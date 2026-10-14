@@ -100,8 +100,10 @@ class Controller:
 
         self.bridge.request({"method": name, "params": params}, handler, timeout)
 
-    def _then_refresh(self, cb: Callback) -> Callable[[Outcome], None]:
+    def _then_refresh(self, cb: Callback, new_daemon: bool = False) -> Callable[[Outcome], None]:
         def done(outcome: Outcome) -> None:
+            if new_daemon:
+                self.caps = None  # a started or restarted daemon may be a newer one: ask what it can do
             self._finish(cb, outcome)
             self.refresh()
 
@@ -133,6 +135,14 @@ class Controller:
             self._ipc({"Hello": {"client_protocol": 2}}, got("hello"), "Hello")
 
     def _finish_poll(self, results: dict) -> None:
+        try:
+            self._apply_poll(results)
+        except Exception:  # whatever went wrong, the next poll must still run
+            log.exception("could not build the picture from the daemon's answers")
+            self._polling = False
+            self._schedule_next()
+
+    def _apply_poll(self, results: dict) -> None:
         status: Outcome = results["status"]
         down = not status.ok
         if down:
@@ -148,9 +158,10 @@ class Controller:
             self.images = images.value if images.ok else None
             if "hello" in results:
                 hello = results["hello"]
-                self.hello = hello.value if hello.ok else None
-                caps = (hello.value or {}).get("capabilities") if hello.ok else None
-                self.caps = list(caps) if isinstance(caps, list) else []
+                if hello.ok:  # a failed answer is "unknown" (asked again), not "an old daemon"
+                    self.hello = hello.value
+                    caps = (hello.value or {}).get("capabilities")
+                    self.caps = list(caps) if isinstance(caps, list) else []
         summary = model.summarize(self.status, self.images, down=down, caps=self.caps)
         self._polling = False
         changed = summary != self.summary
@@ -272,13 +283,13 @@ class Controller:
     # ------------------------------------------------------------------ the daemon and its files
 
     def stop_daemon(self, cb: Callback = None) -> None:
-        self._ipc("StopDaemon", self._then_refresh(cb), "DaemonStopping")
+        self._ipc("StopDaemon", self._then_refresh(cb, True), "DaemonStopping")
 
     def daemon_start(self, cb: Callback = None) -> None:
-        self._method("daemon_start", {}, self._then_refresh(cb), timeout=45.0)
+        self._method("daemon_start", {}, self._then_refresh(cb, True), timeout=45.0)
 
     def daemon_restart(self, cb: Callback = None) -> None:
-        self._method("daemon_restart", {}, self._then_refresh(cb), timeout=60.0)
+        self._method("daemon_restart", {}, self._then_refresh(cb, True), timeout=60.0)
 
     def config_get(self, cb: Callback) -> None:
         self._method("config_get", {}, cb)
