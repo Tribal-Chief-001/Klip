@@ -1,7 +1,0 @@
-{
-  "name": "Klip Bridge",
-  "description": "Lightweight GNOME Shell Mutter Meta.Selection clipboard bridge for Klip daemon over ~/.cache/klip/bridge.sock",
-  "uuid": "klip-bridge@klip.org",
-  "shell-version": ["45", "46", "47", "48"],
-  "version": 1
-}

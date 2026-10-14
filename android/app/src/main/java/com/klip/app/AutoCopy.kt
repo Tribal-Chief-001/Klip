@@ -34,7 +34,7 @@ object AutoCopy {
     fun setRootEnabled(ctx: Context, on: Boolean) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_ROOT, on).apply()
         if (on) startWithRoot(ctx, force = true) else {
-            ClipHelperServer.stopHelper()
+            ClipHelperServer.stopHelper(ctx)
             lastRootResult = null
         }
     }

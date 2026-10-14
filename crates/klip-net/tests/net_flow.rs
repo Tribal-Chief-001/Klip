@@ -27,6 +27,16 @@ fn cfg(name: &str) -> NetConfig {
 
 /// Start a node whose pairing requests are answered with `accept_pairs`.
 async fn spawn_node(name: &str, accept_pairs: bool, cfg_override: Option<NetConfig>) -> Harness {
+    spawn_node_answering(name, accept_pairs, cfg_override, ClipOutcome::Applied).await
+}
+
+/// Like [`spawn_node`], but every received clip is answered with `outcome`.
+async fn spawn_node_answering(
+    name: &str,
+    accept_pairs: bool,
+    cfg_override: Option<NetConfig>,
+    outcome: ClipOutcome,
+) -> Harness {
     let mut seed = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
     let (node, mut events) =
@@ -39,7 +49,7 @@ async fn spawn_node(name: &str, accept_pairs: bool, cfg_override: Option<NetConf
         while let Some(ev) = events.recv().await {
             match ev {
                 NetEvent::Clip { from, payload, ack } => {
-                    let _ = ack.send(ClipOutcome::Applied);
+                    let _ = ack.send(outcome);
                     let _ = clip_tx.send((from, payload)).await;
                 }
                 NetEvent::PairRequest { respond, .. } => {
@@ -163,23 +173,24 @@ async fn wrong_secret_is_rejected_and_ticket_is_single_use() {
 }
 
 #[tokio::test]
-async fn too_many_wrong_guesses_lock_the_window() {
+async fn wrong_guesses_do_not_close_the_window() {
     let host = spawn_node("Laptop", true, None).await;
     let evil = spawn_node("Evil", true, None).await;
+    let good = spawn_node("Phone", true, None).await;
     let ticket = host.node.open_pairing(Duration::from_secs(60), true).await;
-    for i in 0..5u8 {
+    for i in 0..6u8 {
         let mut bad = ticket.clone();
         bad.secret[1] = i.wrapping_add(1);
         bad.secret[2] = 0xAA;
         assert!(evil.node.pair_with(&bad).await.is_err());
     }
-    assert!(
-        !host.node.pairing_open(),
-        "window must close after repeated failures"
-    );
-    // Even the correct secret no longer works.
-    assert!(evil.node.pair_with(&ticket).await.is_err());
-    assert!(host.node.peers().is_empty());
+    // A stranger's bad guesses must not cancel the pairing of the real device.
+    assert!(host.node.pairing_open());
+    good.node
+        .pair_with(&ticket)
+        .await
+        .expect("genuine ticket still works");
+    assert_eq!(host.node.peers().len(), 1);
 }
 
 #[tokio::test]
@@ -466,4 +477,16 @@ async fn a_device_that_was_unpaired_by_the_other_side_is_told() {
         "{problem}"
     );
     assert!(!phone.node.peer_statuses()[0].connected);
+}
+
+#[tokio::test]
+async fn a_superseded_clip_is_reported_to_the_sender_not_as_delivered() {
+    let host = spawn_node("Laptop", true, None).await;
+    let phone = spawn_node_answering("Phone", true, None, ClipOutcome::Superseded).await;
+    pair(&host, &phone).await;
+    let res = host.node.send_clip(&clip_from(&host.node, "old")).await;
+    match &res[0].1 {
+        Err(NetError::PeerRefused(why)) => assert!(why.contains("newer clip"), "{why}"),
+        other => panic!("a superseded clip must not count as delivered: {other:?}"),
+    }
 }

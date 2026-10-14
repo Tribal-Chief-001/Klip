@@ -200,6 +200,9 @@ impl KlipEngine {
         let paths = KlipPaths::from_dir(data_dir);
         let mut config = DaemonConfig::load(&paths).map_err(fail)?;
         config.device_name = device_name;
+        // Android's clipboard takes about 0.9 MB at most and this app writes no images: refuse bigger
+        // clips at once instead of downloading them over mobile data first.
+        config.max_clip_bytes = 1_000_000;
         config.relay = if use_relays {
             RelayMode::N0
         } else {
@@ -304,7 +307,9 @@ impl KlipEngine {
             .rt
             .block_on(self.core.sync.net.pair_with(&ticket))
             .map_err(fail)?;
-        self.rt.block_on(self.core.sync.persist_peer(&rec));
+        self.rt
+            .block_on(self.core.sync.persist_peer(&rec))
+            .map_err(fail)?;
         Ok(PairedDevice {
             name: rec.name,
             fingerprint: klip_core::node_of(&rec.id).fingerprint(),

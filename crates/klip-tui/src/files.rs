@@ -2,7 +2,7 @@
 //! (same user, private permissions), so these screens work even when the daemon is not running.
 use klip_core::{DaemonConfig, KlipPaths};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// The log is read from this far back when the Log screen opens.
@@ -79,34 +79,12 @@ pub fn read_log_chunk(path: &Path, offset: Option<u64>) -> Result<LogChunk, Stri
     })
 }
 
-/// Validate, then write `config.json`: temp file (mode 0600) -> fsync -> rename over the target.
-/// The old file stays untouched when validation or any write step fails.
+/// Validate, then write `config.json` atomically with mode 0600 (the old file stays untouched when
+/// validation or any write step fails).
 pub fn write_config_atomic(paths: &KlipPaths, cfg: &DaemonConfig) -> Result<(), String> {
     cfg.validate()?;
-    let target = paths.config_file();
-    let tmp = paths.dir().join(".config.json.tmp");
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())? + "\n";
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut file = opts
-        .open(&tmp)
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    let written = file
-        .write_all(json.as_bytes())
-        .and_then(|_| file.sync_all())
-        .map_err(|e| format!("{}: {e}", tmp.display()));
-    if let Err(e) = written {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    fs::rename(&tmp, &target).map_err(|e| {
-        let _ = fs::remove_file(&tmp);
-        format!("{}: {e}", target.display())
-    })
+    klip_crypto::identity::write_private_file(&paths.config_file(), json.as_bytes())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,7 +175,7 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o600);
         assert!(
-            !paths.dir().join(".config.json.tmp").exists(),
+            !paths.config_file().with_extension("tmp").exists(),
             "temp file must be renamed away"
         );
     }

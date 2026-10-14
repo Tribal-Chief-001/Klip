@@ -11,8 +11,8 @@ android {
         applicationId = "com.klip.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "0.4.1-alpha"
+        versionCode = 13
+        versionName = "0.4.2-alpha"
     }
 
     // One APK per CPU type instead of one 39 MB universal file: phones get only their own native

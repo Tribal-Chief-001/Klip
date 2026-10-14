@@ -6,10 +6,8 @@ use klip_proto::clip::{compute_fingerprint, ClipContentType};
 use klip_proto::hlc::NodeId;
 use std::borrow::Cow;
 use std::env;
-use std::path::PathBuf;
 use std::sync::Mutex;
 
-pub const GNOME_BRIDGE_SOCKET_PATH: &str = ".cache/klip/bridge.sock";
 pub const X11_INCR_THRESHOLD: usize = 256 * 1024; // 256 KB
 
 pub struct LinuxClipboardDriver {
@@ -101,31 +99,6 @@ impl LinuxClipboardDriver {
             changes: spawn_x11_change_watcher(),
         }
     }
-
-    pub fn bridge_socket_path() -> Option<PathBuf> {
-        env::var("HOME")
-            .ok()
-            .map(|h| PathBuf::from(h).join(GNOME_BRIDGE_SOCKET_PATH))
-    }
-}
-
-fn read_bridge_socket() -> Option<String> {
-    if let Some(sock_path) = LinuxClipboardDriver::bridge_socket_path() {
-        if sock_path.exists() {
-            #[cfg(unix)]
-            {
-                use std::io::Read;
-                if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(sock_path) {
-                    let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(15)));
-                    let mut buf = Vec::new();
-                    if stream.read_to_end(&mut buf).is_ok() && !buf.is_empty() {
-                        return String::from_utf8(buf).ok();
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 pub fn detect_linux_environment() -> PlatformEnvironment {
@@ -162,7 +135,7 @@ impl ClipboardDriver for LinuxClipboardDriver {
         };
 
         // Try reading text first
-        let text_opt = cb.get_text().ok().or_else(read_bridge_socket);
+        let text_opt = cb.get_text().ok();
         if let Some(text) = text_opt {
             if !text.is_empty() {
                 let bytes = text.into_bytes();
@@ -211,29 +184,33 @@ impl ClipboardDriver for LinuxClipboardDriver {
             }
         };
 
-        let fp = compute_fingerprint(data, &self.local_node);
-        self.echo_shield.record_injection(fp);
-
+        // The echo shield must know what the clipboard will hold *before* the write, or the change
+        // event could be read as a new copy. It also must match what `read_clip` will see.
         match content_type {
-            ClipContentType::PlainTextUtf8 | ClipContentType::HtmlContent => {
+            ClipContentType::PlainTextUtf8
+            | ClipContentType::HtmlContent
+            | ClipContentType::CustomMime(_) => {
                 let text = String::from_utf8_lossy(data);
+                self.echo_shield
+                    .record_injection(compute_fingerprint(text.as_bytes(), &self.local_node));
                 cb.set_text(text)
                     .map_err(|e| PlatformError::BackendUnavailable(e.to_string()))?;
             }
             ClipContentType::ImagePng | ClipContentType::ImageWebP => {
-                if let Ok((width, height, rgba)) = klip_diff::png_to_rgba(data) {
-                    let img = ImageData {
-                        width: width as usize,
-                        height: height as usize,
-                        bytes: Cow::Owned(rgba),
-                    };
-                    let _ = cb.set_image(img);
-                }
-            }
-            ClipContentType::CustomMime(_) => {
-                let text = String::from_utf8_lossy(data);
-                cb.set_text(text)
-                    .map_err(|e| PlatformError::BackendUnavailable(e.to_string()))?;
+                let (width, height, rgba) =
+                    klip_diff::png_to_rgba(data).map_err(PlatformError::BackendUnavailable)?;
+                // `read_clip` re-encodes the pixels as PNG, so that is what must be remembered, not
+                // the incoming bytes (a WebP, or a PNG from another encoder, would never match).
+                let png = klip_diff::rgba_to_png(width, height, &rgba)
+                    .map_err(PlatformError::BackendUnavailable)?;
+                self.echo_shield
+                    .record_injection(compute_fingerprint(&png, &self.local_node));
+                cb.set_image(ImageData {
+                    width: width as usize,
+                    height: height as usize,
+                    bytes: Cow::Owned(rgba),
+                })
+                .map_err(|e| PlatformError::BackendUnavailable(e.to_string()))?;
             }
         }
 

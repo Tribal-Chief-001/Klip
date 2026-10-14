@@ -360,7 +360,7 @@ class SetupActivity : Activity() {
             helperStatus = st
             add(st, top = 14)
             add(textButton(this@SetupActivity, pal, "Stop the helper now", pal.dim) {
-                ClipHelperServer.stopHelper(); Toast.makeText(this@SetupActivity, "Asked the helper to stop.", Toast.LENGTH_SHORT).show()
+                ClipHelperServer.stopHelper(this@SetupActivity); Toast.makeText(this@SetupActivity, "Asked the helper to stop.", Toast.LENGTH_SHORT).show()
             }, top = 2)
         }
     }

@@ -155,7 +155,9 @@ impl IpcServer {
                 };
                 match sync.net.pair_with(&ticket).await {
                     Ok(rec) => {
-                        sync.persist_peer(&rec).await;
+                        if let Err(e) = sync.persist_peer(&rec).await {
+                            return IpcResponse::Error(e);
+                        }
                         IpcResponse::PairSuccess {
                             peer_name: rec.name,
                             peer_fingerprint: klip_core::node_of(&rec.id).fingerprint(),

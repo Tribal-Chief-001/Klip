@@ -825,3 +825,97 @@ async fn a_request_over_the_cap_gets_a_clear_error() {
     ));
     a.stop().await;
 }
+
+#[tokio::test]
+async fn unpair_that_cannot_be_saved_is_refused_and_the_device_stays_listed() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir_a = fresh_dir("a-unsaved");
+    let a = start_daemon("Alpha", dir_a.clone(), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-unsaved"), false).await;
+    assert!(matches!(
+        pair(&a, &b, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+
+    // A read-only directory: the keystore cannot be rewritten.
+    std::fs::set_permissions(&dir_a, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let reply = a
+        .ipc(IpcRequest::Unpair {
+            selector: "Beta".into(),
+        })
+        .await;
+    std::fs::set_permissions(&dir_a, std::fs::Permissions::from_mode(0o700)).unwrap();
+    match reply {
+        IpcResponse::Error(e) => assert!(e.contains("could not remove"), "{e}"),
+        other => panic!("an unsaved removal must be an error, got {other:?}"),
+    }
+    match a.ipc(IpcRequest::GetStatus).await {
+        IpcResponse::Status(s) => assert_eq!(s.peers.len(), 1, "device must still be listed"),
+        other => panic!("unexpected {other:?}"),
+    }
+    // With the directory writable again, the same request works.
+    assert!(matches!(
+        a.ipc(IpcRequest::Unpair {
+            selector: "Beta".into()
+        })
+        .await,
+        IpcResponse::Unpaired { .. }
+    ));
+    a.stop().await;
+    b.stop().await;
+}
+
+#[tokio::test]
+async fn a_retried_clip_counts_as_applied_but_an_older_clip_is_superseded() {
+    use klip_net::{ClipOutcome, EndpointId, NetEvent};
+    use klip_proto::clip::{ClipContentType, ClipPayload};
+    use klip_proto::hlc::HybridLogicalClock;
+
+    let a = start_daemon("Alpha", fresh_dir("a-sup"), false).await;
+    let b = start_daemon("Beta", fresh_dir("b-sup"), false).await;
+    let from = EndpointId::from_bytes(a.engine.node_id().as_bytes()).unwrap();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let clip = |text: &str, physical_time_ms: u64| {
+        let node = a.engine.node_id();
+        ClipPayload::new(
+            ClipContentType::PlainTextUtf8,
+            text.as_bytes().to_vec(),
+            node,
+            HybridLogicalClock {
+                physical_time_ms,
+                logical_counter: 0,
+                node_id: node,
+            },
+            false,
+        )
+    };
+    let deliver = |p: ClipPayload| {
+        let sync = Arc::clone(&b.engine.sync);
+        async move {
+            let (ack, answer) = tokio::sync::oneshot::channel();
+            sync.handle_net_event(NetEvent::Clip {
+                from,
+                payload: p,
+                ack,
+            })
+            .await;
+            answer.await.unwrap()
+        }
+    };
+
+    let newer = clip("newer", now_ms + 1_000);
+    assert_eq!(deliver(newer.clone()).await, ClipOutcome::Applied);
+    // Same clip again (the sender timed out and retried): still a success.
+    assert_eq!(deliver(newer).await, ClipOutcome::Applied);
+    // A different clip stamped before the active one (sender clock behind): not applied, and said so.
+    assert_eq!(
+        deliver(clip("older", now_ms - 60_000)).await,
+        ClipOutcome::Superseded
+    );
+    assert_eq!(b.clipboard.current_text().as_deref(), Some("newer"));
+    a.stop().await;
+    b.stop().await;
+}

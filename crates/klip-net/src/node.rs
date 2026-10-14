@@ -39,13 +39,14 @@ const RECONNECT_MIN: Duration = Duration::from_secs(5);
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
 const PAIR_DECISION_TIMEOUT: Duration = Duration::from_secs(60);
 const PAIR_CLIENT_TIMEOUT: Duration = Duration::from_secs(90);
-const MAX_PAIR_FAILURES: u8 = 5;
 /// Slack on top of the clip size limit for the serialized envelope (ids, hlc, mime string).
 const ENVELOPE_SLACK: usize = 4096;
 const ACK_APPLIED: u8 = 1;
 const ACK_REJECTED: u8 = 0;
 const ACK_PAUSED: u8 = 2;
 const ACK_NO_CLIPBOARD: u8 = 3;
+/// The receiver already has a newer clip (last-write-wins), so this one was not applied.
+const ACK_SUPERSEDED: u8 = 4;
 /// How long the receiving application may take to apply a clip before we report a refusal.
 const APPLY_TIMEOUT: Duration = Duration::from_secs(5);
 const CODE_UNPAIRED: u32 = 1;
@@ -111,7 +112,7 @@ pub struct PeerStatus {
 pub enum ClipOutcome {
     /// Written to the clipboard.
     Applied,
-    /// A newer clip was already active (last-write-wins); nothing to do, not an error.
+    /// A newer clip was already active (last-write-wins): this one was not applied. The sender is told.
     Superseded,
     /// The receiving device has sync paused.
     Paused,
@@ -150,7 +151,6 @@ pub enum NetEvent {
 struct PairingWindow {
     secret: [u8; 16],
     expires: Instant,
-    failures: u8,
 }
 
 struct Inner {
@@ -324,7 +324,6 @@ impl KlipNode {
         *self.inner.pairing.lock().unwrap() = Some(PairingWindow {
             secret,
             expires: Instant::now() + ttl,
-            failures: 0,
         });
         let mut addr = self.endpoint.addr();
         if !include_direct_addrs && self.inner.cfg.relay != RelayChoice::Disabled {
@@ -508,6 +507,9 @@ impl KlipNode {
                 )),
                 [ACK_NO_CLIPBOARD] => Err(NetError::PeerRefused(
                     "the other device could not write its clipboard".into(),
+                )),
+                [ACK_SUPERSEDED] => Err(NetError::PeerRefused(
+                    "the other device already has a newer clip; this one was not applied".into(),
                 )),
                 _ => Err(NetError::PeerRefused(
                     "the other device rejected the clip".into(),
@@ -739,7 +741,8 @@ impl KlipNode {
                 },
             };
             let ack = match outcome {
-                ClipOutcome::Applied | ClipOutcome::Superseded => ACK_APPLIED,
+                ClipOutcome::Applied => ACK_APPLIED,
+                ClipOutcome::Superseded => ACK_SUPERSEDED,
                 ClipOutcome::Paused => ACK_PAUSED,
                 ClipOutcome::ClipboardUnavailable => ACK_NO_CLIPBOARD,
                 ClipOutcome::Rejected => ACK_REJECTED,
@@ -823,14 +826,12 @@ impl KlipNode {
             *guard = None;
             return Err("the pairing code has expired".into());
         }
+        // A wrong secret does not close the window: the secret is 128 bits (not guessable), and a
+        // lockout would let any stranger who knows the device id cancel a pairing in progress.
         if window.secret.ct_eq(presented).into() {
             *guard = None; // single use
             Ok(())
         } else {
-            window.failures += 1;
-            if window.failures >= MAX_PAIR_FAILURES {
-                *guard = None;
-            }
             Err("invalid pairing code".into())
         }
     }

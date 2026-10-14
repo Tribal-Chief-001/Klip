@@ -241,6 +241,22 @@ mod tests {
         assert_eq!(roundtrip_rgba, rgba);
     }
 
+    /// The Linux driver remembers `rgba_to_png(png_to_rgba(incoming))` as the echo fingerprint and later
+    /// sees `rgba_to_png(clipboard pixels)`; that only works if re-encoding the same pixels is stable.
+    #[test]
+    fn reencoding_decoded_pixels_is_byte_stable_even_from_webp() {
+        let rgba: Vec<u8> = (0..16 * 16 * 4).map(|i| (i * 7 % 251) as u8).collect();
+        let webp = rgba_to_webp(16, 16, &rgba).unwrap();
+        let (w, h, px) = png_to_rgba(&webp).unwrap();
+        let first = rgba_to_png(w, h, &px).unwrap();
+        let (w2, h2, px2) = png_to_rgba(&first).unwrap();
+        assert_eq!(rgba_to_png(w2, h2, &px2).unwrap(), first);
+        assert_ne!(
+            first, webp,
+            "the incoming bytes are not what read_clip sees"
+        );
+    }
+
     #[test]
     fn test_webp_roundtrip() {
         let width = 8;

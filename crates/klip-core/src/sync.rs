@@ -353,7 +353,9 @@ impl SyncCoordinator {
                 }
             }
             NetEvent::Paired(rec) => {
-                self.persist_peer(&rec).await;
+                if let Err(e) = self.persist_peer(&rec).await {
+                    eprintln!("klip: {e}");
+                }
                 self.pairing.lock().unwrap().paired_name = Some(rec.name);
             }
             NetEvent::PeerConnected(_) | NetEvent::PeerDisconnected(_) => {}
@@ -378,6 +380,11 @@ impl SyncCoordinator {
             {
                 return ClipOutcome::Rejected; // absurd timestamp: keep our clock sane
             }
+        }
+        // A retry of a clip we already applied (the sender timed out waiting for our answer) is a
+        // success for the sender, not "superseded".
+        if self.history.get_by_id(payload.id).is_some() {
+            return ClipOutcome::Applied;
         }
         if let Some(current) = *self.last_applied_clip_hlc.lock().unwrap() {
             if remote_hlc <= current {
@@ -435,10 +442,16 @@ impl SyncCoordinator {
 
     // ---------------------------------------------------------------------------- pairing
 
-    pub async fn persist_peer(&self, rec: &PeerRecord) {
+    /// Save a newly paired device. An error means it is trusted now but would be forgotten on restart.
+    pub async fn persist_peer(&self, rec: &PeerRecord) -> Result<(), String> {
         let mut ks = self.keystore.lock().await;
         ks.add_peer(PairedPeer::new(node_of(&rec.id), rec.name.clone()));
-        let _ = ks.save(self.paths.keystore());
+        ks.save(self.paths.keystore()).map_err(|e| {
+            format!(
+                "{} is paired but the device list could not be saved: {e}",
+                rec.name
+            )
+        })
     }
 
     pub fn mark_pairing_started(&self, ttl_secs: u64) {
@@ -508,10 +521,23 @@ impl SyncCoordinator {
         match matches.as_slice() {
             [] => Err(format!("no paired device matches '{wanted}'")),
             [one] => {
-                self.net.unpair(&one.id);
+                // Save first: if the file cannot be written the device would be trusted again after
+                // a restart, so it must not be reported (or treated) as removed.
+                let node = node_of(&one.id);
                 let mut ks = self.keystore.lock().await;
-                ks.remove_peer(&node_of(&one.id));
-                let _ = ks.save(self.paths.keystore());
+                let old = ks.get_peer(&node).cloned();
+                ks.remove_peer(&node);
+                if let Err(e) = ks.save(self.paths.keystore()) {
+                    if let Some(old) = old {
+                        ks.add_peer(old);
+                    }
+                    return Err(format!(
+                        "could not remove {}: the device list could not be saved ({e})",
+                        one.name
+                    ));
+                }
+                drop(ks);
+                self.net.unpair(&one.id);
                 Ok(one.name.clone())
             }
             many => Err(format!(

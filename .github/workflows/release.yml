@@ -35,7 +35,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build hardened release binary
-        run: cargo build --release --target ${{ matrix.target }} --bin klip
+        run: cargo build --locked --release --target ${{ matrix.target }} --bin klip
 
       - name: Package release artifact (Unix)
         if: matrix.os != 'windows-latest'

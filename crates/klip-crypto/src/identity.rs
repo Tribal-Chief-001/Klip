@@ -149,10 +149,11 @@ pub fn restrict_to_owner(path: &Path, mode: u32) {
     }
 }
 
-/// Atomically write a secret file that is created with mode 0600 (never briefly world-readable).
-fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
+/// Atomically write a secret file that is created with mode 0600 (never briefly world-readable):
+/// temp file, fsync, rename. The old file stays untouched when any step fails.
+pub fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
-    {
+    let written = (|| {
         let mut opts = fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -165,8 +166,12 @@ fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
         restrict_to_owner(&tmp, 0o600);
         f.write_all(data).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
+        fs::rename(&tmp, path).map_err(|e| e.to_string())
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path).map_err(|e| e.to_string())
+    written
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

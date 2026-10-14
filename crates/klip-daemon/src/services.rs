@@ -56,6 +56,22 @@ Register-ScheduledTask -TaskName "KlipDaemon" -Action $Action -Trigger $Trigger 
 Write-Host "✓ KlipDaemon Windows Task registered successfully."
 "#;
 
+/// `ExecStart` value: quoted so a path with spaces stays one word; `%` is systemd's specifier character.
+fn systemd_exec(exe: &str) -> String {
+    format!(
+        "\"{}\"",
+        exe.replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('%', "%%")
+    )
+}
+
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 pub fn generate_systemd_unit_file(dest: &PathBuf) -> std::io::Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
@@ -65,7 +81,7 @@ pub fn generate_systemd_unit_file(dest: &PathBuf) -> std::io::Result<()> {
         .unwrap_or_else(|_| "klip".to_string());
     let unit = SYSTEMD_SERVICE_TEMPLATE.replace(
         "ExecStart=klip start --foreground",
-        &format!("ExecStart={} start --foreground", exe_path),
+        &format!("ExecStart={} start --foreground", systemd_exec(&exe_path)),
     );
     fs::write(dest, unit)
 }
@@ -79,7 +95,7 @@ pub fn generate_launchd_plist_file(dest: &PathBuf) -> std::io::Result<()> {
         .unwrap_or_else(|_| "klip".to_string());
     let plist = LAUNCHD_PLIST_TEMPLATE.replace(
         "<string>klip</string>",
-        &format!("<string>{}</string>", exe_path),
+        &format!("<string>{}</string>", xml_escape(&exe_path)),
     );
     fs::write(dest, plist)
 }
@@ -93,4 +109,19 @@ pub fn generate_windows_service_script(dest: &PathBuf) -> std::io::Result<()> {
         .unwrap_or_else(|_| "klip.exe".to_string());
     let script = WINDOWS_TASK_SCRIPT_TEMPLATE.replace("__EXE_PATH__", &exe_path);
     fs::write(dest, script)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn awkward_executable_paths_stay_one_argument() {
+        assert_eq!(
+            systemd_exec("/home/me/My Tools/klip"),
+            "\"/home/me/My Tools/klip\""
+        );
+        assert_eq!(systemd_exec("/a%b\"c"), "\"/a%%b\\\"c\"");
+        assert_eq!(xml_escape("/a&b<c>"), "/a&amp;b&lt;c&gt;");
+    }
 }

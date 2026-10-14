@@ -134,8 +134,13 @@ object ClipHelperServer {
     }
 
     /** Ask the connected helper to exit. Safe to call from any thread (the write happens on a worker). */
-    fun stopHelper() {
-        val c = current ?: return
+    fun stopHelper(ctx: Context) {
+        val c = current
+        // A new secret for the next start: the one in an old adb command (terminal history, a chat)
+        // stops working.
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY_TOKEN).apply()
+        token = tokenText(ctx).toByteArray(Charsets.UTF_8)
+        if (c == null) return
         Thread({
             try {
                 c.getOutputStream().apply { write('Q'.code); flush() }

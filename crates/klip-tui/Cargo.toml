@@ -13,6 +13,7 @@ testkit = []
 [dependencies]
 klip-proto = { workspace = true }
 klip-core = { workspace = true }
+klip-crypto = { workspace = true }
 tokio = { workspace = true }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
