@@ -2,15 +2,15 @@ use crate::config::{DaemonConfig, KlipPaths, RelayMode};
 use crate::history::HistoryBuffer;
 use klip_crypto::identity::{DeviceIdentity, KeyStore, PairedPeer};
 use klip_diff::entropy::analyze_snippet;
-use klip_net::{ClipOutcome, EndpointId, KlipNode, NetEvent, PairDecision, PeerRecord};
+use klip_net::{ClipOutcome, EndpointId, KlipNode, NetError, NetEvent, PairDecision, PeerRecord};
 use klip_platform::driver::ClipboardDriver;
 use klip_proto::clip::{ClipContentType, ClipPayload};
 use klip_proto::hlc::{HybridLogicalClock, NodeId};
 use klip_proto::ipc::{DaemonStatusInfo, PairPollInfo, PeerStatusInfo, PendingPairInfo};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Remote clocks further ahead than this are refused (see `HybridLogicalClock::recv_event_bounded`).
 const MAX_CLOCK_DRIFT_MS: u64 = 5 * 60 * 1000;
@@ -54,6 +54,40 @@ fn build_payload(
         is_sensitive,
     );
     payload
+}
+
+/// Called, outside any lock, when an automatic copy could not reach a device: its name and how long
+/// it has been gone. Only the name and a duration: never clip content.
+pub type UndeliveredHook = Arc<dyn Fn(&str, Duration) + Send + Sync>;
+
+/// "5 min" / "2 h" for how long a device has been gone; `None` under a minute.
+pub fn offline_label(gone: Duration) -> Option<String> {
+    let mins = gone.as_secs() / 60;
+    match mins {
+        0 => None,
+        1..=119 => Some(format!("{mins} min")),
+        _ => Some(format!("{} h", mins / 60)),
+    }
+}
+
+fn is_unreachable(e: &NetError) -> bool {
+    matches!(e, NetError::Connect(_) | NetError::Stream(_))
+}
+
+/// One alert per outage: true for the first unreachable failure since the last success (or ever).
+fn first_failure_of_outage(
+    alerted: &mut HashSet<NodeId>,
+    node: NodeId,
+    result: &Result<(), NetError>,
+) -> bool {
+    match result {
+        Ok(()) => {
+            alerted.remove(&node);
+            false
+        }
+        Err(e) if is_unreachable(e) => alerted.insert(node),
+        Err(_) => false,
+    }
 }
 
 struct PendingPair {
@@ -100,6 +134,9 @@ pub struct SyncCoordinator {
     pub sends_started: AtomicU64,
     /// Local clips that were never sent because a newer one replaced them.
     pub coalesced_clips: AtomicU64,
+    undelivered_hook: Mutex<Option<UndeliveredHook>>,
+    /// Devices already alerted about in their current outage.
+    alerted: Mutex<HashSet<NodeId>>,
 }
 
 impl SyncCoordinator {
@@ -136,6 +173,8 @@ impl SyncCoordinator {
             sending: AtomicBool::new(false),
             sends_started: AtomicU64::new(0),
             coalesced_clips: AtomicU64::new(0),
+            undelivered_hook: Mutex::new(None),
+            alerted: Mutex::new(HashSet::new()),
         }
     }
 
@@ -163,6 +202,15 @@ impl SyncCoordinator {
         } else {
             true
         }
+    }
+
+    pub fn set_undelivered_hook(&self, hook: UndeliveredHook) {
+        *self.undelivered_hook.lock().unwrap() = Some(hook);
+    }
+
+    /// True while a send of an automatic copy is in flight.
+    pub fn is_sending(&self) -> bool {
+        self.sending.load(Ordering::SeqCst)
     }
 
     pub fn pause_remaining_secs(&self) -> u64 {
@@ -206,7 +254,7 @@ impl SyncCoordinator {
         }
         let hlc = self.stamp_local_clip();
         let payload = self.prepare_off_thread(content_type, data, hlc).await?;
-        Some(self.deliver(&payload).await)
+        Some(self.deliver(&payload, false).await)
     }
 
     fn stamp_local_clip(&self) -> HybridLogicalClock {
@@ -281,12 +329,13 @@ impl SyncCoordinator {
                 continue;
             }
             self.sends_started.fetch_add(1, Ordering::SeqCst);
-            self.deliver(&payload).await;
+            self.deliver(&payload, true).await;
         }
     }
 
-    /// Send one prepared clip to every peer and record the per-peer outcome.
-    async fn deliver(&self, payload: &ClipPayload) -> Vec<DeliveryReport> {
+    /// Send one prepared clip to every peer and record the per-peer outcome. `notify` is true for
+    /// automatic copies: an unreachable device then raises the undelivered hook (once per outage).
+    async fn deliver(&self, payload: &ClipPayload, notify: bool) -> Vec<DeliveryReport> {
         let results = self.net.send_clip(payload).await;
         let names: HashMap<NodeId, String> = self
             .net
@@ -294,12 +343,33 @@ impl SyncCoordinator {
             .into_iter()
             .map(|p| (node_of(&p.id), p.name))
             .collect();
+        let gone: HashMap<NodeId, Duration> = if notify {
+            self.net
+                .peer_statuses()
+                .into_iter()
+                .filter_map(|s| s.offline_for.map(|d| (node_of(&s.id), d)))
+                .collect()
+        } else {
+            HashMap::new()
+        };
 
+        let mut to_alert: Vec<(String, Duration)> = Vec::new();
         let mut errors = self.last_errors.lock().unwrap();
         let mut reports = Vec::new();
         for (id, res) in results {
             let node = node_of(&id);
             let peer_name = names.get(&node).cloned().unwrap_or_else(|| node.short_id());
+            {
+                let mut alerted = self.alerted.lock().unwrap();
+                if notify {
+                    if first_failure_of_outage(&mut alerted, node, &res) {
+                        let off = gone.get(&node).copied().unwrap_or_default();
+                        to_alert.push((peer_name.clone(), off));
+                    }
+                } else if res.is_ok() {
+                    alerted.remove(&node); // an explicit send that worked also ends the outage
+                }
+            }
             match res {
                 Ok(()) => {
                     errors.remove(&node);
@@ -322,6 +392,12 @@ impl SyncCoordinator {
         // "Last sync" means a peer really accepted something, not that we merely saw a local copy.
         if reports.iter().any(|r| r.result.is_ok()) {
             self.record_sync();
+        }
+        let hook = self.undelivered_hook.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            for (name, off) in to_alert {
+                hook(&name, off);
+            }
         }
         reports
     }
@@ -538,6 +614,7 @@ impl SyncCoordinator {
                 }
                 drop(ks);
                 self.net.unpair(&one.id);
+                self.alerted.lock().unwrap().remove(&node);
                 Ok(one.name.clone())
             }
             many => Err(format!(
@@ -653,4 +730,49 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offline_label_is_blank_under_a_minute_then_minutes_then_hours() {
+        assert_eq!(offline_label(Duration::from_secs(59)), None);
+        assert_eq!(
+            offline_label(Duration::from_secs(60)).as_deref(),
+            Some("1 min")
+        );
+        assert_eq!(
+            offline_label(Duration::from_secs(119 * 60)).as_deref(),
+            Some("119 min")
+        );
+        assert_eq!(
+            offline_label(Duration::from_secs(120 * 60)).as_deref(),
+            Some("2 h")
+        );
+    }
+
+    #[test]
+    fn only_could_not_reach_errors_count_as_unreachable() {
+        assert!(is_unreachable(&NetError::Connect("x".into())));
+        assert!(is_unreachable(&NetError::Stream("x".into())));
+        assert!(!is_unreachable(&NetError::PeerRefused("paused".into())));
+        assert!(!is_unreachable(&NetError::UnknownPeer));
+        assert!(!is_unreachable(&NetError::TooLarge { size: 2, limit: 1 }));
+    }
+
+    #[test]
+    fn one_alert_per_outage_and_a_success_rearms_it() {
+        let node = NodeId::new([9u8; 32]);
+        let mut alerted = HashSet::new();
+        let fail: Result<(), NetError> = Err(NetError::Connect("down".into()));
+        let ok: Result<(), NetError> = Ok(());
+        let refused: Result<(), NetError> = Err(NetError::PeerRefused("paused".into()));
+        assert!(first_failure_of_outage(&mut alerted, node, &fail));
+        assert!(!first_failure_of_outage(&mut alerted, node, &fail));
+        assert!(!first_failure_of_outage(&mut alerted, node, &refused));
+        assert!(!first_failure_of_outage(&mut alerted, node, &ok));
+        assert!(first_failure_of_outage(&mut alerted, node, &fail));
+    }
 }

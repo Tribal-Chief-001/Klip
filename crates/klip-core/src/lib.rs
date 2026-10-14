@@ -12,4 +12,4 @@ pub mod sync;
 pub use config::{DaemonConfig, KlipPaths, RelayMode};
 pub use engine::{CoreEngine, Shutdown};
 pub use history::HistoryBuffer;
-pub use sync::{node_of, DeliveryReport, SyncCoordinator};
+pub use sync::{node_of, offline_label, DeliveryReport, SyncCoordinator, UndeliveredHook};
