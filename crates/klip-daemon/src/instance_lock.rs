@@ -49,7 +49,16 @@ mod tests {
             .expect("second must fail");
         assert!(err.contains("already running"), "{err}");
         drop(first);
-        InstanceLock::acquire(&paths).expect("lock is free again after drop");
+        // Another test thread may have a child process between fork and exec for a moment (it holds a
+        // copy of the open file until it execs or exits), so "free again" can take a few ms.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while InstanceLock::acquire(&paths).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock is not free again after drop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
