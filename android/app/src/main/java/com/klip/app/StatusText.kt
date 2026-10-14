@@ -50,7 +50,9 @@ object StatusText {
         if (st.peers.isEmpty()) {
             lines += "Open Klip and tap Add a device."
         } else {
-            lines += st.peers.joinToString("   ") { (if (it.online) "● " else "○ ") + it.name }
+            lines += st.peers.joinToString("   ") {
+                (if (it.online) "● " else "○ ") + it.name + (it.offline?.let { o -> " ($o)" } ?: "")
+            }
         }
         val lastClip = if (history != null) {
             val whenText = Fmt.agoMs(history.timestampMs.toLong())
@@ -65,7 +67,11 @@ object StatusText {
         val compact = when {
             st.paused -> "Sync is paused"
             st.peers.isEmpty() -> "Open Klip and tap Add a device"
-            online.isEmpty() -> st.peers.firstNotNullOfOrNull { it.lastError }?.let { Fmt.plainPeerError(it) } ?: lastClip
+            online.isEmpty() -> {
+                val why = st.peers.firstNotNullOfOrNull { it.lastError }?.let { Fmt.plainPeerError(it) } ?: lastClip
+                val away = st.peers.firstNotNullOfOrNull { it.offline } // shortcut: first device only; one laptop is the normal case
+                if (away != null) "Offline $away · $why" else why
+            }
             else -> lastClip
         }
         return Summary(title, shortTitle, lines.first(), compact, lines.joinToString("\n"), online.isNotEmpty(), online.firstOrNull()?.name)

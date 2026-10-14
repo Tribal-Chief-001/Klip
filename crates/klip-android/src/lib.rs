@@ -56,6 +56,8 @@ pub struct PeerInfo {
     pub name: String,
     pub online: bool,
     pub last_error: Option<String>,
+    /// How long the device has been gone ("5 min", "2 h"); `None` while connected or under a minute.
+    pub offline: Option<String>,
 }
 
 #[derive(uniffi::Record)]
@@ -234,6 +236,17 @@ impl KlipEngine {
 
     pub fn status(&self) -> StatusInfo {
         let s = self.core.sync.status("Android".into(), 0);
+        let offline: std::collections::HashMap<_, _> = self
+            .core
+            .sync
+            .net
+            .peer_statuses()
+            .into_iter()
+            .filter_map(|p| {
+                let label = p.offline_for.and_then(klip_core::offline_label)?;
+                Some((klip_core::node_of(&p.id), label))
+            })
+            .collect();
         StatusInfo {
             device_fingerprint: s.node_id.fingerprint(),
             relay_mode: s.relay_mode,
@@ -245,6 +258,7 @@ impl KlipEngine {
                 .into_iter()
                 .map(|p| PeerInfo {
                     fingerprint: p.node_id.fingerprint(),
+                    offline: offline.get(&p.node_id).cloned(),
                     name: p.name,
                     online: p.is_online,
                     last_error: p.last_error,
