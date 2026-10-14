@@ -434,7 +434,12 @@ impl SyncCoordinator {
                 }
                 self.pairing.lock().unwrap().paired_name = Some(rec.name);
             }
-            NetEvent::PeerConnected(_) | NetEvent::PeerDisconnected(_) => {}
+            NetEvent::PeerConnected(id) => {
+                // The device is back: the next failure is a new outage and must alert again, even
+                // if nobody copied anything in between.
+                self.alerted.lock().unwrap().remove(&node_of(&id));
+            }
+            NetEvent::PeerDisconnected(_) => {}
         }
     }
 

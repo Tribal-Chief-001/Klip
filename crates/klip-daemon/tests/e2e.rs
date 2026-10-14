@@ -925,6 +925,7 @@ async fn an_automatic_copy_that_cannot_reach_a_device_alerts_once_per_outage() {
     use std::sync::atomic::Ordering::SeqCst;
     let a = start_daemon("Alpha", fresh_dir("a-alert"), false).await;
     let b = start_daemon("Beta", fresh_dir("b-alert"), false).await;
+    let b_id = klip_net::EndpointId::from_bytes(b.engine.node_id().as_bytes()).unwrap();
     assert!(matches!(
         pair(&a, &b, true).await,
         IpcResponse::PairSuccess { .. }
@@ -979,5 +980,18 @@ async fn an_automatic_copy_that_cannot_reach_a_device_alerts_once_per_outage() {
     assert!(wait_until(60, || a.engine.sync.sends_started.load(SeqCst) >= 3).await);
     assert!(wait_until(60, || !a.engine.sync.is_sending()).await);
     assert_eq!(*alerts.lock().unwrap(), vec!["Beta".to_string()]);
+
+    // The device comes back (nobody copies meanwhile) and goes away again: the next failed copy
+    // is a new outage and must alert again.
+    a.engine
+        .sync
+        .handle_net_event(klip_net::NetEvent::PeerConnected(b_id))
+        .await;
+    a.clipboard.user_copy("four");
+    assert!(
+        wait_until(40, || alerts.lock().unwrap().len() == 2).await,
+        "a new outage after a reconnect must alert again"
+    );
+    assert!(wait_until(60, || !a.engine.sync.is_sending()).await);
     a.stop().await;
 }

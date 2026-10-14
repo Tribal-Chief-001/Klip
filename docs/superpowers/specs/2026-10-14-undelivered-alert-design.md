@@ -31,7 +31,9 @@ for how long a device has been gone.
   a guess, and the owner should re-copy it. A grace would hide exactly the first minute after a phone
   dies. A Wi-Fi hiccup therefore alerts once, with "not connected right now" instead of a duration;
   the once-per-outage rule keeps this quiet.
-- One alert per outage: the flag is cleared when a delivery to that device succeeds.
+- One alert per outage: the flag is cleared when a delivery to that device succeeds or when the device
+  reconnects (`NetEvent::PeerConnected`), so a device that comes back and dies again alerts again even
+  if nobody copied in between (found in the final review).
 - No setting, no sound, no phone-side alert, no outage history, no macOS/Windows support, no TUI/CLI
   duration column. Each of these is cheap to add later and none is needed for the problem above.
 - No change to the IPC protocol (`PeerStatusInfo`, `ConfigInfo` stay as they are): the alert is raised
@@ -70,8 +72,8 @@ for how long a device has been gone.
 ### klip-android (`lib.rs`) and the app
 - `PeerInfo` gets `offline: Option<String>` (the `offline_label`), built from `PeerStatus::offline_for`; `KlipEngine::status()` also calls
   `core.sync.net.peer_statuses()` and matches by node id, so `PeerStatusInfo` does not change.
-- `StatusText.compute()`: when no device is online, the title and compact line append the coarse
-  duration ("5 min", "2 h"; under one minute nothing). Coarse so the notification text (and its
+- `StatusText.compute()`: when no device is online, the device line (and so the notification `key`) and
+  the compact line append the coarse duration (the title stays as it is) ("5 min", "2 h"; under one minute nothing). Coarse so the notification text (and its
   `key`) changes at most once a minute while the screen is on; the existing 8 s ticker and the
   `SCREEN_ON` refresh already update it.
 
