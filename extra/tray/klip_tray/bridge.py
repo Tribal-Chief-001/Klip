@@ -80,8 +80,18 @@ class Bridge:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+            self._close_pipes(proc)
 
     # ----------------------------------------------------------------------------- internals
+
+    @staticmethod
+    def _close_pipes(proc: subprocess.Popen) -> None:
+        for pipe in (proc.stdin, proc.stdout):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except (OSError, ValueError):
+                pass
 
     def _deliver(self, callback, reply: Reply) -> None:
         if callback is not None:
@@ -154,6 +164,7 @@ class Bridge:
             proc.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
             pass
+        self._close_pipes(proc)
         for callback, _deadline, _owner in entries:
             self._deliver(callback, Reply(err="the Klip bridge stopped unexpectedly"))
 

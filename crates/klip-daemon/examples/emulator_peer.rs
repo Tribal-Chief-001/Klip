@@ -4,7 +4,9 @@
 //!
 //!   KLIP_CONFIG_DIR=<state> cargo run -p klip-daemon --example emulator_peer -- <work-dir>
 //!
-//! - writes the pairing ticket to `<work-dir>/ticket.txt` and approves every pairing request;
+//! - writes the pairing ticket to `<work-dir>/ticket.txt` and approves every pairing request (not
+//!   with `PEER_MANUAL=1`: then it does neither, and a controller such as the tray decides);
+//! - `PEER_RELAY=lan` keeps everything on this machine; `PEER_NAME` sets the device name;
 //! - copies `<work-dir>/inject.png` or `inject.webp` to its clipboard when the file appears
 //!   (it is renamed to `*.sent`), which sends it to the paired phone;
 //! - writes every image that arrives to `<work-dir>/received-<n>.<ext>`.
@@ -28,8 +30,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         klip_crypto::identity::KeyStore::load_or_create(paths.keystore(), "EmuPeer")?;
     let clipboard = Arc::new(MemoryClipboardDriver::new(identity.node_id));
     let config = DaemonConfig {
-        device_name: "EmuPeer".into(),
-        relay: RelayMode::N0,
+        device_name: std::env::var("PEER_NAME").unwrap_or_else(|_| "EmuPeer".into()),
+        relay: if std::env::var("PEER_RELAY").as_deref() == Ok("lan") {
+            RelayMode::Lan
+        } else {
+            RelayMode::N0
+        },
         lan_discovery: false,
         ..DaemonConfig::default()
     };
@@ -39,19 +45,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = runner.run().await;
     });
 
-    let ticket = engine
-        .sync
-        .net
-        .open_pairing(Duration::from_secs(600), false)
-        .await;
-    engine.sync.mark_pairing_started(600);
-    std::fs::write(work.join("ticket.txt"), ticket.encode())?;
-    println!("ticket written to {}", work.join("ticket.txt").display());
+    let manual = std::env::var_os("PEER_MANUAL").is_some();
+    if !manual {
+        let ticket = engine
+            .sync
+            .net
+            .open_pairing(Duration::from_secs(600), false)
+            .await;
+        engine.sync.mark_pairing_started(600);
+        std::fs::write(work.join("ticket.txt"), ticket.encode())?;
+        println!("ticket written to {}", work.join("ticket.txt").display());
+    }
+    println!("ready");
 
     let mut received = 0u32;
     let mut last_seen: Option<[u8; 32]> = None;
     loop {
-        if engine.sync.poll_pairing().pending.is_some() {
+        if !manual && engine.sync.poll_pairing().pending.is_some() {
             engine.sync.decide_pairing(true);
             println!("approved a pairing request");
         }
