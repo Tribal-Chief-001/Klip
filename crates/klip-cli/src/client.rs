@@ -2,7 +2,7 @@ use klip_daemon::config::get_ipc_socket_path;
 use klip_proto::ipc::{deserialize_ipc_msg, serialize_ipc_msg, IpcRequest, IpcResponse};
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
@@ -105,13 +105,48 @@ impl DaemonClient {
                 "Klip daemon is not running. Launch it with `klip start`.".to_string(),
             ));
         }
-        let mut stream = UnixStream::connect(&self.sock).await.map_err(|_| {
+        let stream = UnixStream::connect(&self.sock).await.map_err(|_| {
             ClientError::Down(
                 "Klip daemon is not running or not responding. Launch it with `klip start`."
                     .to_string(),
             )
         })?;
+        Self::talk(stream, req, max_request_bytes).await
+    }
 
+    /// Windows: the control channel is a named pipe. A busy pipe (every instance serving someone)
+    /// is retried for a second; a missing one means the daemon is not running.
+    #[cfg(windows)]
+    async fn exchange(
+        &self,
+        req: &IpcRequest,
+        max_request_bytes: usize,
+    ) -> Result<IpcResponse, ClientError> {
+        use tokio::net::windows::named_pipe::ClientOptions;
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let mut tries = 0;
+        let stream = loop {
+            match ClientOptions::new().open(self.sock.as_os_str()) {
+                Ok(stream) => break stream,
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 20 => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(_) => return Err(ClientError::Down(
+                    "Klip daemon is not running or not responding. Launch it with `klip start`."
+                        .to_string(),
+                )),
+            }
+        };
+        Self::talk(stream, req, max_request_bytes).await
+    }
+
+    /// One framed request and its framed answer over any stream (a Unix socket, a named pipe).
+    async fn talk<S: AsyncRead + AsyncWrite + Unpin>(
+        mut stream: S,
+        req: &IpcRequest,
+        max_request_bytes: usize,
+    ) -> Result<IpcResponse, ClientError> {
         let serialized = serialize_ipc_msg(req).map_err(ClientError::Io)?;
         if serialized.len() > max_request_bytes {
             return Err(ClientError::TooLarge {
@@ -138,8 +173,9 @@ impl DaemonClient {
         Self::read_response(&mut stream).await
     }
 
-    #[cfg(unix)]
-    async fn read_response(stream: &mut UnixStream) -> Result<IpcResponse, ClientError> {
+    async fn read_response<S: AsyncRead + Unpin>(
+        stream: &mut S,
+    ) -> Result<IpcResponse, ClientError> {
         let mut resp_len_buf = [0u8; 4];
         stream
             .read_exact(&mut resp_len_buf)
@@ -159,7 +195,7 @@ impl DaemonClient {
         deserialize_ipc_msg(&resp_buf).map_err(ClientError::Io)
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     async fn exchange(
         &self,
         _req: &IpcRequest,
@@ -207,5 +243,68 @@ mod tests {
             ClientError::Timeout(15).to_string(),
             "Klip did not answer within 15 s; it may be stuck. Try `klip stop`, or stop the process."
         );
+    }
+
+    use tokio::io::duplex;
+
+    /// A stand-in for the daemon: reads one framed request, answers with `reply` (or hangs up).
+    async fn fake_daemon(mut stream: tokio::io::DuplexStream, reply: Option<IpcResponse>) {
+        let mut len = [0u8; 4];
+        stream.read_exact(&mut len).await.unwrap();
+        let mut body = vec![0u8; u32::from_be_bytes(len) as usize];
+        stream.read_exact(&mut body).await.unwrap();
+        let _ = deserialize_ipc_msg::<IpcRequest>(&body).unwrap();
+        if let Some(reply) = reply {
+            let bytes = serialize_ipc_msg(&reply).unwrap();
+            stream
+                .write_all(&(bytes.len() as u32).to_be_bytes())
+                .await
+                .unwrap();
+            stream.write_all(&bytes).await.unwrap();
+            stream.flush().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_and_its_answer_travel_over_any_stream() {
+        let (client, server) = duplex(64 * 1024);
+        let daemon = tokio::spawn(fake_daemon(server, Some(IpcResponse::Resumed)));
+        let got = DaemonClient::talk(client, &IpcRequest::Resume, 1024)
+            .await
+            .unwrap();
+        assert!(matches!(got, IpcResponse::Resumed));
+        daemon.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_request_over_the_daemons_cap_is_refused_before_a_byte_is_written() {
+        let (client, mut server) = duplex(64 * 1024);
+        let err = DaemonClient::talk(
+            client,
+            &IpcRequest::SendClip {
+                text: "x".repeat(5000),
+            },
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, ClientError::TooLarge { max: 100, .. }),
+            "{err:?}"
+        );
+        let mut rest = Vec::new();
+        server.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty(), "nothing was sent");
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_hangs_up_without_answering_is_an_error() {
+        let (client, server) = duplex(64 * 1024);
+        let daemon = tokio::spawn(fake_daemon(server, None));
+        let err = DaemonClient::talk(client, &IpcRequest::Resume, 1024)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ClientError::Io(_)), "{err:?}");
+        daemon.await.unwrap();
     }
 }

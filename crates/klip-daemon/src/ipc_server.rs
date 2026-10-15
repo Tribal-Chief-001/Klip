@@ -10,9 +10,9 @@ use klip_proto::ipc::{
 };
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 #[cfg(unix)]
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixListener;
 use tokio::time::timeout;
 
 const IPC_IO_TIMEOUT: Duration = Duration::from_secs(10);
@@ -65,12 +65,10 @@ impl IpcServer {
         let _ = std::fs::remove_file(self.sync.paths.ipc_socket());
     }
 
-    #[cfg(unix)]
-    async fn handle_client(
-        mut stream: UnixStream,
-        sync: Arc<SyncCoordinator>,
-        shutdown: Arc<Shutdown>,
-    ) {
+    async fn handle_client<S>(mut stream: S, sync: Arc<SyncCoordinator>, shutdown: Arc<Shutdown>)
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         let cap = max_request_bytes(sync.config.max_clip_bytes);
         let request = match timeout(IPC_IO_TIMEOUT, Self::read_request(&mut stream, cap)).await {
             Ok(Ok(req)) => req,
@@ -84,8 +82,10 @@ impl IpcServer {
         let _ = timeout(IPC_IO_TIMEOUT, Self::send_response(&mut stream, &response)).await;
     }
 
-    #[cfg(unix)]
-    async fn read_request(stream: &mut UnixStream, cap: usize) -> Result<IpcRequest, String> {
+    async fn read_request<S: AsyncRead + Unpin>(
+        stream: &mut S,
+        cap: usize,
+    ) -> Result<IpcRequest, String> {
         let mut len_buf = [0u8; 4];
         stream
             .read_exact(&mut len_buf)
@@ -314,9 +314,8 @@ impl IpcServer {
         }
     }
 
-    #[cfg(unix)]
-    async fn send_response(
-        stream: &mut UnixStream,
+    async fn send_response<S: AsyncWrite + Unpin>(
+        stream: &mut S,
         resp: &IpcResponse,
     ) -> Result<(), std::io::Error> {
         let serialized = serialize_ipc_msg(resp).map_err(std::io::Error::other)?;
@@ -344,4 +343,65 @@ fn get_process_rss_bytes() -> u64 {
         }
     }
     0
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+    use tokio::io::{duplex, AsyncWriteExt};
+
+    async fn read_from(bytes: Vec<u8>, cap: usize) -> Result<IpcRequest, String> {
+        let (mut client, mut server) = duplex(64 * 1024);
+        client.write_all(&bytes).await.unwrap();
+        drop(client); // the end of the stream
+        IpcServer::read_request(&mut server, cap).await
+    }
+
+    fn frame(req: &IpcRequest) -> Vec<u8> {
+        let body = serialize_ipc_msg(req).unwrap();
+        let mut out = (body.len() as u32).to_be_bytes().to_vec();
+        out.extend(body);
+        out
+    }
+
+    #[tokio::test]
+    async fn a_request_is_read_from_any_stream_not_only_a_unix_socket() {
+        let got = read_from(frame(&IpcRequest::GetStatus), 1024)
+            .await
+            .unwrap();
+        assert!(matches!(got, IpcRequest::GetStatus));
+    }
+
+    #[tokio::test]
+    async fn a_request_over_the_cap_is_refused_before_it_is_read() {
+        let mut bytes = (10_000_000u32).to_be_bytes().to_vec();
+        bytes.extend([1, 2, 3]);
+        let err = read_from(bytes, 1024).await.unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_request_that_ends_early_is_an_error_not_a_hang() {
+        let mut bytes = (100u32).to_be_bytes().to_vec();
+        bytes.extend([7; 10]);
+        let err = read_from(bytes, 1024).await.unwrap_err();
+        assert!(err.contains("ended before"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_response_is_written_as_length_then_body_to_any_stream() {
+        let (mut client, mut server) = duplex(64 * 1024);
+        IpcServer::send_response(&mut server, &IpcResponse::Resumed)
+            .await
+            .unwrap();
+        drop(server);
+        let mut got = Vec::new();
+        client.read_to_end(&mut got).await.unwrap();
+        let len = u32::from_be_bytes(got[..4].try_into().unwrap()) as usize;
+        assert_eq!(len, got.len() - 4);
+        assert!(matches!(
+            deserialize_ipc_msg::<IpcResponse>(&got[4..]).unwrap(),
+            IpcResponse::Resumed
+        ));
+    }
 }

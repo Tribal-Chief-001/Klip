@@ -25,6 +25,14 @@ impl KlipPaths {
     /// Control socket path. Unix socket paths are limited to ~108 bytes, so a very deep config
     /// directory falls back to a short, stable path derived from it.
     pub fn ipc_socket(&self) -> PathBuf {
+        #[cfg(windows)]
+        return PathBuf::from(self.ipc_pipe_name());
+        #[cfg(not(windows))]
+        self.ipc_socket_path()
+    }
+
+    #[cfg(not(windows))]
+    fn ipc_socket_path(&self) -> PathBuf {
         let preferred = self.dir.join("daemon.sock");
         if preferred.as_os_str().len() < MAX_SOCKET_PATH_BYTES {
             return preferred;
@@ -40,9 +48,20 @@ impl KlipPaths {
     pub fn config_file(&self) -> PathBuf {
         self.dir.join("config.json")
     }
+
+    /// The Windows control channel: a named pipe whose name comes from the Klip directory, so two
+    /// configurations (or two users) never share one, and the CLI and the daemon always agree.
+    /// Windows paths are case-insensitive, so the directory is lower-cased there.
+    pub fn ipc_pipe_name(&self) -> String {
+        let dir = self.dir.to_string_lossy();
+        #[cfg(windows)]
+        let dir = dir.to_lowercase();
+        format!(r"\\.\pipe\klip-{:016x}", fnv1a(dir.as_bytes()))
+    }
 }
 
 /// Conservative bound below the platform `sun_path` limit (104 on macOS/BSD, 108 on Linux).
+#[cfg(not(windows))]
 const MAX_SOCKET_PATH_BYTES: usize = 100;
 
 /// FNV-1a: tiny and, unlike `DefaultHasher`, guaranteed identical across builds, so the CLI and the
@@ -153,6 +172,23 @@ fn default_device_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_windows_pipe_name_is_stable_per_directory_and_differs_between_directories() {
+        use super::*;
+        let dir =
+            |n: &str| std::env::temp_dir().join(format!("klip-pipe-{}-{n}", std::process::id()));
+        let (a, a2, b) = (
+            KlipPaths::from_dir(dir("a")),
+            KlipPaths::from_dir(dir("a")),
+            KlipPaths::from_dir(dir("b")),
+        );
+        assert_eq!(a.ipc_pipe_name(), a2.ipc_pipe_name());
+        assert_ne!(a.ipc_pipe_name(), b.ipc_pipe_name());
+        let name = a.ipc_pipe_name();
+        let hex = name.strip_prefix(r"\\.\pipe\klip-").expect(&name);
+        assert_eq!(hex.len(), 16, "{name}");
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+    }
     use super::*;
 
     fn tmp(tag: &str) -> KlipPaths {
