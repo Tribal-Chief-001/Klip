@@ -2,6 +2,7 @@
 //!
 //! The icon is a StatusNotifierItem on D-Bus (the `ksni` crate): the panel draws it and its menu. The
 //! tray talks to the daemon in this process with the same client the terminal commands use.
+pub mod autostart;
 pub mod icons;
 pub mod model;
 pub mod raster;
@@ -14,8 +15,6 @@ use std::io;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-
-const MARKER: &str = "# Created by `klip tray install`; `klip tray uninstall` removes it.";
 
 /// `current_exe` says "/path/klip (deleted)" after the file was replaced while it runs (an upgrade):
 /// the program is at the path without the note.
@@ -31,87 +30,15 @@ pub fn exe_path() -> io::Result<PathBuf> {
     std::env::current_exe().map(|p| clean_exe(&p))
 }
 
-fn home() -> Option<PathBuf> {
+pub(super) fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
+pub(super) fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
     match std::env::var_os(var) {
         Some(p) if !p.is_empty() => Some(PathBuf::from(p)),
         _ => home().map(|h| h.join(fallback)),
     }
-}
-
-/// The start-at-login entry: `~/.config/autostart/klip-tray.desktop`.
-pub fn autostart_path() -> Option<PathBuf> {
-    xdg("XDG_CONFIG_HOME", ".config").map(|d| d.join("autostart/klip-tray.desktop"))
-}
-
-/// The text of the start-at-login entry for the klip program at `exe`.
-pub fn desktop_entry(exe: &str) -> Result<String, String> {
-    if exe
-        .chars()
-        .any(|c| matches!(c, '"' | '`' | '$' | '\\' | '\n' | '\r' | '%'))
-    {
-        return Err(
-            "the path to klip has characters a desktop entry cannot hold safely; \
-                    put klip in a plainer path"
-                .to_string(),
-        );
-    }
-    let program = if exe
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "/._+-".contains(c))
-    {
-        exe.to_string()
-    } else {
-        format!("\"{exe}\"")
-    };
-    Ok(format!(
-        "{MARKER}\n[Desktop Entry]\nType=Application\nName=Klip tray\nComment=Clipboard sync between your \
-         devices: tray icon\nExec={program} tray run\nTerminal=false\nX-GNOME-Autostart-enabled=true\n\
-         X-GNOME-Autostart-Delay=3\nNoDisplay=true\n"
-    ))
-}
-
-pub fn install_autostart(path: &Path, exe: &str) -> Result<(), String> {
-    let entry = desktop_entry(exe)?;
-    match fs::read_to_string(path) {
-        Ok(existing) if existing.starts_with(MARKER) => {}
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-        _ => {
-            return Err(format!(
-                "{} already exists and was not made by klip; not touching it",
-                path.display()
-            ))
-        }
-    }
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    let tmp = path.with_extension(format!("desktop.{}.tmp", std::process::id()));
-    fs::write(&tmp, entry)
-        .and_then(|()| fs::rename(&tmp, path))
-        .map_err(|e| format!("{}: {e}", path.display()))
-}
-
-/// Remove the entry if klip made it. `Ok(false)`: there was nothing to remove.
-pub fn uninstall_autostart(path: &Path) -> Result<bool, String> {
-    match fs::read_to_string(path) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-        Ok(text) if !text.starts_with(MARKER) => Err(format!(
-            "{} was not made by klip; not removing it",
-            path.display()
-        )),
-        Ok(_) => fs::remove_file(path)
-            .map(|()| true)
-            .map_err(|e| format!("{}: {e}", path.display())),
-    }
-}
-
-pub fn autostart_installed(path: &Path) -> bool {
-    fs::read_to_string(path).is_ok_and(|t| t.starts_with(MARKER))
 }
 
 /// Where the Python tray of v0.6.0 kept its files: `~/.local/share/klip/tray`.
@@ -275,67 +202,6 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
-    }
-
-    #[test]
-    fn the_start_at_login_entry_runs_the_tray_and_quotes_awkward_paths() {
-        let plain = desktop_entry("/home/me/.local/bin/klip").unwrap();
-        assert!(plain.starts_with(MARKER));
-        assert!(
-            plain.contains("Exec=/home/me/.local/bin/klip tray run\n"),
-            "{plain}"
-        );
-        assert!(plain.contains("X-GNOME-Autostart-enabled=true"));
-        let spaced = desktop_entry("/home/me/My Tools/klip").unwrap();
-        assert!(
-            spaced.contains("Exec=\"/home/me/My Tools/klip\" tray run\n"),
-            "{spaced}"
-        );
-        for bad in [
-            "/a\"b/klip",
-            "/a$b/klip",
-            "/a`b/klip",
-            "/a\\b/klip",
-            "/a\nb/klip",
-        ] {
-            assert!(desktop_entry(bad).is_err(), "{bad:?}");
-        }
-    }
-
-    #[test]
-    fn a_replaced_binary_is_not_written_into_the_entry_as_deleted() {
-        assert_eq!(
-            clean_exe(Path::new("/usr/bin/klip (deleted)")),
-            PathBuf::from("/usr/bin/klip")
-        );
-        assert_eq!(
-            clean_exe(Path::new("/usr/bin/klip")),
-            PathBuf::from("/usr/bin/klip")
-        );
-    }
-
-    #[test]
-    fn start_at_login_installs_and_removes_only_a_file_klip_made() {
-        let dir = temp("autostart");
-        let path = dir.join("autostart/klip-tray.desktop");
-        assert!(!autostart_installed(&path));
-        assert_eq!(uninstall_autostart(&path), Ok(false));
-        install_autostart(&path, "/usr/bin/klip").unwrap();
-        assert!(autostart_installed(&path));
-        install_autostart(&path, "/opt/klip/klip").unwrap(); // reinstalling updates it
-        assert!(fs::read_to_string(&path)
-            .unwrap()
-            .contains("/opt/klip/klip"));
-        assert_eq!(uninstall_autostart(&path), Ok(true));
-        assert!(!path.exists());
-
-        fs::write(&path, "[Desktop Entry]\nName=Somebody else's\n").unwrap();
-        assert!(install_autostart(&path, "/usr/bin/klip").is_err());
-        assert!(uninstall_autostart(&path).is_err());
-        assert!(
-            fs::read_to_string(&path).unwrap().contains("Somebody else"),
-            "a foreign file is never touched"
-        );
     }
 
     #[test]

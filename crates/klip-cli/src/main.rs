@@ -251,7 +251,6 @@ fn print_image_state(state: &klip_proto::ipc::ImageStateInfo) {
 #[cfg(target_os = "linux")]
 async fn tray_command(action: TrayAction) -> AnyResult<()> {
     use klip_cli::tray;
-    let entry = tray::autostart_path().ok_or("cannot find your home directory")?;
     match action {
         TrayAction::Start => {
             let pid = tray::start_detached()?;
@@ -260,15 +259,14 @@ async fn tray_command(action: TrayAction) -> AnyResult<()> {
         TrayAction::Run => tray::run().await?,
         TrayAction::Install => {
             let exe = tray::exe_path()?;
-            tray::install_autostart(&entry, &exe.to_string_lossy())?;
+            let place = tray::autostart::install(&exe.to_string_lossy())?;
             println!(
-                "{} The tray will start when you log in ({}).",
-                "✓".green().bold(),
-                entry.display()
+                "{} The tray will start when you log in ({place}).",
+                "✓".green().bold()
             );
         }
         TrayAction::Uninstall => {
-            if tray::uninstall_autostart(&entry)? {
+            if tray::autostart::uninstall()? {
                 println!(
                     "{} The tray will no longer start at login.",
                     "✓".green().bold()
@@ -288,7 +286,7 @@ async fn tray_command(action: TrayAction) -> AnyResult<()> {
             );
             println!(
                 "Start at login: {}",
-                if tray::autostart_installed(&entry) {
+                if tray::autostart::installed() {
                     "yes"
                 } else {
                     "no"
