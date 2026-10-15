@@ -296,6 +296,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_terminal_is_found_by_name_on_the_path_and_only_if_executable() {
         use std::os::unix::fs::PermissionsExt;
