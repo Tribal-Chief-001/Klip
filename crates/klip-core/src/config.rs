@@ -197,6 +197,7 @@ mod tests {
         KlipPaths::from_dir(d)
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn deep_config_dirs_get_a_short_stable_socket_path() {
         let short = KlipPaths::from_dir(
