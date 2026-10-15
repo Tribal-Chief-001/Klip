@@ -4,6 +4,7 @@
 //! tray talks to the daemon in this process with the same client the terminal commands use.
 pub mod icons;
 pub mod model;
+pub mod raster;
 
 pub mod controller;
 mod linux;

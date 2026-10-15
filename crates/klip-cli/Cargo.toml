@@ -30,6 +30,9 @@ ksni = "0.3"
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
+[dev-dependencies]
+image = { workspace = true }
+
 [target.'cfg(unix)'.dev-dependencies]
 klip-tui = { workspace = true, features = ["testkit"] }
 crossterm = { workspace = true }

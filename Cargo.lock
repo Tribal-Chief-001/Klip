@@ -2315,6 +2315,7 @@ dependencies = [
  "async-trait",
  "clap",
  "crossterm",
+ "image",
  "klip-crypto",
  "klip-daemon",
  "klip-platform",
