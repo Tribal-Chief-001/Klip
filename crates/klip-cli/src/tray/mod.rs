@@ -5,7 +5,8 @@
 pub mod icons;
 pub mod model;
 
-mod app;
+pub mod controller;
+mod linux;
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -261,7 +262,7 @@ pub async fn run() -> Result<(), String> {
     if let Some(old) = legacy_python_dir() {
         remove_legacy_python_files(&old);
     }
-    app::run().await
+    linux::run().await
 }
 
 #[cfg(test)]

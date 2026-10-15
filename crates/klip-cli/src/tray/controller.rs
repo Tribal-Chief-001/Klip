@@ -1,155 +1,43 @@
-//! The tray on D-Bus: the icon, its menu, and the loop that keeps it true to the daemon.
-use super::icons;
-use super::model::{menu_plan, summarize, Action, Entry, Summary};
+//! The tray's brain, with no window system in it: polling, the daemon calls behind every menu action,
+//! one run per action at a time, and the problem line. A platform shows what it sends (`Out`) and
+//! forwards clicks (`Cmd`); nothing here knows about D-Bus, AppKit or Win32.
+use super::model::{summarize, Action, Summary};
 use crate::api::IpcDaemonApi;
 use crate::client::{ClientError, DaemonClient, OLD_DAEMON_REQUEST_CAP};
 use klip_daemon::config::user_paths;
 use klip_proto::ipc::{IpcRequest, IpcResponse};
 use klip_tui::api::DaemonApi;
 use klip_tui::files::ServiceState;
-use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
-use ksni::{MenuItem, OfflineReason, ToolTip, Tray, TrayMethods};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
-/// How often the picture is renewed when nothing happens (it is also renewed when the menu opens).
+/// How often the picture is renewed when nothing happens (a platform also asks when its menu opens).
 const POLL: Duration = Duration::from_secs(15);
-/// With no panel to hold the icon after this long, say so once (`KLIP_TRAY_HOST_WAIT_SECS` for tests).
-fn host_wait() -> Duration {
-    let secs = std::env::var("KLIP_TRAY_HOST_WAIT_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(30);
-    Duration::from_secs(secs)
-}
+/// How long a failed action stays as the first line of the menu.
+const PROBLEM_FOR: Duration = Duration::from_secs(30);
 
-enum Cmd {
+/// What a platform asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cmd {
+    /// Renew the picture now (the menu is opening).
     Refresh,
     Do(Action),
-    /// A finished action (so the same one can be started again).
-    Done(Action),
-    /// A finished poll; `None` = the daemon did not give a usable answer (keep what is shown).
+}
+
+/// What a platform shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Out {
+    /// The picture changed (it already carries the problem line).
+    Summary(Summary),
+    /// An action failed: a platform with notifications says it once.
+    Problem(String),
+}
+
+enum Event {
+    Done(Action, Result<(), String>),
     Fetched(Option<Summary>),
-}
-
-struct KlipTray {
-    summary: Summary,
-    tx: UnboundedSender<Cmd>,
-    /// The panel's watcher is not there (set when registering fails or it disappears).
-    host_missing: Arc<AtomicBool>,
-}
-
-/// `_` marks an access key in a D-Bus menu label; a device name may contain one.
-fn label(text: &str) -> String {
-    text.replace('_', "__")
-}
-
-impl KlipTray {
-    fn entry(&self, e: &Entry) -> MenuItem<Self> {
-        match e {
-            Entry::Separator => MenuItem::Separator,
-            Entry::Label(text) => StandardItem {
-                label: label(text),
-                enabled: false,
-                ..Default::default()
-            }
-            .into(),
-            Entry::Item {
-                label: text,
-                enabled,
-                action,
-            } => {
-                let action = *action;
-                StandardItem {
-                    label: label(text),
-                    enabled: *enabled,
-                    activate: Box::new(move |t: &mut Self| {
-                        let _ = t.tx.send(Cmd::Do(action));
-                    }),
-                    ..Default::default()
-                }
-                .into()
-            }
-            Entry::Check {
-                label: text,
-                checked,
-                action,
-            } => {
-                let action = *action;
-                CheckmarkItem {
-                    label: label(text),
-                    checked: *checked,
-                    activate: Box::new(move |t: &mut Self| {
-                        let _ = t.tx.send(Cmd::Do(action));
-                    }),
-                    ..Default::default()
-                }
-                .into()
-            }
-            Entry::Submenu { label: text, items } => SubMenu {
-                label: label(text),
-                submenu: items.iter().map(|i| self.entry(i)).collect(),
-                ..Default::default()
-            }
-            .into(),
-        }
-    }
-}
-
-impl Tray for KlipTray {
-    /// A left click opens the same menu as a right click.
-    const MENU_ON_ACTIVATE: bool = true;
-
-    fn id(&self) -> String {
-        "klip".into()
-    }
-
-    fn title(&self) -> String {
-        "Klip".into()
-    }
-
-    fn icon_name(&self) -> String {
-        icons::name_for(self.summary.state, self.summary.badge)
-    }
-
-    fn tool_tip(&self) -> ToolTip {
-        ToolTip {
-            title: self.summary.title.clone(),
-            description: self.summary.tooltip_body(),
-            icon_name: String::new(),
-            icon_pixmap: Vec::new(),
-        }
-    }
-
-    /// A middle click sends the waiting image.
-    fn secondary_activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.tx.send(Cmd::Do(Action::SendImage));
-    }
-
-    /// The picture is renewed as the menu opens.
-    fn menu_about_to_show(&mut self) {
-        let _ = self.tx.send(Cmd::Refresh);
-    }
-
-    fn menu(&self) -> Vec<MenuItem<Self>> {
-        menu_plan(&self.summary)
-            .iter()
-            .map(|e| self.entry(e))
-            .collect()
-    }
-
-    fn watcher_online(&self) {
-        self.host_missing.store(false, Ordering::SeqCst);
-    }
-
-    fn watcher_offline(&self, _reason: OfflineReason) -> bool {
-        self.host_missing.store(true, Ordering::SeqCst);
-        true // keep waiting: the panel may start after us
-    }
 }
 
 /// The daemon's answers as one picture. `Some(stopped)` when nobody listens; `None` when the daemon
@@ -290,49 +178,24 @@ async fn stop_signal() {
     }
 }
 
-fn spawn_fetch(tx: &UnboundedSender<Cmd>) {
-    let tx = tx.clone();
+fn spawn_fetch(events: &UnboundedSender<Event>) {
+    let events = events.clone();
     tokio::spawn(async move {
-        let _ = tx.send(Cmd::Fetched(fetch(&DaemonClient::for_current_user()).await));
+        let _ = events.send(Event::Fetched(
+            fetch(&DaemonClient::for_current_user()).await,
+        ));
     });
 }
 
-pub async fn run() -> Result<(), String> {
-    let data_home = std::env::var_os("XDG_DATA_HOME")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .ok_or("cannot find your home directory")?;
-    if let Err(e) = icons::install(&data_home) {
-        eprintln!("cannot write the tray icons: {e}");
-    }
-    let (tx, mut rx) = unbounded_channel();
-    let host_missing = Arc::new(AtomicBool::new(false));
-    let tray = KlipTray {
-        summary: Summary::stopped(),
-        tx: tx.clone(),
-        host_missing: host_missing.clone(),
-    };
-    // Wait for the panel's watcher instead of failing when it starts after us (at login).
-    let handle = tray
-        .assume_sni_available(true)
-        .spawn()
-        .await
-        .map_err(|e| format!("cannot show the tray icon: {e}"))?;
-
-    tokio::spawn(async move {
-        tokio::time::sleep(host_wait()).await;
-        if host_missing.load(Ordering::SeqCst) {
-            klip_daemon::notify::say(
-                "There is no system tray to show the Klip icon. Use the terminal app: klip",
-            );
-        }
-    });
-
-    let mut shown = Summary::stopped();
+/// Run until `Do(Quit)`, a stop signal, the command channel closing, or the output channel closing.
+pub async fn run(mut cmds: UnboundedReceiver<Cmd>, out: UnboundedSender<Out>) {
+    let (events, mut inbox) = unbounded_channel::<Event>();
+    let mut base = Summary::stopped();
+    let mut have_picture = false;
+    let mut problem: Option<(String, Instant)> = None;
+    let mut last: Option<Summary> = None;
     let mut running: HashSet<Action> = HashSet::new();
-    let mut fetching = true;
-    spawn_fetch(&tx);
+    let mut fetching = false;
     let mut tick = tokio::time::interval(POLL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let stop = stop_signal();
@@ -342,33 +205,37 @@ pub async fn run() -> Result<(), String> {
         tokio::select! {
             _ = tick.tick() => refresh = true,
             _ = &mut stop => break,
-            cmd = rx.recv() => match cmd {
+            cmd = cmds.recv() => match cmd {
                 None | Some(Cmd::Do(Action::Quit)) => break,
                 Some(Cmd::Refresh) => refresh = true,
-                Some(Cmd::Done(action)) => {
-                    running.remove(&action);
-                    refresh = true;
-                }
                 // The same action twice (a double click) runs once.
                 Some(Cmd::Do(action)) => {
                     if running.insert(action) {
-                        let done = tx.clone();
+                        let events = events.clone();
                         tokio::spawn(async move {
                             let client = DaemonClient::for_current_user();
-                            if let Err(text) = perform(&client, action).await {
-                                klip_daemon::notify::say(&text);
-                            }
-                            let _ = done.send(Cmd::Done(action));
+                            let _ = events.send(Event::Done(action, perform(&client, action).await));
                         });
                     }
                 }
-                Some(Cmd::Fetched(now)) => {
-                    fetching = false;
-                    if let Some(now) = now.filter(|n| *n != shown) {
-                        shown = now.clone();
-                        if handle.update(move |t| t.summary = now).await.is_none() {
-                            break; // the service is gone
+            },
+            event = inbox.recv() => match event {
+                None => break,
+                Some(Event::Done(action, result)) => {
+                    running.remove(&action);
+                    if let Err(text) = result {
+                        problem = Some((text.clone(), Instant::now()));
+                        if out.send(Out::Problem(text)).is_err() {
+                            break;
                         }
+                    }
+                    refresh = true;
+                }
+                Some(Event::Fetched(picture)) => {
+                    fetching = false;
+                    if let Some(picture) = picture {
+                        base = picture;
+                        have_picture = true;
                     }
                 }
             },
@@ -376,21 +243,30 @@ pub async fn run() -> Result<(), String> {
         // A poll never waits for another one, and never blocks a click or Quit.
         if refresh && !fetching {
             fetching = true;
-            spawn_fetch(&tx);
+            spawn_fetch(&events);
+        }
+        if problem
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() > PROBLEM_FOR)
+        {
+            problem = None;
+        }
+        if have_picture {
+            let mut view = base.clone();
+            view.problem = problem.as_ref().map(|(text, _)| text.clone());
+            if last.as_ref() != Some(&view) {
+                if out.send(Out::Summary(view.clone())).is_err() {
+                    break;
+                }
+                last = Some(view);
+            }
         }
     }
-    let _ = handle.shutdown().await;
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn underscores_in_a_label_are_not_access_keys() {
-        assert_eq!(label("Vivo_V2253 and Pad"), "Vivo__V2253 and Pad");
-    }
 
     #[test]
     fn a_send_is_a_problem_only_when_nobody_got_it_or_somebody_did_not() {

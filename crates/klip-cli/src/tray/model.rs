@@ -47,6 +47,9 @@ pub struct Summary {
     pub auto_images: bool,
     /// The daemon answered the image question (an older one does not).
     pub images_known: bool,
+    /// The last action that failed, shown as the first line of the menu for a while (set by the
+    /// controller; the platforms without desktop notifications rely on it).
+    pub problem: Option<String>,
 }
 
 impl Summary {
@@ -60,6 +63,7 @@ impl Summary {
             image: None,
             auto_images: false,
             images_known: false,
+            problem: None,
         }
     }
 
@@ -169,6 +173,7 @@ pub fn summarize(status: Option<&DaemonStatusInfo>, images: Option<&ImageStateIn
         image,
         auto_images,
         images_known: images.is_some(),
+        problem: None,
     }
 }
 
@@ -181,6 +186,39 @@ pub enum Action {
     Resume,
     OpenTerminal,
     Quit,
+}
+
+impl Action {
+    /// The menu id a platform stores on an item and gives back on a click.
+    pub fn id(&self) -> String {
+        match self {
+            Self::Start => "start".into(),
+            Self::SendImage => "send".into(),
+            Self::SetAuto(on) => format!("auto:{}", u8::from(*on)),
+            Self::Pause(secs) => format!("pause:{secs}"),
+            Self::Resume => "resume".into(),
+            Self::OpenTerminal => "terminal".into(),
+            Self::Quit => "quit".into(),
+        }
+    }
+
+    /// The action behind a menu id; anything else (a stale or foreign id) is `None`.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "start" => Some(Self::Start),
+            "send" => Some(Self::SendImage),
+            "auto:1" => Some(Self::SetAuto(true)),
+            "auto:0" => Some(Self::SetAuto(false)),
+            "resume" => Some(Self::Resume),
+            "terminal" => Some(Self::OpenTerminal),
+            "quit" => Some(Self::Quit),
+            _ => id
+                .strip_prefix("pause:")
+                .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                .and_then(|n| n.parse().ok())
+                .map(Self::Pause),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,7 +254,12 @@ fn item(label: &str, action: Action) -> Entry {
 pub fn menu_plan(s: &Summary) -> Vec<Entry> {
     let stopped = s.state == State::Stopped;
     let paused = s.state == State::Paused;
-    let mut menu = vec![Entry::Label(s.title.clone()), Entry::Separator];
+    let mut menu = Vec::new();
+    if let Some(problem) = &s.problem {
+        menu.push(Entry::Label(format!("\u{26a0} {problem}")));
+    }
+    menu.push(Entry::Label(s.title.clone()));
+    menu.push(Entry::Separator);
     if stopped {
         menu.push(item("Start Klip", Action::Start));
     } else {
@@ -479,6 +522,46 @@ mod tests {
         let l = labels(&menu_plan(&summarize(Some(&st), None)));
         assert!(!l.iter().any(|x| x.contains("image")));
         assert!(l.contains(&"Pause syncing >".to_string()));
+    }
+
+    #[test]
+    fn every_action_survives_a_round_trip_through_its_menu_id() {
+        let all = [
+            Action::Start,
+            Action::SendImage,
+            Action::SetAuto(true),
+            Action::SetAuto(false),
+            Action::Pause(600),
+            Action::Pause(315_360_000),
+            Action::Resume,
+            Action::OpenTerminal,
+            Action::Quit,
+        ];
+        for a in all {
+            assert_eq!(Action::from_id(&a.id()), Some(a), "{a:?} via {:?}", a.id());
+        }
+        let ids: std::collections::HashSet<String> = all.iter().map(|a| a.id()).collect();
+        assert_eq!(ids.len(), all.len(), "ids are unique");
+    }
+
+    #[test]
+    fn a_menu_id_that_is_not_ours_is_ignored() {
+        for junk in [
+            "", "pause:", "pause:x", "pause:-1", "auto:2", "auto", "send ", "rm -rf /", "quit\n",
+        ] {
+            assert_eq!(Action::from_id(junk), None, "{junk:?}");
+        }
+    }
+
+    #[test]
+    fn a_problem_is_the_first_line_of_the_menu() {
+        let mut s = Summary::stopped();
+        s.problem = Some("boom".into());
+        let plan = menu_plan(&s);
+        assert_eq!(plan[0], Entry::Label("\u{26a0} boom".into()));
+        assert_eq!(plan[1], Entry::Label(s.title.clone()));
+        s.problem = None;
+        assert_eq!(menu_plan(&s)[0], Entry::Label(s.title.clone()));
     }
 
     #[test]
