@@ -161,3 +161,41 @@ jobs:
           fi
           cat "$RUNNER_TEMP/tray.log"
           if grep -qi "panicked" "$RUNNER_TEMP/tray.log"; then echo "the tray panicked"; exit 1; fi
+
+      - name: Login entry (Windows registry Run key)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $klip = (Resolve-Path .\target\debug\klip.exe).Path
+          & $klip tray status
+          & $klip tray install
+          if ($LASTEXITCODE -ne 0) { throw "tray install failed" }
+          reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v KlipTray
+          if ($LASTEXITCODE -ne 0) { throw "the Run value was not written" }
+          $status = (& $klip tray status) -join "`n"
+          Write-Host $status
+          if ($status -notmatch "Start at login: yes") { throw "status does not see the entry" }
+          & $klip tray uninstall
+          if ($LASTEXITCODE -ne 0) { throw "tray uninstall failed" }
+          $status = (& $klip tray status) -join "`n"
+          if ($status -notmatch "Start at login: no") { throw "the entry is still there" }
+
+      - name: Tray smoke start (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:KLIP_CONFIG_DIR = "$env:RUNNER_TEMP\klip-smoke"
+          $env:KLIP_CLIPBOARD = "memory"
+          New-Item -ItemType Directory -Force $env:KLIP_CONFIG_DIR | Out-Null
+          $p = Start-Process -FilePath ".\target\debug\klip.exe" -ArgumentList "tray","run" -PassThru -WindowStyle Hidden `
+               -RedirectStandardOutput "$env:RUNNER_TEMP\tray.out" -RedirectStandardError "$env:RUNNER_TEMP\tray.err"
+          Start-Sleep -Seconds 10
+          if (-not $p.HasExited) {
+            $p.Refresh()
+            Write-Host "tray is running, pid $($p.Id), working set (KiB): $([int]($p.WorkingSet64 / 1KB))"
+            Stop-Process -Id $p.Id -Force
+          } else {
+            Write-Host "tray exited early with code $($p.ExitCode)"
+          }
+          Get-Content "$env:RUNNER_TEMP\tray.out", "$env:RUNNER_TEMP\tray.err" -ErrorAction SilentlyContinue
+          if ((Get-Content "$env:RUNNER_TEMP\tray.err" -Raw -ErrorAction SilentlyContinue) -match "panicked") { throw "the tray panicked" }
