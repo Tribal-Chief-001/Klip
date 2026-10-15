@@ -27,6 +27,11 @@ async-trait = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.3"
 
+# The menu-bar / notification-area tray: only built on the platforms that use it.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tray-icon = { version = "0.26", default-features = false }
+tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 

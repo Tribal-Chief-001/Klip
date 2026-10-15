@@ -1,6 +1,6 @@
 //! `klip tray install|uninstall|status|start`, with HOME and XDG_CONFIG_HOME pointed at a temp
 //! directory (the real login entries are never touched).
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -30,8 +30,13 @@ impl Env {
         self.command().args(args).output().unwrap()
     }
 
+    /// Where this OS keeps the login entry.
     fn entry(&self) -> PathBuf {
-        self.home.join(".config/autostart/klip-tray.desktop")
+        if cfg!(target_os = "macos") {
+            self.home.join("Library/LaunchAgents/com.klip.tray.plist")
+        } else {
+            self.home.join(".config/autostart/klip-tray.desktop")
+        }
     }
 }
 
@@ -55,10 +60,13 @@ fn install_uninstall_and_status_manage_only_the_login_entry() {
     let out = e.run(&["tray", "install"]);
     assert!(out.status.success(), "{}", text(&out));
     let entry = std::fs::read_to_string(e.entry()).unwrap();
-    assert!(
-        entry.contains(&format!("Exec={} tray run", env!("CARGO_BIN_EXE_klip"))),
-        "{entry}"
-    );
+    let exe = env!("CARGO_BIN_EXE_klip");
+    let wanted = if cfg!(target_os = "macos") {
+        format!("<string>{exe}</string><string>tray</string><string>run</string>")
+    } else {
+        format!("Exec={exe} tray run")
+    };
+    assert!(entry.contains(&wanted), "{entry}");
     assert!(text(&e.run(&["tray", "status"])).contains("Start at login: yes"));
 
     let out = e.run(&["tray", "uninstall"]);
@@ -74,7 +82,7 @@ fn install_uninstall_and_status_manage_only_the_login_entry() {
 fn a_foreign_entry_with_the_same_name_is_refused_and_left_alone() {
     let e = Env::new("foreign");
     std::fs::create_dir_all(e.entry().parent().unwrap()).unwrap();
-    std::fs::write(e.entry(), "[Desktop Entry]\nName=Mine\n").unwrap();
+    std::fs::write(e.entry(), "Somebody else's entry: Name=Mine\n").unwrap();
     let out = e.run(&["tray", "install"]);
     assert!(!out.status.success());
     assert!(text(&out).contains("not made by klip"), "{}", text(&out));

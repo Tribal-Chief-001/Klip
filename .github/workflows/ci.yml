@@ -2,7 +2,7 @@ name: CI & Hardening Matrix
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "platforms" ]
   pull_request:
     branches: [ "main" ]
 
@@ -101,3 +101,55 @@ jobs:
       # Proves the workspace compiles on these OSes. It does NOT prove clipboard behaviour there.
       - name: cargo check (all targets)
         run: cargo check --workspace --all-targets
+
+  # The only place macOS and Windows code runs. It proves what a runner can prove (the tests that
+  # run on every OS, the tray starting without a crash) and prints the tray's memory; it does not
+  # prove how anything looks in a real menu bar or notification area.
+  platform-tests:
+    name: Platform tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
+
+      - name: Build klip
+        run: cargo build --bin klip
+
+      - name: Tray unit and command tests
+        run: cargo test -p klip-cli --lib --test tray_cli --test tray_controller
+
+      - name: Tray smoke start (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          export KLIP_CONFIG_DIR="$RUNNER_TEMP/klip-smoke" KLIP_CLIPBOARD=memory
+          mkdir -p "$KLIP_CONFIG_DIR"
+          ./target/debug/klip tray run > "$RUNNER_TEMP/tray.log" 2>&1 &
+          PID=$!
+          sleep 10
+          if kill -0 $PID 2>/dev/null; then
+            echo "tray is running, pid $PID, rss (KiB): $(ps -o rss= -p $PID)"
+            kill $PID
+          else
+            echo "tray exited early:"; cat "$RUNNER_TEMP/tray.log"
+          fi
+          cat "$RUNNER_TEMP/tray.log"
+          if grep -qi "panicked" "$RUNNER_TEMP/tray.log"; then echo "the tray panicked"; exit 1; fi

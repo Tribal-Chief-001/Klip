@@ -2,6 +2,6 @@
 pub mod api;
 pub mod client;
 pub mod ops;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub mod tray;
 pub mod ui;

@@ -248,7 +248,7 @@ fn print_image_state(state: &klip_proto::ipc::ImageStateInfo) {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn tray_command(action: TrayAction) -> AnyResult<()> {
     use klip_cli::tray;
     match action {
@@ -401,10 +401,10 @@ async fn run(cli: Cli) -> AnyResult<()> {
             }
         }
         Commands::InstallService => install_service()?,
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         Commands::Tray { action } => tray_command(action.unwrap_or(TrayAction::Start)).await?,
-        #[cfg(not(target_os = "linux"))]
-        Commands::Tray { .. } => return Err("the tray is only available on Linux".into()),
+        #[cfg(not(unix))]
+        Commands::Tray { .. } => return Err("the tray is not available on this system yet".into()),
         Commands::Share => match rpc_hint(IpcRequest::SendPendingImage).await? {
             IpcResponse::Sent {
                 bytes,

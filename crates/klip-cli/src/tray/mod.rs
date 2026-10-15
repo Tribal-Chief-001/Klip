@@ -1,13 +1,18 @@
-//! `klip tray`: the tray icon and its menu (Linux), and the start-at-login entry.
+//! `klip tray`: the tray icon and its menu, and the start-at-login entry.
 //!
-//! The icon is a StatusNotifierItem on D-Bus (the `ksni` crate): the panel draws it and its menu. The
-//! tray talks to the daemon in this process with the same client the terminal commands use.
+//! What the tray does (poll the daemon, run the menu actions) lives in `controller`; each platform only
+//! shows it: a StatusNotifierItem on D-Bus on Linux (`linux`, the `ksni` crate), the menu bar on macOS
+//! (`desktop`, `tray-icon` + `tao`). The tray talks to the daemon in this process with the same client
+//! the terminal commands use.
 pub mod autostart;
 pub mod icons;
 pub mod model;
 pub mod raster;
 
 pub mod controller;
+#[cfg(target_os = "macos")]
+mod desktop;
+#[cfg(target_os = "linux")]
 mod linux;
 
 use std::fs::{self, File, OpenOptions};
@@ -42,6 +47,7 @@ pub(super) fn xdg(var: &str, fallback: &str) -> Option<PathBuf> {
 }
 
 /// Where the Python tray of v0.6.0 kept its files: `~/.local/share/klip/tray`.
+#[cfg(target_os = "linux")]
 fn legacy_python_dir() -> Option<PathBuf> {
     xdg("XDG_DATA_HOME", ".local/share").map(|d| d.join("klip/tray"))
 }
@@ -111,6 +117,7 @@ pub fn is_running() -> bool {
 }
 
 /// The terminals tried to show the terminal app, with the flag that makes them run a command.
+#[cfg(target_os = "linux")]
 const TERMINALS: [(&str, &[&str]); 7] = [
     ("x-terminal-emulator", &["-e"]),
     ("gnome-terminal", &["--"]),
@@ -121,6 +128,7 @@ const TERMINALS: [(&str, &[&str]); 7] = [
     ("xterm", &["-e"]),
 ];
 
+#[cfg(target_os = "linux")]
 fn find_in_path(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path)
@@ -128,7 +136,46 @@ fn find_in_path(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
         .find(|p| fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
+/// The AppleScript that opens Terminal and runs `exe`. The path goes through a shell, so it is quoted,
+/// and anything that could end the quoting is refused.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn terminal_script(exe: &str) -> Result<String, String> {
+    if exe.is_empty()
+        || exe
+            .chars()
+            .any(|c| matches!(c, '"' | '\'' | '\\' | '\n' | '\r' | '\0'))
+    {
+        return Err(
+            "the path to klip has characters that cannot be put in a Terminal command safely"
+                .to_string(),
+        );
+    }
+    Ok(format!(
+        "tell application \"Terminal\"\n  activate\n  do script \"'{exe}'\"\nend tell"
+    ))
+}
+
+/// macOS: Terminal runs `klip` (the terminal app).
+#[cfg(target_os = "macos")]
+pub fn open_terminal(exe: &Path) -> Result<(), String> {
+    let script = terminal_script(&exe.to_string_lossy())?;
+    let mut child = Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|e| format!("cannot run osascript: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Open the terminal app (`klip` with no arguments) in the first terminal program that exists.
+#[cfg(target_os = "linux")]
 pub fn open_terminal(exe: &Path) -> Result<(), String> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     for (terminal, args) in TERMINALS {
@@ -187,10 +234,21 @@ pub async fn run() -> Result<(), String> {
     let Some(_lock) = TrayLock::acquire(&dir)? else {
         return Err("The tray is already running.".to_string());
     };
-    if let Some(old) = legacy_python_dir() {
-        remove_legacy_python_files(&old);
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(old) = legacy_python_dir() {
+            remove_legacy_python_files(&old);
+        }
+        linux::run().await
     }
-    linux::run().await
+    #[cfg(target_os = "macos")]
+    {
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(controller::run(cmd_rx, out_tx));
+        // The menu bar needs the main thread: this call blocks it for the life of the tray.
+        desktop::run(cmd_tx, out_rx)
+    }
 }
 
 #[cfg(test)]
@@ -250,5 +308,23 @@ mod tests {
         assert_eq!(find_in_path("kitty", &path), Some(exe));
         assert_eq!(find_in_path("xterm", &path), None);
         assert_eq!(find_in_path("konsole", &path), None);
+    }
+
+    #[test]
+    fn the_terminal_script_runs_klip_quoted_and_refuses_what_could_break_out() {
+        assert_eq!(
+            terminal_script("/Applications/Klip Tools/klip").unwrap(),
+            "tell application \"Terminal\"\n  activate\n  do script \"'/Applications/Klip Tools/klip'\"\nend tell"
+        );
+        for bad in [
+            "/a\"b/klip",
+            "/a'b/klip",
+            "/a\\b/klip",
+            "/a\nb/klip",
+            "/a\0b/klip",
+            "",
+        ] {
+            assert!(terminal_script(bad).is_err(), "{bad:?}");
+        }
     }
 }

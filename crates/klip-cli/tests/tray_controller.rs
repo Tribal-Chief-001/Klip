@@ -1,6 +1,6 @@
 //! The platform-neutral tray controller against a real isolated daemon, with no desktop at all:
 //! commands go in, summaries and problems come out.
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 mod common;
 use common::*;
 use klip_cli::tray::controller::{run, Cmd, Out};
