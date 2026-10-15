@@ -138,7 +138,38 @@ jobs:
 
       # Real daemons on this OS: start, send, history, stop through the control channel (the Unix
       # socket on macOS, the named pipe on Windows).
+      - name: Windows daemon manual check (control pipe)
+        if: runner.os == 'Windows'
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          $klip = (Resolve-Path .\target\debug\klip.exe).Path
+          $env:KLIP_CONFIG_DIR = "$env:RUNNER_TEMP\klip-manual"
+          $env:KLIP_CLIPBOARD = "memory"
+          New-Item -ItemType Directory -Force $env:KLIP_CONFIG_DIR | Out-Null
+          '{"relay":"lan","lan_discovery":false}' | Set-Content "$env:KLIP_CONFIG_DIR\config.json"
+          $d = Start-Process $klip -ArgumentList "start","--foreground" -PassThru -WindowStyle Hidden `
+               -RedirectStandardOutput "$env:RUNNER_TEMP\d.out" -RedirectStandardError "$env:RUNNER_TEMP\d.err"
+          $ok = $false
+          for ($i = 0; $i -lt 60; $i++) {
+            Start-Sleep -Milliseconds 500
+            & $klip status *> $null
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+          }
+          Get-Content "$env:RUNNER_TEMP\d.out", "$env:RUNNER_TEMP\d.err" -ErrorAction SilentlyContinue
+          if (-not $ok) { Stop-Process -Id $d.Id -Force; throw "the daemon never answered on the control pipe" }
+          & $klip status
+          & $klip send "hello from the runner"
+          if ($LASTEXITCODE -ne 0) { throw "send failed" }
+          $history = (& $klip history) -join "`n"
+          Write-Host $history
+          if ($history -notmatch "hello from the runner") { throw "the sent text is not in the history" }
+          & $klip stop
+          Start-Sleep -Seconds 2
+          if (-not $d.HasExited) { Stop-Process -Id $d.Id -Force; throw "the daemon did not stop" }
+
       - name: CLI against a real daemon
+        timeout-minutes: 8
         run: cargo test -p klip-cli --test cli_daemon -- --test-threads=1
 
       - name: Control channel and core tests

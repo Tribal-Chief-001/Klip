@@ -93,6 +93,23 @@ pub fn spawn_daemon_process(paths: &KlipPaths) -> Result<Spawned, String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // The daemon must not inherit our standard handles: a caller that reads our output until the
+        // pipe closes (a script, `| Out-File`, a test) would otherwise wait for the daemon to exit.
+        // SAFETY: GetStdHandle/SetHandleInformation only read and flag handles this process owns.
+        unsafe {
+            use windows_sys::Win32::Foundation::{
+                SetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+            };
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            };
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                let handle = GetStdHandle(which);
+                if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
         // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: no console window of its own, and Ctrl-C in the
         // caller's console does not reach the daemon.
         cmd.creation_flags(0x0800_0000 | 0x0000_0200);
