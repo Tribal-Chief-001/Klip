@@ -1,6 +1,6 @@
 //! Its own test binary (so no other test allocates concurrently): a client that announces a huge
 //! request and then sends nothing must not make the daemon reserve that memory.
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use klip_crypto::identity::KeyStore;
 use klip_daemon::{DaemonConfig, DaemonEngine, KlipPaths, RelayMode};
