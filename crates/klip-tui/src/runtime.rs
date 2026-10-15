@@ -272,13 +272,51 @@ pub fn to_msg(e: crossterm::event::Event) -> Option<Msg> {
     }
 }
 
+/// What ends the terminal app from outside: terminate, hang-up and interrupt on Unix, Ctrl-C elsewhere.
+struct StopSignals {
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    hup: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    int: tokio::signal::unix::Signal,
+}
+
+impl StopSignals {
+    fn new() -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Ok(Self {
+                term: signal(SignalKind::terminate())?,
+                hup: signal(SignalKind::hangup())?,
+                int: signal(SignalKind::interrupt())?,
+            })
+        }
+        #[cfg(not(unix))]
+        Ok(Self {})
+    }
+
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        tokio::select! {
+            _ = self.term.recv() => {}
+            _ = self.hup.recv() => {}
+            _ = self.int.recv() => {}
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+}
+
 /// The real terminal loop: keys, mouse, paste, resize, a 250 ms tick, effect replies and signals.
 pub async fn run(api: Arc<dyn DaemonApi>, env: TuiEnv) -> io::Result<()> {
     use crossterm::event::EventStream;
     use futures_util::StreamExt;
     use ratatui::backend::CrosstermBackend;
     use std::time::{Duration, Instant};
-    use tokio::signal::unix::{signal, SignalKind};
     use tokio::time::MissedTickBehavior;
 
     let mut guard = crate::term::TerminalGuard::enter(env.mouse)?;
@@ -291,9 +329,7 @@ pub async fn run(api: Arc<dyn DaemonApi>, env: TuiEnv) -> io::Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut on_term = signal(SignalKind::terminate())?;
-    let mut on_hup = signal(SignalKind::hangup())?;
-    let mut on_int = signal(SignalKind::interrupt())?;
+    let mut stops = StopSignals::new()?;
     let start = Instant::now();
     rt.draw()?;
     loop {
@@ -311,9 +347,7 @@ pub async fn run(api: Arc<dyn DaemonApi>, env: TuiEnv) -> io::Result<()> {
                 wall_ms: unix_ms(),
             }),
             Some(m) = rx.recv() => rt.dispatch(m),
-            _ = on_term.recv() => break,
-            _ = on_hup.recv() => break,
-            _ = on_int.recv() => break,
+            _ = stops.recv() => break,
         }
         while let Ok(m) = rx.try_recv() {
             rt.dispatch(m);
