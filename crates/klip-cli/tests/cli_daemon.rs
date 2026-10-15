@@ -1,5 +1,4 @@
 //! The real `klip` binary against an isolated daemon (own config dir, in-memory clipboard).
-#![cfg(unix)]
 mod common;
 use common::*;
 

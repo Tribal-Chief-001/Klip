@@ -45,6 +45,60 @@ impl IpcServer {
         Ok(listener)
     }
 
+    /// Create the control pipe (the first instance), before anything else, so a failure is reported.
+    #[cfg(windows)]
+    pub fn bind_pipe(
+        &self,
+    ) -> Result<
+        (
+            crate::ipc_pipe::PipeSecurity,
+            tokio::net::windows::named_pipe::NamedPipeServer,
+        ),
+        std::io::Error,
+    > {
+        let name = self.sync.paths.ipc_pipe_name();
+        let mut security = crate::ipc_pipe::PipeSecurity::owner_only()?;
+        let first = security.create(&name, true).map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("cannot create the control pipe {name}: {e}"),
+            )
+        })?;
+        Ok((security, first))
+    }
+
+    /// Serve clients, one pipe instance each: the next instance is created before the connected one
+    /// is handed to its handler, so there is always one waiting.
+    #[cfg(windows)]
+    pub async fn serve_pipe(
+        &self,
+        mut security: crate::ipc_pipe::PipeSecurity,
+        first: tokio::net::windows::named_pipe::NamedPipeServer,
+    ) {
+        let name = self.sync.paths.ipc_pipe_name();
+        let mut server = first;
+        loop {
+            tokio::select! {
+                _ = self.shutdown.wait() => break,
+                connected = server.connect() => {
+                    if connected.is_err() {
+                        break;
+                    }
+                    let ready = server;
+                    server = match security.create(&name, false) {
+                        Ok(next) => next,
+                        Err(_) => break,
+                    };
+                    let sync = Arc::clone(&self.sync);
+                    let shutdown = Arc::clone(&self.shutdown);
+                    tokio::spawn(async move {
+                        Self::handle_client(ready, sync, shutdown).await;
+                    });
+                }
+            }
+        }
+    }
+
     #[cfg(unix)]
     pub async fn serve(&self, listener: UnixListener) {
         loop {

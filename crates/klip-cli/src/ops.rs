@@ -90,6 +90,13 @@ pub fn spawn_daemon_process(paths: &KlipPaths) -> Result<Spawned, String> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: no console window of its own, and Ctrl-C in the
+        // caller's console does not reach the daemon.
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
+    }
     let child = cmd.spawn().map_err(|e| e.to_string())?;
     Ok(Spawned { child, log_path })
 }

@@ -111,7 +111,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest]
+        os: [macos-latest, windows-latest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -135,6 +135,14 @@ jobs:
 
       - name: Tray unit and command tests
         run: cargo test -p klip-cli --lib --test tray_cli --test tray_controller
+
+      # Real daemons on this OS: start, send, history, stop through the control channel (the Unix
+      # socket on macOS, the named pipe on Windows).
+      - name: CLI against a real daemon
+        run: cargo test -p klip-cli --test cli_daemon -- --test-threads=1
+
+      - name: Control channel and core tests
+        run: cargo test -p klip-core -p klip-daemon
 
       - name: Tray smoke start (macOS)
         if: runner.os == 'macOS'

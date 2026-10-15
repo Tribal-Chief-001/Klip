@@ -1,6 +1,8 @@
 pub mod config;
 pub mod engine;
 pub mod instance_lock;
+#[cfg(windows)]
+pub mod ipc_pipe;
 pub mod ipc_server;
 #[cfg(target_os = "linux")]
 pub mod notify;

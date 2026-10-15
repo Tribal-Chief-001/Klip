@@ -123,7 +123,12 @@ impl DaemonEngine {
             let listener = ipc.bind()?;
             tokio::spawn(async move { ipc.serve(listener).await })
         };
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        let ipc_task = {
+            let (security, first) = ipc.bind_pipe()?;
+            tokio::spawn(async move { ipc.serve_pipe(security, first).await })
+        };
+        #[cfg(not(any(unix, windows)))]
         let ipc_task = tokio::spawn(async move { drop(ipc) });
 
         // With an OS change notification (X11 XFIXES) the clipboard is read only when it changes;
