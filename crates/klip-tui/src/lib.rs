@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! Full-screen terminal interface for Klip.
 //!
 //! Layering: `app` is a pure core (state, events, effects, `update`), `view` only draws, `runtime`

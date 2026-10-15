@@ -165,13 +165,16 @@ mod tests {
         assert_eq!(back.device_name, "Laptop");
         assert_eq!(back.relay, RelayMode::Lan);
         assert_eq!(back.max_history_items, 20);
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(paths.config_file())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o600);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(paths.config_file())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         assert!(
             !paths.config_file().with_extension("tmp").exists(),
             "temp file must be renamed away"

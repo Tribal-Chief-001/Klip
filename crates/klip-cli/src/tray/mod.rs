@@ -2,22 +2,25 @@
 //!
 //! What the tray does (poll the daemon, run the menu actions) lives in `controller`; each platform only
 //! shows it: a StatusNotifierItem on D-Bus on Linux (`linux`, the `ksni` crate), the menu bar on macOS
-//! (`desktop`, `tray-icon` + `tao`). The tray talks to the daemon in this process with the same client
-//! the terminal commands use.
+//! and the notification area on Windows (`desktop`, `tray-icon` + `tao`). The tray talks to the daemon
+//! in this process with the same client the terminal commands use.
 pub mod autostart;
 pub mod icons;
 pub mod model;
 pub mod raster;
 
 pub mod controller;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 mod desktop;
 #[cfg(target_os = "linux")]
 mod linux;
 
 use std::fs::{self, File, OpenOptions};
 use std::io;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -79,6 +82,7 @@ pub struct TrayLock {
 impl TrayLock {
     /// `Ok(None)`: another tray holds it.
     pub fn acquire(dir: &Path) -> Result<Option<Self>, String> {
+        #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
             fs::DirBuilder::new()
@@ -87,9 +91,12 @@ impl TrayLock {
                 .create(dir)
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
         }
+        #[cfg(not(unix))]
+        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let path = dir.join("tray.lock");
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
@@ -136,6 +143,55 @@ fn find_in_path(program: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
         .find(|p| fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
+/// Run a child on its own: no console window and no Ctrl-C from ours (Windows), its own process group
+/// (Unix).
+fn detach(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    {
+        cmd.process_group(0)
+    }
+    #[cfg(windows)]
+    {
+        // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200)
+    }
+}
+
+/// The arguments of `cmd` that start `exe` in a console window of its own. The path goes through
+/// `cmd.exe`, so anything it would read as syntax is refused.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn windows_terminal_args(exe: &str) -> Result<Vec<String>, String> {
+    if exe.is_empty()
+        || exe.chars().any(|c| {
+            matches!(
+                c,
+                '&' | '|' | '^' | '<' | '>' | '%' | '"' | '\n' | '\r' | '\0'
+            )
+        })
+    {
+        return Err("the path to klip has characters cmd.exe would read as commands".to_string());
+    }
+    Ok(["/c", "start", "Klip", exe].map(String::from).to_vec())
+}
+
+/// Windows: a console window running `klip` (the terminal app).
+#[cfg(windows)]
+pub fn open_terminal(exe: &Path) -> Result<(), String> {
+    let args = windows_terminal_args(&exe.to_string_lossy())?;
+    let mut child = Command::new("cmd")
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000) // the cmd.exe itself stays hidden; `start` makes the console
+        .spawn()
+        .map_err(|e| format!("cannot run cmd.exe: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// The AppleScript that opens Terminal and runs `exe`. The path goes through a shell, so it is quoted,
 /// and anything that could end the quoting is refused.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -159,13 +215,14 @@ pub fn terminal_script(exe: &str) -> Result<String, String> {
 #[cfg(target_os = "macos")]
 pub fn open_terminal(exe: &Path) -> Result<(), String> {
     let script = terminal_script(&exe.to_string_lossy())?;
-    let mut child = Command::new("osascript")
+    let mut command = Command::new("osascript");
+    command
         .arg("-e")
         .arg(script)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
+        .stderr(Stdio::null());
+    let mut child = detach(&mut command)
         .spawn()
         .map_err(|e| format!("cannot run osascript: {e}"))?;
     std::thread::spawn(move || {
@@ -182,14 +239,14 @@ pub fn open_terminal(exe: &Path) -> Result<(), String> {
         let Some(found) = find_in_path(terminal, &path) else {
             continue;
         };
-        let started = Command::new(found)
+        let mut command = Command::new(found);
+        command
             .args(args)
             .arg(exe)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
+            .stderr(Stdio::null());
+        let started = detach(&mut command).spawn();
         if let Ok(mut child) = started {
             // Collect its exit status when the terminal is closed (no zombie in a long-lived tray).
             std::thread::spawn(move || {
@@ -207,12 +264,13 @@ pub fn start_detached() -> Result<u32, String> {
         return Err("The tray is already running.".to_string());
     }
     let exe = exe_path().map_err(|e| e.to_string())?;
-    let mut child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .args(["tray", "run"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
+        .stderr(Stdio::null());
+    let mut child = detach(&mut command)
         .spawn()
         .map_err(|e| format!("cannot start the tray: {e}"))?;
     // Say "started" only when it holds the lock; a tray that dies at once (no desktop session) is an error.
@@ -241,12 +299,12 @@ pub async fn run() -> Result<(), String> {
         }
         linux::run().await
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (out_tx, out_rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(controller::run(cmd_rx, out_tx));
-        // The menu bar needs the main thread: this call blocks it for the life of the tray.
+        // The menu bar / notification area needs the main thread: this call blocks it for the life of the tray.
         desktop::run(cmd_tx, out_rx)
     }
 }
@@ -326,6 +384,21 @@ mod tests {
             "",
         ] {
             assert!(terminal_script(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_windows_terminal_command_starts_klip_in_its_own_console_and_refuses_cmd_metacharacters()
+    {
+        assert_eq!(
+            windows_terminal_args(r"C:\Program Files\Klip\klip.exe").unwrap(),
+            ["/c", "start", "Klip", r"C:\Program Files\Klip\klip.exe"]
+        );
+        for bad in [
+            "a&b.exe", "a|b.exe", "a^b.exe", "a<b.exe", "a>b.exe", "a%b.exe", "a\"b.exe",
+            "a\nb.exe", "",
+        ] {
+            assert!(windows_terminal_args(bad).is_err(), "{bad:?}");
         }
     }
 }

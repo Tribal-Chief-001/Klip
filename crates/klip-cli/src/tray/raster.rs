@@ -73,6 +73,23 @@ fn glyph(state: State) -> (Vec<Shape>, f32) {
     (shapes, fade)
 }
 
+/// The number in `reg query` output for a `REG_DWORD` value (`0x1` -> 1).
+pub fn parse_reg_dword(output: &str) -> Option<u32> {
+    let line = output.lines().find(|l| l.contains("REG_DWORD"))?;
+    let hex = line.split_whitespace().last()?.strip_prefix("0x")?;
+    u32::from_str_radix(hex, 16).ok()
+}
+
+/// The glyph colour for the Windows taskbar: dark on a light taskbar, light on a dark one. The
+/// taskbar theme is unknown when the registry cannot be read; dark taskbars are the common case.
+pub fn ink_for_taskbar(light_theme: Option<bool>) -> [u8; 3] {
+    if light_theme == Some(true) {
+        [0, 0, 0]
+    } else {
+        [255, 255, 255]
+    }
+}
+
 const SAMPLES: u32 = 4;
 
 /// Draw a state at `size` x `size` pixels in the colour `ink`; the alpha channel carries the shape.
@@ -110,6 +127,36 @@ pub fn render(state: State, badge: bool, size: u32, ink: [u8; 3]) -> Rgba {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_registry_dword_is_read_from_reg_exe_output() {
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\r\n    SystemUsesLightTheme    REG_DWORD    0x1\r\n\r\n";
+        assert_eq!(parse_reg_dword(out), Some(1));
+        assert_eq!(
+            parse_reg_dword("    SystemUsesLightTheme    REG_DWORD    0x0\r\n"),
+            Some(0)
+        );
+        assert_eq!(parse_reg_dword("    X    REG_DWORD    0x10\r\n"), Some(16));
+        for bad in [
+            "",
+            "ERROR: The system was unable to find the specified registry key or value.",
+            "    X    REG_SZ    hello",
+            "    X    REG_DWORD    zz",
+        ] {
+            assert_eq!(parse_reg_dword(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_glyph_is_dark_on_a_light_taskbar_and_light_on_a_dark_one() {
+        assert_eq!(ink_for_taskbar(Some(true)), [0, 0, 0]);
+        assert_eq!(ink_for_taskbar(Some(false)), [255, 255, 255]);
+        assert_eq!(
+            ink_for_taskbar(None),
+            [255, 255, 255],
+            "unknown: dark taskbars are the common case"
+        );
+    }
+
     use super::*;
     use crate::tray::model::State;
 

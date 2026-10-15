@@ -134,7 +134,6 @@ async fn main() {
     }
     // A bare `klip` on a terminal opens the full-screen app. Everything else (arguments, pipes,
     // TERM=dumb) goes through clap exactly as before, so scripts and help texts are unchanged.
-    #[cfg(unix)]
     {
         if std::env::args_os().len() == 1 && can_open_tui() {
             if let Err(e) = open_tui().await {
@@ -153,15 +152,17 @@ async fn main() {
 
 type AnyResult<T> = Result<T, Box<dyn std::error::Error>>;
 
-#[cfg(unix)]
 fn can_open_tui() -> bool {
+    // Windows terminals do not set TERM; Windows Terminal and the modern console handle the escapes.
+    #[cfg(windows)]
+    let term_ok = true;
+    #[cfg(not(windows))]
     let term_ok = std::env::var("TERM")
         .map(|t| !t.is_empty() && t != "dumb")
         .unwrap_or(false);
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && term_ok
 }
 
-#[cfg(unix)]
 async fn open_tui() -> AnyResult<()> {
     let paths = klip_daemon::config::user_paths();
     let api = std::sync::Arc::new(klip_cli::api::IpcDaemonApi::new(
@@ -248,7 +249,7 @@ fn print_image_state(state: &klip_proto::ipc::ImageStateInfo) {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 async fn tray_command(action: TrayAction) -> AnyResult<()> {
     use klip_cli::tray;
     match action {
@@ -401,10 +402,7 @@ async fn run(cli: Cli) -> AnyResult<()> {
             }
         }
         Commands::InstallService => install_service()?,
-        #[cfg(unix)]
         Commands::Tray { action } => tray_command(action.unwrap_or(TrayAction::Start)).await?,
-        #[cfg(not(unix))]
-        Commands::Tray { .. } => return Err("the tray is not available on this system yet".into()),
         Commands::Share => match rpc_hint(IpcRequest::SendPendingImage).await? {
             IpcResponse::Sent {
                 bytes,
