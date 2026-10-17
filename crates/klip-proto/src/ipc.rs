@@ -20,6 +20,8 @@ pub const CAP_CLEAR_HISTORY: &str = "clear_history";
 pub const CAP_SHARE_IMAGE: &str = "share_image";
 /// The daemon sends and receives files (`SendFile`, `GetTransfers`, `CancelTransfer`).
 pub const CAP_FILE_TRANSFER: &str = "file_transfer";
+/// `SendFile` also takes a folder, and the daemon resumes and sends in version 2 (v0.9.0).
+pub const CAP_FILE_FOLDERS: &str = "file_folders";
 
 /// The settings the running daemon loaded (what a restart would re-read from `config.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -580,6 +582,7 @@ mod compat {
             assert_eq!(deserialize_ipc_msg::<IpcResponse>(&bytes).unwrap(), r);
         }
         assert_eq!(CAP_FILE_TRANSFER, "file_transfer");
+        assert_eq!(CAP_FILE_FOLDERS, "file_folders");
     }
 
     #[test]

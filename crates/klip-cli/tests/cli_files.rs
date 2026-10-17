@@ -193,14 +193,12 @@ fn send_file_says_why_when_the_other_device_does_not_accept_files() {
 }
 
 #[test]
-fn send_file_to_a_name_nobody_has_fails_and_a_folder_is_refused() {
+fn send_file_to_a_name_nobody_has_fails() {
     let (alpha, _beta, _incoming) = two_daemons("names", "");
     let f = sample(&alpha.dir.join("out"), "x.txt", 10);
     let out = alpha.run(&["send-file", f.to_str().unwrap(), "--to", "Nobody"], None);
     assert!(!out.status.success());
     assert!(text(&out).contains("no paired device"), "{}", text(&out));
-    let out = alpha.run(&["send-file", alpha.dir.to_str().unwrap()], None);
-    assert!(!out.status.success(), "{}", text(&out));
 }
 
 #[test]
@@ -236,13 +234,15 @@ fn cancel_stops_a_running_transfer() {
         assert!(Instant::now() < end, "not stopped: {listed}");
         std::thread::sleep(Duration::from_millis(100));
     }
-    let end = Instant::now() + Duration::from_secs(15);
-    while !files_in(&incoming).is_empty() {
-        assert!(
-            Instant::now() < end,
-            "left behind: {:?}",
-            files_in(&incoming)
-        );
+    // A cut transfer leaves a hidden partial for a later resume, never a file under its real name.
+    std::thread::sleep(Duration::from_millis(500));
+    let shown: Vec<String> = files_in(&incoming)
+        .into_iter()
+        .filter(|n| !n.starts_with(".klip-"))
+        .collect();
+    assert!(shown.is_empty(), "left behind: {shown:?}");
+    let end = Instant::now() + Duration::from_secs(0);
+    while Instant::now() < end {
         std::thread::sleep(Duration::from_millis(100));
     }
     let again = alpha.run(&["transfers", "--cancel", "zzzz"], None);
@@ -261,4 +261,37 @@ fn a_file_command_without_a_running_daemon_says_so() {
         text(&out)
     );
     assert!(!d.run(&["transfers"], None).status.success());
+}
+
+#[test]
+fn send_file_sends_a_folder_into_one_new_folder_and_an_empty_one_is_refused() {
+    let (alpha, _beta, incoming) = two_daemons("folder", "");
+    let top = alpha.dir.join("out").join("Trip");
+    for (rel, n) in [
+        ("a.txt", 10usize),
+        ("Day 1/b.jpg", 2000),
+        ("Day 1/raw/c.cr2", 70_000),
+    ] {
+        let p = top.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, vec![n as u8; n]).unwrap();
+    }
+    let out = alpha.run(&["send-file", top.to_str().unwrap()], None);
+    assert!(out.status.success(), "{}", text(&out));
+    for (rel, n) in [
+        ("a.txt", 10usize),
+        ("Day 1/b.jpg", 2000),
+        ("Day 1/raw/c.cr2", 70_000),
+    ] {
+        assert_eq!(
+            std::fs::read(incoming.join("Trip").join(rel)).unwrap(),
+            vec![n as u8; n],
+            "{rel}"
+        );
+    }
+    let empty = alpha.dir.join("out").join("Empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = alpha.run(&["send-file", empty.to_str().unwrap()], None);
+    assert!(!out.status.success());
+    assert!(text(&out).contains("no files"), "{}", text(&out));
 }

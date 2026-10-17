@@ -5,8 +5,8 @@ use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
 use klip_proto::ipc::{
     deserialize_ipc_msg, max_request_bytes, serialize_ipc_msg, ConfigInfo, HelloInfo, IpcRequest,
-    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_FILE_TRANSFER, CAP_SHARE_IMAGE,
-    CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
+    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_FILE_FOLDERS, CAP_FILE_TRANSFER,
+    CAP_SHARE_IMAGE, CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -311,6 +311,7 @@ impl IpcServer {
                         CAP_CLEAR_HISTORY.to_string(),
                         CAP_SHARE_IMAGE.to_string(),
                         CAP_FILE_TRANSFER.to_string(),
+                        CAP_FILE_FOLDERS.to_string(),
                     ],
                     config: ConfigInfo {
                         device_name: cfg.device_name.clone(),

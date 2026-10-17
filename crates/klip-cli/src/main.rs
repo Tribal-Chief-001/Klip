@@ -4,7 +4,7 @@ use klip_cli::ops::{log_tail, request_cap, spawn_daemon_process, unpair_all_comp
 use klip_cli::ui::{print_history, print_pair_card, print_pair_request, print_status_card};
 use klip_daemon::config::DaemonConfig;
 use klip_daemon::engine::DaemonEngine;
-use klip_proto::ipc::{IpcRequest, IpcResponse, TransferInfo, TransferState};
+use klip_proto::ipc::{IpcRequest, IpcResponse, TransferInfo, TransferState, CAP_FILE_FOLDERS};
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -76,9 +76,9 @@ enum Commands {
         /// `cat main.rs | klip send -`)
         text: String,
     },
-    /// Send files to your linked devices (they arrive in the other device's Klip folder)
+    /// Send files or folders to your linked devices (they arrive in the other device's Klip folder)
     SendFile {
-        /// The files to send
+        /// The files or folders to send (a folder arrives as one new folder; links are not followed)
         #[arg(required = true)]
         files: Vec<std::path::PathBuf>,
         /// Send only to this device (name or start of the fingerprint); default: every linked device
@@ -254,6 +254,11 @@ fn describe(t: &TransferInfo) -> String {
     )
 }
 
+/// Folders are known to daemons from v0.9.0 on; a daemon without the capability needs a restart first.
+fn folder_needs_restart(capabilities: Option<&[String]>) -> bool {
+    !capabilities.is_some_and(|caps| caps.iter().any(|c| c == CAP_FILE_FOLDERS))
+}
+
 async fn send_files(
     files: Vec<std::path::PathBuf>,
     to: Option<String>,
@@ -271,6 +276,23 @@ async fn send_files(
                 continue;
             }
         };
+        if abs.is_dir() {
+            // An older daemon would try to open the folder as one file: ask it first.
+            let caps =
+                match DaemonClient::send_request(&IpcRequest::Hello { client_protocol: 2 }).await {
+                    Ok(IpcResponse::Hello(h)) => Some(h.capabilities),
+                    _ => None,
+                };
+            if folder_needs_restart(caps.as_deref()) {
+                eprintln!(
+                    "{} {}: the running Klip is older and cannot send folders. Restart it: systemctl --user restart klip.service (or klip stop && klip start)",
+                    "✗".red().bold(),
+                    file.display()
+                );
+                problems += 1;
+                continue;
+            }
+        }
         let Some(path) = abs.to_str().map(str::to_string) else {
             eprintln!(
                 "{} {}: the path is not valid text",
@@ -860,4 +882,25 @@ fn install_service() -> AnyResult<()> {
         println!("{} {}", "✓".green(), message);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_daemon_without_the_folder_capability_needs_a_restart() {
+        let new = vec![
+            "unpair_all".to_string(),
+            "file_transfer".to_string(),
+            "file_folders".to_string(),
+        ];
+        let old = vec!["unpair_all".to_string(), "file_transfer".to_string()];
+        assert!(!folder_needs_restart(Some(&new)));
+        assert!(folder_needs_restart(Some(&old)));
+        assert!(
+            folder_needs_restart(None),
+            "no answer to Hello means an old daemon"
+        );
+    }
 }

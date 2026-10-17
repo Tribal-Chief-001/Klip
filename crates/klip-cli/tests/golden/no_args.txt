@@ -12,7 +12,7 @@ Commands:
   resume           Resume synchronisation
   history          Show recently synced clips
   send             Send a text to all linked devices right now
-  send-file        Send files to your linked devices (they arrive in the other device's Klip folder)
+  send-file        Send files or folders to your linked devices (they arrive in the other device's Klip folder)
   transfers        Show running and recent file transfers, or stop one
   install-service  Install the auto-start service for your OS
   tray             The tray icon (Linux): start it, or make it start when you log in
