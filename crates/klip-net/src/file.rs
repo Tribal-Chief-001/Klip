@@ -96,7 +96,12 @@ fn io_err(e: std::io::Error) -> FileError {
     if e.kind() == std::io::ErrorKind::UnexpectedEof {
         FileError::TooShort
     } else {
-        FileError::Io(e.to_string())
+        let text = e.to_string();
+        if text.contains("stopped by peer") || text.contains("reset by peer") {
+            FileError::Peer("the other device stopped the transfer".into())
+        } else {
+            FileError::Io(text)
+        }
     }
 }
 
@@ -350,6 +355,16 @@ impl<W: AsyncWrite + Unpin> Received<W> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stream_the_other_side_stopped_says_so_in_plain_words() {
+        let e = super::io_err(std::io::Error::other("sending stopped by peer: error 0"));
+        assert_eq!(e.to_string(), "the other device stopped the transfer");
+        let e = super::io_err(std::io::Error::other("connection reset by peer"));
+        assert_eq!(e.to_string(), "the other device stopped the transfer");
+        let e = super::io_err(std::io::Error::other("disk on fire"));
+        assert_eq!(e.to_string(), "disk on fire");
+    }
+
     use super::*;
     use std::pin::Pin;
     use std::task::{Context, Poll};
