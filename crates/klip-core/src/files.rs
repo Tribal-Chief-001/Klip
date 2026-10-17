@@ -223,19 +223,26 @@ fn release(path: &Path) {
 /// oldest file.
 pub struct KeptIndex {
     items: Mutex<Vec<(PathBuf, Vec<u8>)>>,
+    /// The cap on all kept parts together (`MAX_KEPT_BYTES`; tests use a small one).
+    max_bytes: u64,
 }
 
 impl KeptIndex {
     pub const fn new() -> Self {
+        Self::with_byte_cap(MAX_KEPT_BYTES)
+    }
+
+    pub const fn with_byte_cap(max_bytes: u64) -> Self {
         Self {
             items: Mutex::new(Vec::new()),
+            max_bytes,
         }
     }
 
     pub fn register(&self, path: PathBuf, device: Vec<u8>) {
         let size = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         // One part that alone is over the cap is simply not kept: it must not push every older part out first.
-        if size(&path) > MAX_KEPT_BYTES {
+        if size(&path) > self.max_bytes {
             let _ = fs::remove_file(&path);
             return;
         }
@@ -250,7 +257,11 @@ impl KeptIndex {
             let _ = fs::remove_file(items.remove(0).0);
         }
         let size = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        while items.iter().map(|(p, _)| size(p)).sum::<u64>() > MAX_KEPT_BYTES && !items.is_empty()
+        while items
+            .iter()
+            .fold(0u64, |sum, (p, _)| sum.saturating_add(size(p)))
+            > self.max_bytes
+            && !items.is_empty()
         {
             let _ = fs::remove_file(items.remove(0).0);
         }
@@ -2322,31 +2333,42 @@ mod tests {
     #[test]
     fn kept_partials_are_capped_in_bytes_too_oldest_first() {
         let dir = temp("resume9");
-        let index = KeptIndex::default();
-        let mk = |i: usize, gib: u64| {
+        // The real cap is 16 GiB; the rule is the same with a small one (and no huge files on any filesystem).
+        assert_eq!(
+            KeptIndex::new().max_bytes,
+            16 * 1024 * 1024 * 1024,
+            "the real cap is 16 GiB"
+        );
+        let index = KeptIndex::with_byte_cap(3000);
+        let mk = |i: usize, bytes: usize| {
             let path = dir.join(format!(".klip-{i:032x}.part"));
-            fs::File::create(&path)
-                .unwrap()
-                .set_len(gib * 1024 * 1024 * 1024)
-                .unwrap();
+            fs::write(&path, vec![0u8; bytes]).unwrap();
             path
         };
-        // Three devices, 7 GiB each: 21 GiB is over the 16 GiB cap, so the oldest goes.
-        let (a, b, c) = (mk(1, 7), mk(2, 7), mk(3, 7));
+        // Three devices, 1000 bytes each: 3000 is at the cap; a fourth part makes it 4000 and the oldest goes.
+        let (a, b, c) = (mk(1, 1000), mk(2, 1000), mk(3, 1000));
         index.register(a.clone(), b"A".to_vec());
         index.register(b.clone(), b"B".to_vec());
-        assert!(a.exists() && b.exists(), "14 GiB is under the cap");
         index.register(c.clone(), b"C".to_vec());
         assert!(
-            !a.exists(),
-            "the oldest part is removed to get under 16 GiB"
+            a.exists() && b.exists() && c.exists(),
+            "3000 bytes is not over the cap"
         );
-        assert!(b.exists() && c.exists());
+        let d = mk(4, 1000);
+        index.register(d.clone(), b"D".to_vec());
+        assert!(
+            !a.exists(),
+            "the oldest part is removed to get under the cap"
+        );
+        assert!(b.exists() && c.exists() && d.exists());
         // A single part over the cap is not kept at all, and it does not push the others out on its way.
-        let huge = mk(4, 20);
-        index.register(huge.clone(), b"D".to_vec());
+        let huge = mk(5, 5000);
+        index.register(huge.clone(), b"E".to_vec());
         assert!(!huge.exists());
-        assert!(b.exists() && c.exists(), "older parts under the cap stay");
+        assert!(
+            b.exists() && c.exists() && d.exists(),
+            "older parts under the cap stay"
+        );
     }
 
     #[test]
