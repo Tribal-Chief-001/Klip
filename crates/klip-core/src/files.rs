@@ -424,8 +424,13 @@ impl PartialFile {
     /// The transfer broke off: keep what arrived for a later resume (when it is worth it), else delete it.
     pub async fn keep(self, device: Vec<u8>) {
         let Self {
-            file, path, keyed, ..
+            mut file,
+            path,
+            keyed,
+            ..
         } = self;
+        // Writes still queued must reach the disk first, or the kept part is shorter than what arrived.
+        let _ = tokio::io::AsyncWriteExt::flush(&mut file).await;
         drop(file);
         let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         if keyed && size >= MIN_KEEP_BYTES {
@@ -1082,6 +1087,11 @@ where
     };
     // A cancel that came in after the last byte but before the rename still wins; after this the file is
     // being made permanent and `cancel` says so.
+    // The folders of a folder send may have been removed since the last file (by the app that moves received
+    // files away): make them again, they are already checked names.
+    if let Some(dir) = &target_dir {
+        let _ = fs::create_dir_all(dir);
+    }
     let outcome = match outcome {
         Ok(received) if !reg.begin_commit(id) => {
             received.bad("the transfer was cancelled").await;
@@ -2075,7 +2085,8 @@ mod tests {
         let p = policy(&dir);
         let reg = TransferRegistry::new();
         let data = data(3 * MIB);
-        let (sent, _, got) = exchange_v2(&p, &reg, "Pad", [5; 32], &data, Some(2 * MIB)).await;
+        let (sent, _, got) =
+            exchange_v2(&p, &reg, "Pad-a_cut_transf", [5; 32], &data, Some(2 * MIB)).await;
         assert!(sent.is_err() && got.is_err(), "{sent:?} {got:?}");
         let kept = partials_in(&dir);
         assert_eq!(kept.len(), 1, "{:?}", files_in(&dir));
@@ -2084,7 +2095,8 @@ mod tests {
             2 * MIB as u64
         );
 
-        let (sent, offset, got) = exchange_v2(&p, &reg, "Pad", [5; 32], &data, None).await;
+        let (sent, offset, got) =
+            exchange_v2(&p, &reg, "Pad-a_cut_transf", [5; 32], &data, None).await;
         sent.unwrap();
         assert_eq!(
             offset,
@@ -2102,11 +2114,12 @@ mod tests {
         let p = policy(&dir);
         let reg = TransferRegistry::new();
         let a = data(3 * MIB);
-        let (_, _, _) = exchange_v2(&p, &reg, "Pad", [6; 32], &a, Some(2 * MIB)).await;
+        let (_, _, _) = exchange_v2(&p, &reg, "Pad-a_resume_wit", [6; 32], &a, Some(2 * MIB)).await;
         assert_eq!(partials_in(&dir).len(), 1);
         let mut b = a.clone();
         b[10] ^= 0xFF; // same key (the sender's idea of "the same file"), different bytes at the start
-        let (sent, offset, got) = exchange_v2(&p, &reg, "Pad", [6; 32], &b, None).await;
+        let (sent, offset, got) =
+            exchange_v2(&p, &reg, "Pad-a_resume_wit", [6; 32], &b, None).await;
         assert_eq!(offset, 2 * MIB as u64);
         assert!(matches!(got, Err(FileError::HashMismatch)), "{got:?}");
         assert!(matches!(sent, Err(FileError::Peer(_))), "{sent:?}");
@@ -2124,7 +2137,15 @@ mod tests {
         let p = policy(&dir);
         let reg = TransferRegistry::new();
         let data = data(3 * MIB);
-        let (_, _, got) = exchange_v2(&p, &reg, "Pad", [7; 32], &data, Some(500 * 1024)).await;
+        let (_, _, got) = exchange_v2(
+            &p,
+            &reg,
+            "Pad-a_partial_un",
+            [7; 32],
+            &data,
+            Some(500 * 1024),
+        )
+        .await;
         assert!(got.is_err());
         assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
     }
@@ -2135,8 +2156,9 @@ mod tests {
         let p = policy(&dir);
         let reg = TransferRegistry::new();
         let data = data(3 * MIB);
-        let _ = exchange_v2(&p, &reg, "Pad", [8; 32], &data, Some(2 * MIB)).await;
-        let (sent, offset, got) = exchange_v2(&p, &reg, "Tab", [8; 32], &data, None).await;
+        let _ = exchange_v2(&p, &reg, "Pad-two_devices_", [8; 32], &data, Some(2 * MIB)).await;
+        let (sent, offset, got) =
+            exchange_v2(&p, &reg, "Tab-two_devices_", [8; 32], &data, None).await;
         sent.unwrap();
         assert_eq!(offset, 0, "another device starts from zero");
         assert_eq!(fs::read(got.unwrap()).unwrap(), data);
@@ -2148,10 +2170,11 @@ mod tests {
         let dir = temp("resume5");
         let p = policy(&dir);
         let reg = TransferRegistry::new();
-        let (_held, _) = PartialFile::open_keyed(&dir, b"Pad", &[9; 32])
+        let (_held, _) = PartialFile::open_keyed(&dir, b"Pad-a_partial_th", &[9; 32])
             .await
             .unwrap();
-        let (sent, _, got) = exchange_v2(&p, &reg, "Pad", [9; 32], &data(1000), None).await;
+        let (sent, _, got) =
+            exchange_v2(&p, &reg, "Pad-a_partial_th", [9; 32], &data(1000), None).await;
         assert!(
             matches!(
                 got,
@@ -2171,10 +2194,10 @@ mod tests {
         let mut p = policy(&dir);
         let reg = TransferRegistry::new();
         let data = data(3 * MIB);
-        let _ = exchange_v2(&p, &reg, "Pad", [4; 32], &data, Some(2 * MIB)).await;
+        let _ = exchange_v2(&p, &reg, "Pad-a_busy_answe", [4; 32], &data, Some(2 * MIB)).await;
         assert_eq!(partials_in(&dir).len(), 1);
         p.max_incoming_per_peer = 0; // every new transfer from Pad is now answered Busy
-        let (sent, _, got) = exchange_v2(&p, &reg, "Pad", [4; 32], &data, None).await;
+        let (sent, _, got) = exchange_v2(&p, &reg, "Pad-a_busy_answe", [4; 32], &data, None).await;
         assert!(
             matches!(
                 got,
@@ -2191,10 +2214,56 @@ mod tests {
             "the part is still there for the next try"
         );
         p.max_incoming_per_peer = 2;
-        let (sent, offset, got) = exchange_v2(&p, &reg, "Pad", [4; 32], &data, None).await;
+        let (sent, offset, got) =
+            exchange_v2(&p, &reg, "Pad-a_busy_answe", [4; 32], &data, None).await;
         sent.unwrap();
         assert_eq!(offset, 2 * MIB as u64);
         assert_eq!(fs::read(got.unwrap()).unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_was_removed_between_two_files_is_made_again_for_the_next_one() {
+        let dir = temp("folder-gone");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let send_one = |name: &'static str, bytes: Vec<u8>| {
+            let (p, reg) = (p.clone(), &reg);
+            async move {
+                let (s_w, s_r) = duplex(64 * 1024);
+                let (r_w, r_r) = duplex(64 * 1024);
+                let header = klip_net::file::FileHeaderV2 {
+                    version: 2,
+                    id: [1; 16],
+                    name: name.into(),
+                    size: bytes.len() as u64,
+                    resume_key: [0; 32],
+                    folder: Some(klip_net::file::FolderPlace {
+                        batch: [3; 16],
+                        top: "Trip".into(),
+                        rel: vec!["Day 1".into()],
+                    }),
+                };
+                let sender = async move {
+                    let (mut tx, mut rx) = (s_w, r_r);
+                    klip_net::file::send_file_v2(&header, &bytes[..], &mut tx, &mut rx, &mut |_| {})
+                        .await
+                };
+                let receiver = async {
+                    let incoming = IncomingFile::open_v2(s_r, r_w).await?;
+                    receive_incoming_from(incoming, "Pad", None, &p, reg).await
+                };
+                let (sent, got) = tokio::join!(sender, receiver);
+                sent.unwrap();
+                got.unwrap()
+            }
+        };
+        let first = send_one("a.txt", data(500)).await;
+        assert_eq!(first, dir.join("Trip/Day 1/a.txt"));
+        // The phone moves each file to Downloads and used to delete the emptied folder: simulate that.
+        fs::remove_dir_all(dir.join("Trip")).unwrap();
+        let second = send_one("b.txt", data(600)).await;
+        assert_eq!(second, dir.join("Trip/Day 1/b.txt"));
+        assert_eq!(fs::read(&second).unwrap(), data(600));
     }
 
     #[test]

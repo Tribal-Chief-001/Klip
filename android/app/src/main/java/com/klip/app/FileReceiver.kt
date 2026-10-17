@@ -49,8 +49,9 @@ object FileReceiver {
             val rel = FileText.safeRelDir(relDir)
             val shown = FileText.safeName(name)
             if (copyToDownloads(app, staged, shown, rel)) {
+                // The folder it came in is left: the engine may be about to put the next file of a folder send there,
+                // and it removes folders that stay empty (an hour after the send), as does the service at start.
                 staged.delete()
-                pruneEmptyParents(app, staged.parentFile)
                 val (id, text) = noticeFor(from, size)
                 notify(app, text, downloads(app), id)
             } else {

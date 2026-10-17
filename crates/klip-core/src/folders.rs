@@ -160,6 +160,10 @@ impl BatchBook {
         });
         let key = (device.to_vec(), batch);
         if let Some(b) = map.get_mut(&key) {
+            // Whoever moves received files away may have removed the emptied folder since the last file.
+            if !b.dir.exists() {
+                fs::create_dir_all(&b.dir)?;
+            }
             b.last_used = now;
             b.active += 1;
             return Ok(b.dir.clone());
