@@ -70,6 +70,8 @@ pub enum FileError {
     Timeout,
     /// The other side says the file did not arrive intact or could not be saved.
     Peer(String),
+    /// Somebody cancelled the transfer here.
+    Cancelled,
 }
 
 impl std::fmt::Display for FileError {
@@ -83,6 +85,7 @@ impl std::fmt::Display for FileError {
             Self::HashMismatch => write!(f, "the file arrived damaged"),
             Self::Timeout => write!(f, "the other device stopped answering"),
             Self::Peer(text) => write!(f, "{text}"),
+            Self::Cancelled => write!(f, "cancelled"),
         }
     }
 }
@@ -151,6 +154,22 @@ async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, wait: Duration) -> Result<V
     Ok(body)
 }
 
+/// The reason the receiver gave (its `Bad` verdict) if one is waiting, otherwise `fallback`.
+async fn peer_verdict<R: AsyncRead + Unpin>(rx: &mut R, fallback: FileError) -> FileError {
+    match timeout(
+        Duration::from_secs(2),
+        read_frame(rx, Duration::from_secs(2)),
+    )
+    .await
+    {
+        Ok(Ok(body)) => match postcard::from_bytes::<FileDone>(&body) {
+            Ok(FileDone::Bad { text }) => FileError::Peer(text),
+            _ => fallback,
+        },
+        _ => fallback,
+    }
+}
+
 fn short(text: &str) -> String {
     text.chars().take(200).collect()
 }
@@ -184,10 +203,12 @@ where
             return Err(FileError::TooShort);
         }
         hasher.update(&buf[..n]);
-        timeout(IDLE_TIMEOUT, tx.write_all(&buf[..n]))
-            .await
-            .map_err(|_| FileError::Timeout)?
-            .map_err(io_err)?;
+        match timeout(IDLE_TIMEOUT, tx.write_all(&buf[..n])).await {
+            Err(_) => return Err(FileError::Timeout),
+            // The receiver stopped reading: it usually said why just before it hung up.
+            Ok(Err(e)) => return Err(peer_verdict(rx, io_err(e)).await),
+            Ok(Ok(())) => {}
+        }
         sent += n as u64;
         progress(sent);
     }
@@ -568,6 +589,58 @@ mod tests {
             }
             let mut sink = Vec::new();
             let _ = seen.read_to_end(&mut sink).await;
+        }
+    }
+
+    /// A sink that fails after `limit` bytes (a full disk).
+    struct FullAfter {
+        limit: usize,
+        written: usize,
+    }
+
+    impl AsyncWrite for FullAfter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            if self.written + buf.len() > self.limit {
+                return Poll::Ready(Err(std::io::Error::other("no space left on device")));
+            }
+            self.written += buf.len();
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_receiver_that_cannot_save_tells_the_sender_why_not_just_broken_pipe() {
+        let data = pattern(2_000_000);
+        let (s_to_r_w, s_to_r_r) = duplex(64 * 1024);
+        let (r_to_s_w, r_to_s_r) = duplex(64 * 1024);
+        let head = header(data.len() as u64);
+        let sender = tokio::spawn(async move {
+            let (mut tx, mut rx) = (s_to_r_w, r_to_s_r);
+            send_file(&head, &data[..], &mut tx, &mut rx, &mut |_| {}).await
+        });
+        let receiver = tokio::spawn(async move {
+            let incoming = IncomingFile::open(s_to_r_r, r_to_s_w).await?;
+            let mut sink = FullAfter {
+                limit: 300_000,
+                written: 0,
+            };
+            incoming.accept(&mut sink, &mut |_| {}).await.map(|_| ())
+        });
+        let got = receiver.await.unwrap();
+        assert!(matches!(got, Err(FileError::Io(_))), "{got:?}");
+        match sender.await.unwrap() {
+            Err(FileError::Peer(text)) => assert!(text.contains("could not be saved"), "{text}"),
+            other => panic!("the sender should learn why: {other:?}"),
         }
     }
 

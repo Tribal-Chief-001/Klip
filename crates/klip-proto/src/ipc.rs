@@ -160,6 +160,40 @@ pub struct ImageStateInfo {
     pub waiting: Option<WaitingImageInfo>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransferDirection {
+    Sending,
+    Receiving,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransferState {
+    /// Queued behind another file for the same device, or still connecting.
+    Waiting,
+    Active,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+/// One file transfer as the control channel reports it (kept in memory only, never on disk).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferInfo {
+    pub id: [u8; 16],
+    /// The other device's name.
+    pub peer: String,
+    pub direction: TransferDirection,
+    pub name: String,
+    pub size: u64,
+    pub done: u64,
+    pub state: TransferState,
+    pub error: Option<String>,
+    /// Where a received file was saved.
+    pub saved_to: Option<String>,
+    pub started_ms: u64,
+    pub finished_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingPairInfo {
     pub device_name: String,
