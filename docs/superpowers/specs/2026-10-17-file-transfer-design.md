@@ -37,7 +37,7 @@ showing up in notifications or logs (they can say what a person is working on).
   The clip protocol (`klip/sync/1`, one clip per stream) is untouched, so clip sync cannot regress and a file cannot
   head-of-line block a clip. An old device does not list the new ALPN, so the handshake refuses it and we say why.
 - **Ruling: the transfer protocol (postcard frames, all bounded):** sender -> receiver `FileHeader { version: 1,
-  id: [u8;16], name, size: u64, mime: Option<String> }` (frame <= 2 KiB); receiver -> sender `FileReply`
+  id: [u8;16], name, size: u64 }` (frame <= 2 KiB; no MIME type is sent: a peer-supplied type would steer how other apps treat the file); receiver -> sender `FileReply`
   (`Accept` or `Reject { code, text }`); then exactly `size` raw bytes in 256 KiB chunks; then the 32-byte BLAKE3 of
   those bytes; then receiver -> sender `FileDone` (`Ok` or `Bad { text }`). A hash trailer, not a leading hash:
   the sender reads the file once. The receiver counts bytes: fewer or more than `size`, a hash mismatch, or no
@@ -77,6 +77,28 @@ showing up in notifications or logs (they can say what a person is working on).
   app: the bridge.
 - **Ruling: ship in two steps.** v0.8.0-alpha: everything on desktops (the three OSes compile and run the tests on CI);
   v0.8.1-alpha: Android. Android devices on v0.8.0 or older simply refuse files with the clear message.
+
+## Calls settled after the builder check (my calls, each a Ruling)
+- **One QUIC connection per transfer**, dialled when the transfer starts and closed when it ends (no cached file connection, so
+  nothing to keep alive on a phone, no glare rule, no clash with the clip connection's dedupe). Active transfers are tracked by
+  peer so that unpairing a device resets all of its streams and closes their connections.
+- **Telling "old device" from "offline":** if the clip connection to the device is up but the file connection cannot be opened,
+  the answer is "the other device does not support file transfer: update Klip on it" (`FileUnsupported`); if the clip
+  connection is also down, it is the usual "not connected".
+- **Paths:** the CLI makes the path absolute before it sends `SendFile`; the daemon refuses a relative path. A new CLI against
+  an older daemon reads `Hello`, finds no `file_transfer` capability and says "restart Klip: the running one is older".
+- **Concurrency:** the limits count incoming transfers only (3 in all, 2 from one device: headroom for a retry that overlaps a
+  dying stream). The sending side is serialised per device inside the daemon, even when two CLI calls arrive together.
+- **Android is a full sender and receiver**, with its own settings: a switch "Receive files" (default on) and a lower cap
+  (default 2 GiB), passed to the engine at start. Receiving needs room for the staged copy and the MediaStore copy, so the
+  free-space check on Android requires `2 x size + reserve`; the staged file is deleted only after the copy is verified, and when
+  the copy fails the file stays in the app's storage and the notification says so (a leak is better than losing it).
+- **Android share sheet:** one more entry, "Send as a file with Klip" (`SEND` and `SEND_MULTIPLE`, `*/*`), next to the existing
+  text and image entries (which keep their meaning: clipboard). It sends to every online paired device and the toast names them;
+  a device picker is a non-goal.
+- **Android long transfers:** they run inside the existing foreground service; while a transfer is active the app holds a partial
+  wake lock and a Wi-Fi lock. A killed service fails the transfer (no resume); that is accepted.
+- **MIME on Android** comes from the sanitised extension, never from the sender.
 
 ## Constraints
 Linux binary stays under the 9.5 MiB CI budget (now 9.46 MB; the feature must cost well under 400 KB). One heavy build
