@@ -188,7 +188,6 @@ async fn perform(client: &DaemonClient, action: Action) -> Result<(), String> {
                 .map_err(|e| e.to_string())??;
             let mut problems = Vec::new();
             for path in paths {
-                let path = path.to_string_lossy().into_owned();
                 match call(IpcRequest::SendFile { path, to: None }).await? {
                     IpcResponse::TransfersStarted(_) => {}
                     IpcResponse::Error(e) => problems.push(e),

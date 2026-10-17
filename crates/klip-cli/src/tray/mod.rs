@@ -364,68 +364,158 @@ pub fn open_folder(folder: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A file dialog installed on this system: `zenity` first, then `kdialog`. `has` says whether a programme exists.
-pub fn picker_command(has: impl Fn(&str) -> bool) -> Option<(String, Vec<String>)> {
-    if has("zenity") {
-        Some((
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Os {
+    Linux,
+    MacOs,
+    Windows,
+}
+
+pub fn current_os() -> Os {
+    if cfg!(target_os = "windows") {
+        Os::Windows
+    } else if cfg!(target_os = "macos") {
+        Os::MacOs
+    } else {
+        Os::Linux
+    }
+}
+
+/// The ASCII unit separator: zenity puts it between the chosen files, so a name with a newline in it survives.
+const PICKER_SEPARATOR: char = '\u{1f}';
+
+const MAC_PICKER: [&str; 5] = [
+    "set picked to choose file with prompt \"Send files with Klip\" with multiple selections allowed",
+    "set out to \"\"",
+    "repeat with f in picked",
+    "set out to out & POSIX path of f & linefeed",
+    "end repeat",
+];
+
+const WINDOWS_PICKER: &str = "Add-Type -AssemblyName System.Windows.Forms; \
+$d = New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect = $true; $d.Title = 'Send files with Klip'; \
+if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { \
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $d.FileNames | ForEach-Object { $_ } }";
+
+/// The file dialog of a system as a programme and its arguments, when the programme exists (`has`).
+/// Linux: `zenity`, else `kdialog`. macOS: `osascript`. Windows: PowerShell with the .NET dialog.
+pub fn picker_command_for(os: Os, has: impl Fn(&str) -> bool) -> Option<(String, Vec<String>)> {
+    let args = |list: &[&str]| list.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    match os {
+        Os::Linux if has("zenity") => Some((
             "zenity".into(),
-            [
+            args(&[
                 "--file-selection",
                 "--multiple",
-                "--separator=\n",
+                &format!("--separator={PICKER_SEPARATOR}"),
                 "--title=Send files with Klip",
-            ]
-            .map(String::from)
-            .to_vec(),
-        ))
-    } else if has("kdialog") {
-        Some((
+            ]),
+        )),
+        Os::Linux if has("kdialog") => Some((
             "kdialog".into(),
-            [
+            args(&[
                 "--getopenfilename",
                 "--multiple",
                 "--separate-output",
                 ".",
                 "--title",
                 "Send files with Klip",
-            ]
-            .map(String::from)
-            .to_vec(),
-        ))
-    } else {
-        None
+            ]),
+        )),
+        Os::MacOs if has("osascript") => {
+            let mut list = Vec::new();
+            for line in MAC_PICKER {
+                list.push("-e".to_string());
+                list.push(line.to_string());
+            }
+            list.push("-e".to_string());
+            list.push("return out".to_string());
+            Some(("osascript".into(), list))
+        }
+        Os::Windows if has("powershell") => Some((
+            "powershell".into(),
+            args(&["-NoProfile", "-STA", "-Command", WINDOWS_PICKER]),
+        )),
+        _ => None,
     }
 }
 
-/// The absolute paths a picker printed, one per line; a line that is not an absolute path is ignored.
-pub fn parse_picker_output(text: &str) -> Vec<PathBuf> {
-    text.lines()
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
+/// The absolute paths a dialog printed. Linux dialogs: separated by the unit separator (zenity) or newlines
+/// (kdialog); macOS: one per line; Windows: one per line, drive paths and UNC paths. Anything else is ignored.
+pub fn parse_picker_output(os: Os, text: &str) -> Vec<String> {
+    let absolute = |p: &str| match os {
+        Os::Windows => {
+            let b = p.as_bytes();
+            (b.len() > 2
+                && b[0].is_ascii_alphabetic()
+                && b[1] == b':'
+                && (b[2] == b'\\' || b[2] == b'/'))
+                || p.starts_with("\\\\")
+        }
+        _ => p.starts_with('/'),
+    };
+    let parts: Vec<&str> = if os == Os::Linux && text.contains(PICKER_SEPARATOR) {
+        text.trim_end_matches('\n')
+            .split(PICKER_SEPARATOR)
+            .collect()
+    } else {
+        text.lines().collect()
+    };
+    parts
+        .into_iter()
+        .map(|p| p.trim_end_matches('\r'))
+        .filter(|p| absolute(p))
+        .map(str::to_string)
         .collect()
 }
 
-fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+/// How a dialog ended: `Ok(true)` the person cancelled, `Ok(false)` they chose (or may have), `Err` it broke.
+pub fn picker_outcome(os: Os, success: bool, stdout: &str, stderr: &str) -> Result<bool, String> {
+    if success {
+        return Ok(stdout.trim().is_empty());
+    }
+    let why = stderr.lines().map(str::trim).find(|l| !l.is_empty());
+    match os {
+        // AppleScript reports a closed dialog as error -128 ("User canceled").
+        Os::MacOs if stderr.contains("-128") => Ok(true),
+        Os::MacOs | Os::Windows => Err(why.unwrap_or("the file dialog failed").to_string()),
+        // zenity and kdialog exit 1 with nothing printed when the dialog is closed.
+        Os::Linux if stdout.trim().is_empty() && why.is_none() => Ok(true),
+        Os::Linux => Err(why.unwrap_or("the file dialog failed").to_string()),
+    }
 }
 
-/// Is there a file dialog to offer "Send a file..." with? Linux only (macOS and Windows have none yet).
+fn on_path(program: &str) -> bool {
+    let names: Vec<String> = if cfg!(windows) {
+        vec![program.to_string(), format!("{program}.exe")]
+    } else {
+        vec![program.to_string()]
+    };
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| names.iter().any(|n| dir.join(n).is_file()))
+    })
+}
+
+/// Is there a file dialog to offer "Send a file..." with on this system?
 pub fn picker_available() -> bool {
-    cfg!(target_os = "linux") && picker_command(on_path).is_some()
+    picker_command_for(current_os(), on_path).is_some()
 }
 
 /// Ask the person for files with the system's dialog. An empty list: they cancelled.
-pub fn pick_files() -> Result<Vec<PathBuf>, String> {
-    let (program, args) =
-        picker_command(on_path).ok_or("no file dialog is installed (zenity or kdialog)")?;
+pub fn pick_files() -> Result<Vec<String>, String> {
+    let os = current_os();
+    let (program, args) = picker_command_for(os, on_path).ok_or("no file dialog is available")?;
     let out = Command::new(&program)
         .args(args)
         .stdin(Stdio::null())
-        .stderr(Stdio::null())
         .output()
         .map_err(|e| format!("cannot run {program}: {e}"))?;
-    Ok(parse_picker_output(&String::from_utf8_lossy(&out.stdout)))
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if picker_outcome(os, out.status.success(), &stdout, &stderr)? {
+        return Ok(Vec::new());
+    }
+    Ok(parse_picker_output(os, &stdout))
 }
 
 #[cfg(test)]
@@ -444,6 +534,103 @@ mod tests {
     }
 
     #[test]
+    fn each_system_gets_its_own_file_dialog_and_none_installed_means_no_menu_entry() {
+        let only = |name: &'static str| move |p: &str| p == name;
+        // Linux: zenity first (with a separator no file name has), else kdialog, else nothing.
+        let (program, args) = picker_command_for(Os::Linux, only("zenity")).unwrap();
+        assert_eq!(program, "zenity");
+        assert!(args.iter().any(|a| a == "--multiple"));
+        assert!(args.iter().any(|a| a == "--separator=\u{1f}"), "{args:?}");
+        let (program, args) = picker_command_for(Os::Linux, only("kdialog")).unwrap();
+        assert_eq!(program, "kdialog");
+        assert!(args.iter().any(|a| a == "--getopenfilename"));
+        assert!(picker_command_for(Os::Linux, |_| false).is_none());
+        assert_eq!(picker_command_for(Os::Linux, |_| true).unwrap().0, "zenity");
+        // macOS: osascript with a script that lets the person pick several files and prints POSIX paths.
+        let (program, args) = picker_command_for(Os::MacOs, only("osascript")).unwrap();
+        assert_eq!(program, "osascript");
+        let script = args.join("\n");
+        assert!(script.contains("choose file") && script.contains("multiple selections allowed"));
+        assert!(script.contains("POSIX path"));
+        assert!(picker_command_for(Os::MacOs, |_| false).is_none());
+        // Windows: the .NET file dialog through PowerShell (single-threaded apartment, UTF-8 output).
+        let (program, args) = picker_command_for(Os::Windows, only("powershell")).unwrap();
+        assert_eq!(program, "powershell");
+        assert!(args.iter().any(|a| a == "-STA") && args.iter().any(|a| a == "-NoProfile"));
+        let script = args.last().unwrap();
+        assert!(script.contains("OpenFileDialog") && script.contains("Multiselect = $true"));
+        assert!(script.contains("UTF8"));
+        assert!(picker_command_for(Os::Windows, |_| false).is_none());
+    }
+
+    #[test]
+    fn what_each_dialog_prints_becomes_paths_exactly() {
+        // zenity: the unit separator, so a newline or a tab inside a name survives.
+        let zenity = "/home/me/My Photos/a b.jpg\u{1f}/tmp/new\nline.txt\u{1f}/tmp/\u{00fc}ber.txt";
+        assert_eq!(
+            parse_picker_output(Os::Linux, zenity),
+            vec![
+                "/home/me/My Photos/a b.jpg",
+                "/tmp/new\nline.txt",
+                "/tmp/\u{00fc}ber.txt"
+            ]
+        );
+        // kdialog and macOS print one path per line; anything that is not absolute is ignored.
+        let lines = "/a/b c.txt\n\nrelative.txt\n/tmp/with\ttab.txt\n";
+        for os in [Os::Linux, Os::MacOs] {
+            assert_eq!(
+                parse_picker_output(os, lines),
+                vec!["/a/b c.txt", "/tmp/with\ttab.txt"]
+            );
+        }
+        // Windows: drive paths and UNC paths, CRLF lines.
+        let win =
+            "C:\\Users\\me\\My Photos\\a.jpg\r\n\\\\server\\share\\b.txt\r\nrelative\\c.txt\r\n";
+        assert_eq!(
+            parse_picker_output(Os::Windows, win),
+            vec![
+                "C:\\Users\\me\\My Photos\\a.jpg",
+                "\\\\server\\share\\b.txt"
+            ]
+        );
+        assert!(parse_picker_output(Os::Windows, "").is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_dialog_is_an_empty_list_and_a_broken_one_is_an_error() {
+        // macOS: cancel is exit 1 with error -128 on stderr.
+        assert_eq!(
+            picker_outcome(
+                Os::MacOs,
+                false,
+                "",
+                "execution error: User canceled. (-128)"
+            ),
+            Ok(true)
+        );
+        assert!(picker_outcome(
+            Os::MacOs,
+            false,
+            "",
+            "execution error: Not authorized (-1743)"
+        )
+        .is_err());
+        assert_eq!(picker_outcome(Os::MacOs, true, "/a\n", ""), Ok(false));
+        // Linux dialogs exit 1 with nothing printed when cancelled.
+        assert_eq!(picker_outcome(Os::Linux, false, "", ""), Ok(true));
+        assert_eq!(picker_outcome(Os::Linux, true, "/a", ""), Ok(false));
+        // Windows: a failed PowerShell is an error; success with no output is a cancel.
+        assert!(picker_outcome(
+            Os::Windows,
+            false,
+            "",
+            "The term 'Add-Type' is not recognized"
+        )
+        .is_err());
+        assert_eq!(picker_outcome(Os::Windows, true, "", ""), Ok(true));
+    }
+
+    #[test]
     fn the_folder_is_opened_with_the_programme_each_system_has() {
         let (program, args) = open_command(Path::new("/home/me/Downloads/Klip"));
         let expected = if cfg!(target_os = "windows") {
@@ -455,37 +642,6 @@ mod tests {
         };
         assert_eq!(program, expected);
         assert_eq!(args, vec!["/home/me/Downloads/Klip".to_string()]);
-    }
-
-    #[test]
-    fn a_file_picker_is_chosen_from_what_is_installed_and_none_means_no_menu_entry() {
-        let only = |name: &'static str| move |p: &str| p == name;
-        let (program, args) = picker_command(only("zenity")).unwrap();
-        assert_eq!(program, "zenity");
-        assert!(
-            args.iter().any(|a| a == "--file-selection") && args.iter().any(|a| a == "--multiple")
-        );
-        let (program, args) = picker_command(only("kdialog")).unwrap();
-        assert_eq!(program, "kdialog");
-        assert!(args.iter().any(|a| a == "--getopenfilename"));
-        assert!(picker_command(|_| false).is_none());
-        // zenity wins when both are there.
-        assert_eq!(picker_command(|_| true).unwrap().0, "zenity");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn what_the_picker_prints_becomes_absolute_paths_exactly() {
-        let out = "/home/me/My Photos/a b.jpg\n/tmp/\u{00fc}ber.txt\n\nrelative/ignored.txt\n/tmp/with\ttab.txt\n";
-        assert_eq!(
-            parse_picker_output(out),
-            vec![
-                PathBuf::from("/home/me/My Photos/a b.jpg"),
-                PathBuf::from("/tmp/\u{00fc}ber.txt"),
-                PathBuf::from("/tmp/with\ttab.txt"),
-            ]
-        );
-        assert!(parse_picker_output("").is_empty());
     }
 
     use super::*;
