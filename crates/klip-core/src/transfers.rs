@@ -273,15 +273,38 @@ impl SyncCoordinator {
         path: PathBuf,
         to: Option<String>,
     ) -> Vec<Result<TransferInfo, String>> {
-        let (targets, connected) = match self.select_targets(&to) {
-            Ok(selected) => selected,
-            Err(why) => return vec![Err(why)],
-        };
         let root = path.clone();
         let walked = match tokio::task::spawn_blocking(move || crate::folders::walk(&root)).await {
             Ok(Ok(w)) => Arc::new(w),
             Ok(Err(why)) => return vec![Err(format!("cannot send {}: {why}", path.display()))],
             Err(e) => return vec![Err(e.to_string())],
+        };
+        self.start_folder_job(walked, to).await
+    }
+
+    /// A folder somebody else lists (the phone, from a document tree): the files are opened one at a time, when their
+    /// turn comes, by `opener(index)`. Same rows, limits, stop rules and resume as a folder of this computer.
+    pub async fn send_folder_entries(
+        self: &Arc<Self>,
+        top: String,
+        entries: Vec<crate::folders::ExternalEntry>,
+        opener: crate::folders::Opener,
+        to: Option<String>,
+    ) -> Vec<Result<TransferInfo, String>> {
+        match crate::folders::from_entries(&top, entries, opener) {
+            Ok(walked) => self.start_folder_job(Arc::new(walked), to).await,
+            Err(why) => vec![Err(format!("cannot send the folder: {why}"))],
+        }
+    }
+
+    async fn start_folder_job(
+        self: &Arc<Self>,
+        walked: Arc<crate::folders::Walked>,
+        to: Option<String>,
+    ) -> Vec<Result<TransferInfo, String>> {
+        let (targets, connected) = match self.select_targets(&to) {
+            Ok(selected) => selected,
+            Err(why) => return vec![Err(why)],
         };
         let mut answers = Vec::new();
         for peer in targets {
@@ -413,12 +436,24 @@ impl SyncCoordinator {
         base: u64,
         token: &mut crate::files::CancelToken,
     ) -> Result<(), FolderFail> {
-        let mut prepared = prepare_send(&entry.path).await.map_err(|e| {
-            FolderFail::File(FileError::Io(format!(
-                "cannot read {}: {e}",
-                entry.path.display()
-            )))
-        })?;
+        let prepared = match &entry.open {
+            // The phone's way: the owner of the file hands over an open descriptor when asked.
+            Some(opener) => {
+                let (opener, index) = (Arc::clone(opener), entry.index);
+                let name = entry.name.clone();
+                tokio::task::spawn_blocking(move || {
+                    opener(index).and_then(|file| PreparedFile::from_file(file, &name, None))
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()))
+                .map_err(|e| format!("cannot read {}: {e}", entry.name))
+            }
+            None => prepare_send(&entry.path)
+                .await
+                .map_err(|e| format!("cannot read {}: {e}", entry.path.display())),
+        };
+        let mut prepared = prepared.map_err(|e| FolderFail::File(FileError::Io(e)))?;
         let mut fresh_key = false;
         let mut busy_tries = 0;
         loop {

@@ -18,13 +18,75 @@ pub const MAX_DEPTH: usize = klip_net::file::MAX_FOLDER_DEPTH;
 /// A send that has been quiet this long is over: its folder is forgotten (and removed when it is still empty).
 const BATCH_IDLE: Duration = Duration::from_secs(3600);
 
-/// One file of a folder to send.
-#[derive(Debug, Clone)]
+/// Opens the file with this index of a folder send, when its turn comes (a phone hands out file descriptors, not paths).
+pub type Opener = std::sync::Arc<dyn Fn(usize) -> io::Result<fs::File> + Send + Sync>;
+
+/// One file of a folder to send: a path on this computer, or an index for an [`Opener`].
+#[derive(Clone)]
 pub struct FolderEntry {
     pub path: PathBuf,
+    /// The file's own (cleaned) name.
+    pub name: String,
     /// The folders between the top one and the file (cleaned names).
     pub rel: Vec<String>,
     pub size: u64,
+    pub index: usize,
+    pub open: Option<Opener>,
+}
+
+impl std::fmt::Debug for FolderEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FolderEntry")
+            .field("path", &self.path)
+            .field("name", &self.name)
+            .field("rel", &self.rel)
+            .field("size", &self.size)
+            .finish()
+    }
+}
+
+/// A file of a folder that somebody else lists (the Android app, from a document tree).
+#[derive(Debug, Clone)]
+pub struct ExternalEntry {
+    pub rel: Vec<String>,
+    pub name: String,
+    pub size: u64,
+}
+
+/// The same limits as a walk, for a list that did not come from a walk. Names are cleaned here too.
+pub fn from_entries(
+    top: &str,
+    entries: Vec<ExternalEntry>,
+    opener: Opener,
+) -> Result<Walked, String> {
+    if entries.is_empty() {
+        return Err("the folder has no files to send".into());
+    }
+    if entries.len() > MAX_FILES {
+        return Err(format!("the folder has more than {MAX_FILES} files"));
+    }
+    if entries.iter().any(|e| e.rel.len() > MAX_DEPTH) {
+        return Err(format!("the folder is deeper than {MAX_DEPTH} levels"));
+    }
+    let total = entries.iter().map(|e| e.size).sum();
+    let entries = entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, e)| FolderEntry {
+            path: PathBuf::new(),
+            name: sanitize_file_name(&e.name),
+            rel: e.rel.iter().map(|c| sanitize_file_name(c)).collect(),
+            size: e.size,
+            index,
+            open: Some(std::sync::Arc::clone(&opener)),
+        })
+        .collect();
+    Ok(Walked {
+        top: sanitize_file_name(top),
+        entries,
+        total,
+        skipped: 0,
+    })
 }
 
 #[derive(Debug)]
@@ -83,10 +145,14 @@ fn visit(dir: &Path, rel: &mut Vec<String>, out: &mut Walked) -> Result<(), Stri
                 return Err(format!("the folder has more than {MAX_FILES} files"));
             }
             out.total += meta.len();
+            let index = out.entries.len();
             out.entries.push(FolderEntry {
+                name: sanitize_file_name(&child.file_name().to_string_lossy()),
                 path,
                 rel: rel.clone(),
                 size: meta.len(),
+                index,
+                open: None,
             });
         } else {
             out.skipped += 1;
@@ -292,6 +358,58 @@ mod tests {
             .entries
             .iter()
             .all(|e| e.path.is_file() && e.path.starts_with(&root)));
+    }
+
+    #[cfg(unix)]
+    fn ext(rel: &[&str], name: &str, size: u64) -> ExternalEntry {
+        ExternalEntry {
+            rel: rel.iter().map(|s| s.to_string()).collect(),
+            name: name.to_string(),
+            size,
+        }
+    }
+
+    fn no_opener() -> Opener {
+        std::sync::Arc::new(|_| Err(io::Error::other("not called")))
+    }
+
+    #[test]
+    fn a_list_from_outside_becomes_a_folder_job_with_clean_names_and_a_total() {
+        let w = from_entries(
+            "Trip: 2026",
+            vec![ext(&[], "a.txt", 5), ext(&["Day 1", "CON"], "b:c.jpg", 100)],
+            no_opener(),
+        )
+        .unwrap();
+        assert_eq!(w.top, "Trip_ 2026");
+        assert_eq!(w.total, 105);
+        assert_eq!(w.entries.len(), 2);
+        assert_eq!(w.entries[1].name, "b_c.jpg");
+        assert_eq!(
+            w.entries[1].rel,
+            vec!["Day 1".to_string(), "_CON".to_string()]
+        );
+        assert_eq!((w.entries[0].index, w.entries[1].index), (0, 1));
+        assert!(w.entries.iter().all(|e| e.open.is_some()));
+    }
+
+    #[test]
+    fn a_list_from_outside_obeys_the_same_limits_as_a_walk() {
+        assert!(from_entries("T", vec![], no_opener())
+            .unwrap_err()
+            .contains("no files"));
+        let many: Vec<_> = (0..=MAX_FILES)
+            .map(|i| ext(&[], &format!("f{i}"), 1))
+            .collect();
+        assert!(from_entries("T", many, no_opener())
+            .unwrap_err()
+            .contains("1000"));
+        let deep: Vec<String> = (0..=MAX_DEPTH).map(|i| format!("d{i}")).collect();
+        let deep: Vec<&str> = deep.iter().map(String::as_str).collect();
+        assert!(from_entries("T", vec![ext(&deep, "x", 1)], no_opener())
+            .unwrap_err()
+            .contains("16"));
+        assert!(from_entries("T", vec![ext(&deep[..MAX_DEPTH], "x", 1)], no_opener()).is_ok());
     }
 
     #[cfg(unix)]

@@ -1406,3 +1406,145 @@ async fn a_cut_to_a_version_one_receiver_starts_again_from_zero_and_keeps_nothin
     );
     assert!(a.engine.sync.cancel_transfer(second.id));
 }
+
+/// (the list, what each file holds, where each file is)
+type ExternalFolder = (
+    Vec<klip_core::folders::ExternalEntry>,
+    Vec<(String, Vec<u8>)>,
+    Vec<PathBuf>,
+);
+
+/// A folder listed by "somebody else" (as the phone does): the files are on disk here, handed over by an opener.
+fn external_folder(root: &Path, count: usize) -> ExternalFolder {
+    let (top, files) = make_folder(root, count);
+    let entries = files
+        .iter()
+        .map(|(rel, bytes)| {
+            let mut parts: Vec<String> = rel.split('/').map(String::from).collect();
+            let name = parts.pop().unwrap();
+            klip_core::folders::ExternalEntry {
+                rel: parts,
+                name,
+                size: bytes.len() as u64,
+            }
+        })
+        .collect();
+    let paths = files.iter().map(|(rel, _)| top.join(rel)).collect();
+    (entries, files, paths)
+}
+
+#[tokio::test]
+async fn a_folder_from_an_opener_arrives_with_its_structure_and_files_open_only_on_their_turn() {
+    let (a, _b, incoming) = two_paired("opener1", |_| {}).await;
+    let (entries, files, paths) = external_folder(&a.dir.join("out"), 12);
+    let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (opened2, done_rows) = (
+        Arc::clone(&opened),
+        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    );
+    let _ = &done_rows;
+    let opener: klip_core::folders::Opener = Arc::new(move |i| {
+        opened2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::fs::File::open(&paths[i])
+    });
+    let mut answers = a
+        .engine
+        .sync
+        .send_folder_entries("Album".into(), entries, opener, None)
+        .await;
+    assert_eq!(
+        opened.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing is opened when the send starts"
+    );
+    let row = answers.remove(0).unwrap();
+    assert_eq!(row.name, "Album");
+    let done = wait_transfer(&a, 60, "the folder", |t| t.id == row.id && finished(t)).await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        opened.load(std::sync::atomic::Ordering::SeqCst),
+        12,
+        "each file is opened once"
+    );
+    for (rel, bytes) in &files {
+        assert_eq!(
+            &std::fs::read(incoming.join("Album").join(rel)).unwrap(),
+            bytes,
+            "{rel}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_opener_that_fails_for_one_file_fails_only_that_file() {
+    let (a, _b, incoming) = two_paired("opener2", |_| {}).await;
+    let (entries, files, paths) = external_folder(&a.dir.join("out"), 8);
+    let opener: klip_core::folders::Opener = Arc::new(move |i| {
+        if i == 3 {
+            Err(std::io::Error::other("the provider refused"))
+        } else {
+            std::fs::File::open(&paths[i])
+        }
+    });
+    let row = a
+        .engine
+        .sync
+        .send_folder_entries("Album".into(), entries, opener, None)
+        .await
+        .remove(0)
+        .unwrap();
+    let done = wait_transfer(&a, 60, "the folder", |t| t.id == row.id && finished(t)).await;
+    assert_eq!(done.state, TransferState::Failed, "{done:?}");
+    assert!(
+        done.error
+            .as_deref()
+            .unwrap()
+            .starts_with("1 of 8 files failed"),
+        "{done:?}"
+    );
+    for (i, (rel, bytes)) in files.iter().enumerate() {
+        let path = incoming.join("Album").join(rel);
+        if i == 3 {
+            assert!(!path.exists());
+        } else {
+            assert_eq!(&std::fs::read(&path).unwrap(), bytes);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_list_over_the_limits_is_refused_before_any_file_is_opened() {
+    let (a, _b, _incoming) = two_paired("opener3", |_| {}).await;
+    let touched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let t2 = Arc::clone(&touched);
+    let opener: klip_core::folders::Opener = Arc::new(move |_| {
+        t2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(std::io::Error::other("never"))
+    });
+    let many: Vec<_> = (0..1001)
+        .map(|i| klip_core::folders::ExternalEntry {
+            rel: vec![],
+            name: format!("f{i}"),
+            size: 1,
+        })
+        .collect();
+    let answers = a
+        .engine
+        .sync
+        .send_folder_entries("Album".into(), many, Arc::clone(&opener), None)
+        .await;
+    assert!(
+        answers[0].as_ref().unwrap_err().contains("1000"),
+        "{answers:?}"
+    );
+    let answers = a
+        .engine
+        .sync
+        .send_folder_entries("Album".into(), vec![], opener, None)
+        .await;
+    assert!(
+        answers[0].as_ref().unwrap_err().contains("no files"),
+        "{answers:?}"
+    );
+    assert_eq!(touched.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
