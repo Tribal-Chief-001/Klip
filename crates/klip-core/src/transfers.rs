@@ -447,7 +447,11 @@ impl SyncCoordinator {
                 &self.transfers,
             )
             .await;
-            streams.close();
+            if matches!(result, Err(FileError::Cancelled)) && !self.transfers.is_stopping() {
+                streams.cancel().await;
+            } else {
+                streams.close();
+            }
             if retry_from_zero(resumed, fresh_key, &result) {
                 fresh_key = true;
                 continue;
@@ -575,7 +579,15 @@ impl SyncCoordinator {
                                 &me.transfers,
                             )
                             .await;
-                            streams.close();
+                            // A cancel by the person is told to the receiver (so it deletes the part); the daemon
+                            // stopping is not a decision and stays a cut.
+                            if matches!(result, Err(FileError::Cancelled))
+                                && !me.transfers.is_stopping()
+                            {
+                                streams.cancel().await;
+                            } else {
+                                streams.close();
+                            }
                             if retry_from_zero(resumed, fresh_key, &result) {
                                 fresh_key = true;
                                 me.transfers.progress(id, 0);

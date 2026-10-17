@@ -1142,7 +1142,7 @@ where
             if let Some(place) = &place {
                 reg.batches.failed(&device, place.batch);
             }
-            let state = if matches!(e, FileError::Cancelled) {
+            let state = if matches!(e, FileError::Cancelled | FileError::CancelledByPeer) {
                 TransferState::Cancelled
             } else {
                 TransferState::Failed

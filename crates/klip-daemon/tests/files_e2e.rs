@@ -924,105 +924,6 @@ async fn a_device_unpaired_after_it_connected_cannot_deliver_its_file() {
 }
 
 #[tokio::test]
-async fn cutting_a_transfer_then_sending_the_same_file_again_resumes_and_arrives_equal() {
-    let (a, b, incoming) = two_paired("resume", |_| {}).await;
-    let path = make_file(&a.dir.join("out"), "movie.bin", 160 * 1024 * 1024);
-    let first = send(&a, &path).await;
-    let cut = wait_transfer(&a, 60, "bytes to move", |t| {
-        t.id == first.id && t.done > 40 * 1024 * 1024
-    })
-    .await
-    .done;
-    assert!(a.engine.sync.cancel_transfer(first.id));
-    wait_transfer(&a, 20, "the cut", |t| t.id == first.id && finished(t)).await;
-    assert!(
-        wait_until(15, || files_in(&incoming)
-            .iter()
-            .any(|n| n.starts_with(".klip-") && n.ends_with(".part")))
-        .await,
-        "the receiver keeps what arrived: {:?}",
-        files_in(&incoming)
-    );
-
-    let second = send(&a, &path).await;
-    // The first progress seen on the new transfer is the offset the receiver asked to continue from.
-    let mut first_seen = 0;
-    let end = Instant::now() + Duration::from_secs(30);
-    while first_seen == 0 {
-        first_seen = a
-            .engine
-            .sync
-            .transfers()
-            .iter()
-            .find(|t| t.id == second.id)
-            .map_or(0, |t| t.done);
-        assert!(
-            Instant::now() < end,
-            "the second transfer never started moving"
-        );
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
-    assert!(
-        first_seen >= cut * 9 / 10,
-        "resumed from {first_seen}, the cut was at {cut}"
-    );
-    let done = wait_transfer(&a, 90, "the second send", |t| {
-        t.id == second.id && finished(t)
-    })
-    .await;
-    assert_eq!(done.state, TransferState::Done, "{done:?}");
-    assert_eq!(
-        std::fs::read(incoming.join("movie.bin")).unwrap(),
-        std::fs::read(&path).unwrap()
-    );
-    assert_eq!(files_in(&incoming), ["movie.bin"], "no partial is left");
-    drop(b);
-}
-
-#[tokio::test]
-async fn a_resume_whose_kept_partial_no_longer_matches_is_retried_from_zero_and_still_arrives_equal(
-) {
-    use std::io::{Seek, SeekFrom, Write};
-    let (a, _b, incoming) = two_paired("resume-bad", |_| {}).await;
-    let path = make_file(&a.dir.join("out"), "movie.bin", 120 * 1024 * 1024);
-    let first = send(&a, &path).await;
-    wait_transfer(&a, 60, "bytes to move", |t| {
-        t.id == first.id && t.done > 30 * 1024 * 1024
-    })
-    .await;
-    assert!(a.engine.sync.cancel_transfer(first.id));
-    wait_transfer(&a, 20, "the cut", |t| t.id == first.id && finished(t)).await;
-    assert!(
-        wait_until(15, || files_in(&incoming)
-            .iter()
-            .any(|n| n.ends_with(".part")))
-        .await
-    );
-
-    // Change a byte inside the part the receiver already holds, and put the modification time back: to the
-    // sender it is still "the same file", but the kept bytes are now wrong.
-    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
-    let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-    f.seek(SeekFrom::Start(5 * 1024 * 1024)).unwrap();
-    f.write_all(&[0xAB]).unwrap();
-    f.set_modified(before).unwrap();
-    drop(f);
-
-    let second = send(&a, &path).await;
-    let done = wait_transfer(&a, 120, "the second send", |t| {
-        t.id == second.id && finished(t)
-    })
-    .await;
-    assert_eq!(done.state, TransferState::Done, "{done:?}");
-    assert_eq!(
-        std::fs::read(incoming.join("movie.bin")).unwrap(),
-        std::fs::read(&path).unwrap(),
-        "the file that arrived is the changed one, complete"
-    );
-    assert_eq!(files_in(&incoming), ["movie.bin"]);
-}
-
-#[tokio::test]
 async fn cancelling_on_the_receiving_side_deletes_the_partial() {
     let (a, b, incoming) = two_paired("recvcancel", |_| {}).await;
     let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
@@ -1041,12 +942,7 @@ async fn cancelling_on_the_receiving_side_deletes_the_partial() {
 async fn unpairing_the_sender_on_the_receiving_side_deletes_what_it_left() {
     let (a, b, incoming) = two_paired("unpair-kept", |_| {}).await;
     let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
-    let started = send(&a, &huge).await;
-    wait_transfer(&a, 30, "bytes to move", |t| {
-        t.id == started.id && t.done > 20 * 1024 * 1024
-    })
-    .await;
-    assert!(a.engine.sync.cancel_transfer(started.id));
+    cut_transfer(&a, &huge, 30 * 1024 * 1024).await;
     assert!(
         wait_until(15, || files_in(&incoming)
             .iter()
@@ -1243,4 +1139,184 @@ async fn a_folder_stops_at_once_when_the_other_device_does_not_accept_files() {
         "one refusal, not thirty"
     );
     assert!(final_files_in(&incoming).is_empty());
+}
+
+/// A source that fails ("the network dropped") after `left` bytes.
+struct CutAfter {
+    inner: tokio::fs::File,
+    left: usize,
+}
+
+impl tokio::io::AsyncRead for CutAfter {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.left == 0 {
+            return std::task::Poll::Ready(Err(std::io::Error::other("cut")));
+        }
+        let cap = buf.remaining().min(self.left);
+        let mut limited = tokio::io::ReadBuf::new(buf.initialize_unfilled_to(cap));
+        match std::pin::Pin::new(&mut self.inner).poll_read(cx, &mut limited) {
+            std::task::Poll::Ready(Ok(())) => {
+                let n = limited.filled().len();
+                buf.advance(n);
+                self.left -= n;
+                std::task::Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
+
+/// Cut a transfer the way a dropped network does: the source fails after `after` bytes and nobody cancels (the
+/// stream is just dropped), so the receiver keeps what arrived. The resume key is the one the coordinator computes.
+async fn cut_transfer(a: &TestDaemon, path: &Path, after: usize) {
+    use klip_net::file::{send_file_v2_offset, FileHeaderV2};
+    use std::io::Read;
+    let b_id = a.engine.sync.net.peers()[0].id;
+    let mut streams = a.engine.sync.net.open_file_stream(b_id).await.unwrap();
+    let meta = std::fs::metadata(path).unwrap();
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .unwrap()
+        .take(64 * 1024)
+        .read_to_end(&mut head)
+        .unwrap();
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let header = FileHeaderV2 {
+        version: 2,
+        id: [9; 16],
+        name: name.clone(),
+        size: meta.len(),
+        resume_key: klip_core::files::resume_key(&name, meta.len(), mtime, &head),
+        folder: None,
+    };
+    let source = CutAfter {
+        inner: tokio::fs::File::open(path).await.unwrap(),
+        left: after,
+    };
+    let r = send_file_v2_offset(
+        &header,
+        source,
+        &mut streams.tx,
+        &mut streams.rx,
+        &mut |_| {},
+        &mut 0,
+    )
+    .await;
+    assert!(r.is_err(), "the cut transfer ends in an error: {r:?}");
+    streams.close();
+}
+
+#[tokio::test]
+async fn cutting_a_transfer_then_sending_the_same_file_again_resumes_and_arrives_equal() {
+    let (a, b, incoming) = two_paired("resume", |_| {}).await;
+    let path = make_file(&a.dir.join("out"), "movie.bin", 160 * 1024 * 1024);
+    let cut = 50 * 1024 * 1024;
+    cut_transfer(&a, &path, cut).await;
+    assert!(
+        wait_until(15, || files_in(&incoming)
+            .iter()
+            .any(|n| n.starts_with(".klip-") && n.ends_with(".part")))
+        .await,
+        "the receiver keeps what arrived: {:?}",
+        files_in(&incoming)
+    );
+
+    let second = send(&a, &path).await;
+    // The first progress seen on the new transfer is the offset the receiver asked to continue from.
+    let mut first_seen = 0;
+    let end = Instant::now() + Duration::from_secs(30);
+    while first_seen == 0 {
+        first_seen = a
+            .engine
+            .sync
+            .transfers()
+            .iter()
+            .find(|t| t.id == second.id)
+            .map_or(0, |t| t.done);
+        assert!(
+            Instant::now() < end,
+            "the second transfer never started moving"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(
+        first_seen as usize >= cut * 9 / 10,
+        "resumed from {first_seen}, the cut was at {cut}"
+    );
+    let done = wait_transfer(&a, 90, "the second send", |t| {
+        t.id == second.id && finished(t)
+    })
+    .await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        std::fs::read(incoming.join("movie.bin")).unwrap(),
+        std::fs::read(&path).unwrap()
+    );
+    assert_eq!(files_in(&incoming), ["movie.bin"], "no partial is left");
+    drop(b);
+}
+
+#[tokio::test]
+async fn a_resume_whose_kept_partial_no_longer_matches_is_retried_from_zero_and_still_arrives_equal(
+) {
+    use std::io::{Seek, SeekFrom, Write};
+    let (a, _b, incoming) = two_paired("resume-bad", |_| {}).await;
+    let path = make_file(&a.dir.join("out"), "movie.bin", 120 * 1024 * 1024);
+    cut_transfer(&a, &path, 40 * 1024 * 1024).await;
+    assert!(
+        wait_until(15, || files_in(&incoming)
+            .iter()
+            .any(|n| n.ends_with(".part")))
+        .await
+    );
+
+    // Change a byte inside the part the receiver already holds, and put the modification time back: to the
+    // sender it is still "the same file", but the kept bytes are now wrong.
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.seek(SeekFrom::Start(5 * 1024 * 1024)).unwrap();
+    f.write_all(&[0xAB]).unwrap();
+    f.set_modified(before).unwrap();
+    drop(f);
+
+    let second = send(&a, &path).await;
+    let done = wait_transfer(&a, 120, "the second send", |t| {
+        t.id == second.id && finished(t)
+    })
+    .await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        std::fs::read(incoming.join("movie.bin")).unwrap(),
+        std::fs::read(&path).unwrap(),
+        "the file that arrived is the changed one, complete"
+    );
+    assert_eq!(files_in(&incoming), ["movie.bin"]);
+}
+
+#[tokio::test]
+async fn cancelling_on_the_sending_side_tells_the_receiver_and_nothing_is_kept() {
+    let (a, _b, incoming) = two_paired("sendercancel", |_| {}).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
+    let started = send(&a, &huge).await;
+    wait_transfer(&a, 30, "bytes to move", |t| {
+        t.id == started.id && t.done > 20 * 1024 * 1024
+    })
+    .await;
+    assert!(a.engine.sync.cancel_transfer(started.id));
+    wait_transfer(&a, 20, "the cancel", |t| t.id == started.id && finished(t)).await;
+    assert!(
+        wait_until(10, || files_in(&incoming).is_empty()).await,
+        "a deliberate cancel is not a cut: the receiver keeps nothing ({:?})",
+        files_in(&incoming)
+    );
 }

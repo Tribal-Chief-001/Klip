@@ -26,6 +26,9 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The receiver may need a while to flush and move a big file before it can say "done".
 pub const DONE_TIMEOUT: Duration = Duration::from_secs(300);
 pub const MAX_NAME_CHARS: usize = 255;
+/// A sender that cancels on purpose resets the file stream with this code before it closes the connection. A reset
+/// with any other code (a stream that was just dropped) is a cut: the receiver keeps what arrived for a resume.
+pub const CANCEL_CODE: u32 = 77;
 /// What a receiver says when the bytes arrived but the hash did not match. A sender that resumed treats exactly this
 /// verdict as "the kept part was not the same file any more" and sends the file again from the start.
 pub const DAMAGED: &str = "the file arrived damaged";
@@ -110,6 +113,8 @@ pub enum FileError {
     Peer(String),
     /// Somebody cancelled the transfer here.
     Cancelled,
+    /// The other device cancelled on purpose (a stream reset with `CANCEL_CODE`): not a cut, nothing is kept for a resume.
+    CancelledByPeer,
 }
 
 impl std::fmt::Display for FileError {
@@ -124,6 +129,7 @@ impl std::fmt::Display for FileError {
             Self::Timeout => write!(f, "the other device stopped answering"),
             Self::Peer(text) => write!(f, "{text}"),
             Self::Cancelled => write!(f, "cancelled"),
+            Self::CancelledByPeer => write!(f, "the other device cancelled"),
         }
     }
 }
@@ -135,7 +141,11 @@ fn io_err(e: std::io::Error) -> FileError {
         FileError::TooShort
     } else {
         let text = e.to_string();
-        if text.contains("stopped by peer") || text.contains("reset by peer") {
+        if text.contains(&format!("reset by peer: error {CANCEL_CODE}"))
+            && !text.contains(&format!("error {CANCEL_CODE}0"))
+        {
+            FileError::CancelledByPeer
+        } else if text.contains("stopped by peer") {
             FileError::Peer("the other device stopped the transfer".into())
         } else {
             FileError::Io(text)
@@ -632,13 +642,26 @@ impl<W: AsyncWrite + Unpin> Received<W> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_stream_the_other_side_stopped_says_so_in_plain_words() {
-        let e = super::io_err(std::io::Error::other("sending stopped by peer: error 0"));
-        assert_eq!(e.to_string(), "the other device stopped the transfer");
-        let e = super::io_err(std::io::Error::other("connection reset by peer"));
-        assert_eq!(e.to_string(), "the other device stopped the transfer");
-        let e = super::io_err(std::io::Error::other("disk on fire"));
-        assert_eq!(e.to_string(), "disk on fire");
+    fn a_reset_with_code_77_means_cancelled_and_other_resets_are_cuts() {
+        let cancelled = super::io_err(std::io::Error::other("stream reset by peer: error 77"));
+        assert!(
+            matches!(cancelled, FileError::CancelledByPeer),
+            "{cancelled:?}"
+        );
+        assert_eq!(cancelled.to_string(), "the other device cancelled");
+        // A dropped stream resets with code 0; a connection that died says something else: both are cuts.
+        for cut in [
+            "stream reset by peer: error 0",
+            "stream reset by peer: error 770",
+            "connection lost",
+        ] {
+            let e = super::io_err(std::io::Error::other(cut));
+            assert!(matches!(e, FileError::Io(_)), "{cut}: {e:?}");
+        }
+        let stopped = super::io_err(std::io::Error::other("sending stopped by peer: error 0"));
+        assert_eq!(stopped.to_string(), "the other device stopped the transfer");
+        let other = super::io_err(std::io::Error::other("disk on fire"));
+        assert_eq!(other.to_string(), "disk on fire");
     }
 
     use super::*;

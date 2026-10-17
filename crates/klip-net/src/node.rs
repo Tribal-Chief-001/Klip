@@ -210,6 +210,14 @@ impl FileStreams {
     pub fn close(self) {
         self.conn.close(CODE_DONE.into(), b"done");
     }
+
+    /// The person cancelled: tell the receiver it is a cancel and not a cut (a reset with `CANCEL_CODE`), give the
+    /// frame a moment to leave, then close. Best effort: when the signal is lost the receiver treats it as a cut.
+    pub async fn cancel(mut self) {
+        let _ = self.tx.reset(VarInt::from_u32(crate::file::CANCEL_CODE));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        self.conn.close(CODE_DONE.into(), b"cancelled");
+    }
 }
 
 struct PairingWindow {
