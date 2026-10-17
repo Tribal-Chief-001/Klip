@@ -191,6 +191,8 @@ fn ensure_dir(dir: &Path) -> io::Result<()> {
 const MIN_KEEP_BYTES: u64 = 1024 * 1024;
 const MAX_KEPT_PER_DEVICE: usize = 8;
 const MAX_KEPT_TOTAL: usize = 32;
+/// All kept partials together may hold at most this many bytes (the oldest go first).
+const MAX_KEPT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 /// The key a sender gives a file so a second send of the same file finds the partial the first one left:
 /// BLAKE3 of the name, size, modification time and the first bytes. Never all zeros (that means "no resume").
@@ -239,6 +241,11 @@ impl KeptIndex {
             let _ = fs::remove_file(items.remove(i).0);
         }
         while items.len() > MAX_KEPT_TOTAL {
+            let _ = fs::remove_file(items.remove(0).0);
+        }
+        let size = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        while items.iter().map(|(p, _)| size(p)).sum::<u64>() > MAX_KEPT_BYTES && !items.is_empty()
+        {
             let _ = fs::remove_file(items.remove(0).0);
         }
     }
@@ -2304,6 +2311,35 @@ mod tests {
         index.register(b.clone(), b"Tab".to_vec());
         index.forget_device(b"Pad");
         assert!(!a.exists() && b.exists());
+    }
+
+    #[test]
+    fn kept_partials_are_capped_in_bytes_too_oldest_first() {
+        let dir = temp("resume9");
+        let index = KeptIndex::default();
+        let mk = |i: usize, gib: u64| {
+            let path = dir.join(format!(".klip-{i:032x}.part"));
+            fs::File::create(&path)
+                .unwrap()
+                .set_len(gib * 1024 * 1024 * 1024)
+                .unwrap();
+            path
+        };
+        // Three devices, 7 GiB each: 21 GiB is over the 16 GiB cap, so the oldest goes.
+        let (a, b, c) = (mk(1, 7), mk(2, 7), mk(3, 7));
+        index.register(a.clone(), b"A".to_vec());
+        index.register(b.clone(), b"B".to_vec());
+        assert!(a.exists() && b.exists(), "14 GiB is under the cap");
+        index.register(c.clone(), b"C".to_vec());
+        assert!(
+            !a.exists(),
+            "the oldest part is removed to get under 16 GiB"
+        );
+        assert!(b.exists() && c.exists());
+        // A single part over the cap is not kept at all.
+        let huge = mk(4, 20);
+        index.register(huge.clone(), b"D".to_vec());
+        assert!(!huge.exists());
     }
 
     #[test]

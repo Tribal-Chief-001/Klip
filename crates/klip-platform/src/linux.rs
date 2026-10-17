@@ -18,6 +18,8 @@ pub struct LinuxClipboardDriver {
     changes: Option<tokio::sync::watch::Receiver<u64>>,
     /// Size of the last copied image that was over the limit (said once, not on every poll).
     oversize_seen: Mutex<Option<(u32, u32)>>,
+    /// Images are not read before this moment (an over-limit one was just seen).
+    image_skip_until: Mutex<Option<std::time::Instant>>,
 }
 
 /// Remember the size of the last image that was too big. `true` the first time a size is seen, so it is mentioned once
@@ -110,6 +112,7 @@ impl LinuxClipboardDriver {
             local_node,
             changes: spawn_x11_change_watcher(),
             oversize_seen: Mutex::new(None),
+            image_skip_until: Mutex::new(None),
         }
     }
 }
@@ -164,7 +167,12 @@ impl ClipboardDriver for LinuxClipboardDriver {
             }
         }
 
-        // Try reading image
+        // Try reading image (not right after an over-limit one: reading it costs a lot and a polling session would
+        // do it ten times a second)
+        let skip = *self.image_skip_until.lock().unwrap();
+        if !image_read_allowed(std::time::Instant::now(), skip) {
+            return Ok(None);
+        }
         if let Ok(img) = cb.get_image() {
             // Would be refused by every receiver anyway: do not spend a PNG encode on it.
             if klip_diff::too_many_pixels(img.width as u32, img.height as u32) {
@@ -173,6 +181,8 @@ impl ClipboardDriver for LinuxClipboardDriver {
                     img.width as u32,
                     img.height as u32,
                 );
+                *self.image_skip_until.lock().unwrap() =
+                    Some(std::time::Instant::now() + OVERSIZE_BACKOFF);
                 if first {
                     eprintln!(
                         "[klip_platform] a copied image of {} x {} pixels is over the limit and is not synced",
@@ -254,9 +264,36 @@ impl ClipboardDriver for LinuxClipboardDriver {
     }
 }
 
+/// After an over-limit image was seen, images are not read again for this long (text still is, every tick).
+const OVERSIZE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// May the clipboard be asked for an image now? `skip_until` is set to the end of the backoff by `note_oversize`.
+fn image_read_allowed(now: std::time::Instant, skip_until: Option<std::time::Instant>) -> bool {
+    skip_until.is_none_or(|until| now >= until)
+}
+
 #[cfg(test)]
 mod oversize_tests {
-    use super::first_sight_of_oversize;
+    use super::{first_sight_of_oversize, image_read_allowed, OVERSIZE_BACKOFF};
+
+    #[test]
+    fn an_oversize_image_is_not_read_again_for_two_seconds() {
+        let t0 = std::time::Instant::now();
+        assert!(image_read_allowed(t0, None), "nothing seen yet: read");
+        let until = Some(t0 + OVERSIZE_BACKOFF);
+        assert!(!image_read_allowed(
+            t0 + std::time::Duration::from_millis(100),
+            until
+        ));
+        assert!(!image_read_allowed(
+            t0 + std::time::Duration::from_millis(1999),
+            until
+        ));
+        assert!(
+            image_read_allowed(t0 + std::time::Duration::from_secs(2), until),
+            "after the backoff: look again"
+        );
+    }
 
     #[test]
     fn an_oversize_image_is_mentioned_once_per_size() {
