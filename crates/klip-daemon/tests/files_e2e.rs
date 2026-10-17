@@ -704,3 +704,131 @@ async fn stopping_the_receiving_daemon_leaves_no_partial_file() {
     let mine = wait_transfer(&a, 30, "the sender to give up", finished).await;
     assert_eq!(mine.state, TransferState::Failed, "{mine:?}");
 }
+
+async fn send_open(
+    a: &TestDaemon,
+    file: std::fs::File,
+    name: &str,
+) -> Vec<Result<TransferInfo, String>> {
+    a.engine
+        .sync
+        .send_open_file(file, name.to_string(), None)
+        .await
+}
+
+#[tokio::test]
+async fn an_open_file_is_sent_and_arrives_after_the_original_is_closed() {
+    let (a, _b, incoming) = two_paired("openfile", |_| {}).await;
+    let path = make_file(&a.dir.join("out"), "open.bin", 24 * 1024 * 1024);
+    let f = std::fs::File::open(&path).unwrap();
+    let answers = send_open(&a, f, "from-descriptor.bin").await; // `f` is moved in and dropped by the caller side
+    assert!(answers[0].is_ok(), "{answers:?}");
+    let done = wait_transfer(&a, 60, "the send", finished).await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        std::fs::read(incoming.join("from-descriptor.bin")).unwrap(),
+        std::fs::read(&path).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn one_open_file_sent_to_two_devices_arrives_intact_at_both() {
+    let a = start_daemon("Alpha", fresh_dir("open2-a"), false).await;
+    let mut receivers = Vec::new();
+    for name in ["Beta", "Gamma"] {
+        let dir = fresh_dir(&format!("open2-{name}"));
+        let incoming = dir.join("incoming");
+        let cfg = incoming.display().to_string();
+        let d = start_daemon_with(name, dir, false, move |c| c.receive_dir = Some(cfg)).await;
+        assert!(matches!(
+            pair(&a, &d, true).await,
+            IpcResponse::PairSuccess { .. }
+        ));
+        receivers.push((d, incoming));
+    }
+    let a2 = a.engine.clone();
+    assert!(
+        wait_until(30, || a2
+            .sync
+            .net
+            .peer_statuses()
+            .iter()
+            .filter(|s| s.connected)
+            .count()
+            == 2)
+        .await,
+        "both devices connect"
+    );
+    let path = make_file(&a.dir.join("out"), "shared.bin", 12 * 1024 * 1024);
+    let answers = send_open(&a, std::fs::File::open(&path).unwrap(), "shared.bin").await;
+    assert_eq!(
+        answers.iter().filter(|r| r.is_ok()).count(),
+        2,
+        "{answers:?}"
+    );
+    for (d, incoming) in &receivers {
+        wait_transfer(d, 60, "the file", finished).await;
+        assert_eq!(
+            std::fs::read(incoming.join("shared.bin")).unwrap(),
+            std::fs::read(&path).unwrap(),
+            "{}",
+            d.engine.config.device_name
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_non_regular_open_file_is_refused() {
+    let (a, _b, incoming) = two_paired("openrefuse", |_| {}).await;
+    let answers = send_open(&a, std::fs::File::open("/dev/null").unwrap(), "null").await;
+    assert!(
+        answers[0].as_ref().unwrap_err().contains("regular"),
+        "{answers:?}"
+    );
+    assert!(files_in(&incoming).is_empty() && a.engine.sync.transfers().is_empty());
+}
+
+#[tokio::test]
+async fn a_file_that_shrinks_while_sent_fails_and_leaves_nothing() {
+    let (a, _b, incoming) = two_paired("openshrink", |_| {}).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
+    let started = send_open(&a, std::fs::File::open(&huge).unwrap(), "huge.bin").await;
+    assert!(started[0].is_ok());
+    wait_transfer(&a, 30, "bytes to move", |t| t.done > 20 * 1024 * 1024).await;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&huge)
+        .unwrap()
+        .set_len(1024 * 1024)
+        .unwrap();
+    let t = wait_transfer(&a, 30, "the failure", finished).await;
+    assert_eq!(t.state, TransferState::Failed, "{t:?}");
+    assert!(
+        wait_until(15, || files_in(&incoming).is_empty()).await,
+        "{:?}",
+        files_in(&incoming)
+    );
+}
+
+#[tokio::test]
+async fn a_hostile_display_name_becomes_a_safe_name() {
+    let (a, _b, incoming) = two_paired("openname", |_| {}).await;
+    let path = make_file(&a.dir.join("out"), "n.bin", 100);
+    for raw in ["../../evil.sh", "", &"x".repeat(400)] {
+        let ans = send_open(&a, std::fs::File::open(&path).unwrap(), raw).await;
+        assert!(ans[0].is_ok(), "{raw:?}: {ans:?}");
+    }
+    assert!(
+        wait_until(30, || files_in(&incoming).len() == 3).await,
+        "{:?}",
+        files_in(&incoming)
+    );
+    for name in files_in(&incoming) {
+        assert!(
+            !name.contains('/') && !name.is_empty() && name.chars().count() <= 255,
+            "{name}"
+        );
+    }
+    assert!(files_in(&incoming).contains(&"evil.sh".to_string()));
+    assert!(!a.dir.parent().unwrap().join("evil.sh").exists());
+}

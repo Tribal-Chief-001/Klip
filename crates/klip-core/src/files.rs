@@ -727,6 +727,28 @@ pub struct PreparedFile {
     file: tokio::fs::File,
     pub name: String,
     pub size: u64,
+    /// Sends of one open file to several devices share its read position: they take turns on this.
+    serial: Option<std::sync::Arc<tokio::sync::Mutex<()>>>,
+}
+
+impl PreparedFile {
+    /// From a file somebody else opened (an Android descriptor): must be a regular file.
+    pub fn from_file(
+        file: File,
+        name: &str,
+        serial: Option<std::sync::Arc<tokio::sync::Mutex<()>>>,
+    ) -> io::Result<Self> {
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Err(io::Error::other("only regular files can be sent"));
+        }
+        Ok(Self {
+            file: tokio::fs::File::from_std(file),
+            name: sanitize_file_name(name),
+            size: meta.len(),
+            serial,
+        })
+    }
 }
 
 pub async fn prepare_send(path: &Path) -> io::Result<PreparedFile> {
@@ -747,13 +769,14 @@ pub async fn prepare_send(path: &Path) -> io::Result<PreparedFile> {
         file,
         name: sanitize_file_name(&raw),
         size: meta.len(),
+        serial: None,
     })
 }
 
 /// Send a prepared file over streams that are already open. A file that changed size since it was
 /// measured fails the transfer instead of sending something the receiver would reject anyway.
 pub async fn send_prepared<R, W>(
-    prepared: PreparedFile,
+    mut prepared: PreparedFile,
     id: [u8; 16],
     tx: &mut W,
     rx: &mut R,
@@ -772,8 +795,19 @@ where
         size: prepared.size,
     };
     let mut progress = |n| reg.progress(id, n);
+    let serial = prepared.serial.clone();
     let result = tokio::select! {
-        r = send_file(&header, prepared.file, tx, rx, &mut progress) => r,
+        r = async {
+            // Take our turn on a file shared with other sends, then start from its beginning.
+            let _turn = match serial {
+                Some(m) => Some(m.lock_owned().await),
+                None => None,
+            };
+            tokio::io::AsyncSeekExt::seek(&mut prepared.file, std::io::SeekFrom::Start(0))
+                .await
+                .map_err(|e| FileError::Io(e.to_string()))?;
+            send_file(&header, prepared.file, tx, rx, &mut progress).await
+        } => r,
         _ = cancel.cancelled() => Err(FileError::Cancelled),
     };
     match &result {

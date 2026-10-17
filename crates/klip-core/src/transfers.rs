@@ -1,6 +1,6 @@
 //! The coordinator's side of file transfer: take what paired devices send, send what the person asks.
 use crate::files::{
-    default_receive_dir, prepare_send, receive_incoming, send_prepared, FilePolicy,
+    default_receive_dir, prepare_send, receive_incoming, send_prepared, FilePolicy, PreparedFile,
 };
 use crate::sync::{node_of, FileReceivedHook, SyncCoordinator};
 use klip_net::file::IncomingFile;
@@ -17,6 +17,30 @@ use std::time::Duration;
 const MAX_WAITING_SENDS: usize = 64;
 
 pub(crate) const PARTIAL_MAX_AGE: Duration = Duration::from_secs(3600);
+
+/// What a send reads from: a path (opened once per receiving device) or a file somebody opened.
+enum Source {
+    Path(PathBuf),
+    Open {
+        file: std::fs::File,
+        name: String,
+        serial: Arc<tokio::sync::Mutex<()>>,
+    },
+}
+
+impl Source {
+    async fn prepare(&self) -> Result<PreparedFile, String> {
+        match self {
+            Source::Path(path) => prepare_send(path)
+                .await
+                .map_err(|e| format!("cannot send {}: {e}", path.display())),
+            Source::Open { file, name, serial } => file
+                .try_clone()
+                .and_then(|f| PreparedFile::from_file(f, name, Some(Arc::clone(serial))))
+                .map_err(|e| format!("cannot send {name}: {e}")),
+        }
+    }
+}
 
 impl SyncCoordinator {
     /// What this device accepts, from its settings.
@@ -101,6 +125,27 @@ impl SyncCoordinator {
         path: PathBuf,
         to: Option<String>,
     ) -> Vec<Result<TransferInfo, String>> {
+        self.send_to_targets(Source::Path(path), to).await
+    }
+
+    /// Like `send_file`, for a file somebody else opened (an Android descriptor). The caller may close
+    /// its own handle once this returns; each send works on a duplicate.
+    pub async fn send_open_file(
+        self: &Arc<Self>,
+        file: std::fs::File,
+        name: String,
+        to: Option<String>,
+    ) -> Vec<Result<TransferInfo, String>> {
+        let serial = Arc::new(tokio::sync::Mutex::new(()));
+        self.send_to_targets(Source::Open { file, name, serial }, to)
+            .await
+    }
+
+    async fn send_to_targets(
+        self: &Arc<Self>,
+        source: Source,
+        to: Option<String>,
+    ) -> Vec<Result<TransferInfo, String>> {
         let peers = self.net.peers();
         if peers.is_empty() {
             return vec![Err("No linked devices. Run `klip pair` first.".to_string())];
@@ -153,10 +198,10 @@ impl SyncCoordinator {
                 continue;
             }
             // One open file per device: a file is read once per receiver, never shared.
-            let prepared = match prepare_send(&path).await {
+            let prepared = match source.prepare().await {
                 Ok(p) => p,
                 Err(e) => {
-                    answers.push(Err(format!("cannot send {}: {e}", path.display())));
+                    answers.push(Err(e));
                     break;
                 }
             };
