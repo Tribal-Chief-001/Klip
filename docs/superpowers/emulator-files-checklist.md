@@ -45,3 +45,6 @@ pipe-backed file and a small document tree.
 | Phone storage nearly full (about 250 MB free, `fallocate` in `/data/local/tmp`), the peer sends 190 MB | Refused at once by the phone: "this device does not have enough free space for the file"; nothing staged; space freed again |
 
 Not run: the system's own folder picker UI, a version-1-only peer on the phone, Android 8-9 (no image), the real phone.
+
+After the review fixes (same day): the debug tree was sent again with `d.jpg` served by the provider as a pipe (no size, no
+seek): all four files arrived byte-equal, so a pipe-backed file inside a folder goes through the cache copy too.
