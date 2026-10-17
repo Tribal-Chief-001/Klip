@@ -2721,15 +2721,18 @@ dependencies = [
 name = "klip-core"
 version = "0.7.0"
 dependencies = [
+ "directories",
  "hostname",
  "klip-crypto",
  "klip-diff",
  "klip-net",
  "klip-platform",
  "klip-proto",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

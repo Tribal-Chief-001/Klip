@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod engine;
+pub mod files;
 pub mod history;
 pub mod sync;
 
