@@ -1,4 +1,5 @@
 use crate::config::{DaemonConfig, KlipPaths, RelayMode};
+use crate::files::TransferRegistry;
 use crate::history::HistoryBuffer;
 use klip_crypto::identity::{DeviceIdentity, KeyStore, PairedPeer};
 use klip_diff::entropy::analyze_snippet;
@@ -62,6 +63,10 @@ fn build_payload(
 /// Called, outside any lock, when an automatic copy could not reach a device: its name and how long
 /// it has been gone. Only the name and a duration: never clip content.
 pub type UndeliveredHook = Arc<dyn Fn(&str, Duration) + Send + Sync>;
+
+/// Called when a file from a paired device was received and saved: the device's name, where it is,
+/// and its size. The host decides how to tell the person (a desktop notification, an Android one).
+pub type FileReceivedHook = Arc<dyn Fn(&str, &std::path::Path, u64) + Send + Sync>;
 
 /// "5 min" / "2 h" for how long a device has been gone; `None` under a minute.
 pub fn offline_label(gone: Duration) -> Option<String> {
@@ -212,6 +217,11 @@ pub struct SyncCoordinator {
     pending_image: Mutex<PendingSlot>,
     /// Devices already alerted about in their current outage.
     alerted: Mutex<HashSet<NodeId>>,
+    /// Every file transfer, running or recently finished.
+    pub(crate) transfers: TransferRegistry,
+    pub(crate) file_hook: Mutex<Option<FileReceivedHook>>,
+    /// One file at a time to each device (a second one waits its turn).
+    pub(crate) file_send_locks: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl SyncCoordinator {
@@ -253,6 +263,9 @@ impl SyncCoordinator {
             auto_images: AtomicBool::new(auto_images),
             pending_image: Mutex::new(PendingSlot::default()),
             alerted: Mutex::new(HashSet::new()),
+            transfers: TransferRegistry::new(),
+            file_hook: Mutex::new(None),
+            file_send_locks: Mutex::new(HashMap::new()),
         }
     }
 
@@ -603,8 +616,9 @@ impl SyncCoordinator {
     // ----------------------------------------------------------------------- peers -> local
 
     /// Handle one event from the network layer.
-    pub async fn handle_net_event(&self, event: NetEvent) {
+    pub async fn handle_net_event(self: &Arc<Self>, event: NetEvent) {
         match event {
+            NetEvent::File { from, tx, rx, conn } => self.spawn_incoming_file(from, tx, rx, conn),
             NetEvent::Clip { from, payload, ack } => {
                 let outcome = self.apply_remote_clip(&from, payload).await;
                 let _ = ack.send(outcome);
@@ -826,6 +840,8 @@ impl SyncCoordinator {
                 drop(ks);
                 self.net.unpair(&one.id);
                 self.alerted.lock().unwrap().remove(&node);
+                // Files still moving to or from that device stop with it.
+                self.transfers.cancel_peer(&one.name);
                 Ok(one.name.clone())
             }
             many => Err(format!(

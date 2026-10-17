@@ -9,8 +9,11 @@ pub mod engine;
 pub mod files;
 pub mod history;
 pub mod sync;
+mod transfers;
 
 pub use config::{DaemonConfig, KlipPaths, RelayMode};
 pub use engine::{CoreEngine, Shutdown};
 pub use history::HistoryBuffer;
-pub use sync::{node_of, offline_label, DeliveryReport, SyncCoordinator, UndeliveredHook};
+pub use sync::{
+    node_of, offline_label, DeliveryReport, FileReceivedHook, SyncCoordinator, UndeliveredHook,
+};

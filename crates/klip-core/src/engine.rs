@@ -95,6 +95,11 @@ impl CoreEngine {
             net,
         ));
         let shutdown = Arc::new(Shutdown::default());
+        // A transfer that died with the previous daemon leaves a hidden partial file: clear old ones.
+        let receive_dir = sync.file_policy().dir;
+        tokio::task::spawn_blocking(move || {
+            crate::files::sweep_partials(&receive_dir, crate::transfers::PARTIAL_MAX_AGE)
+        });
         let pump = spawn_event_pump(Arc::clone(&sync), net_events, Arc::clone(&shutdown));
 
         Ok(Arc::new(Self {

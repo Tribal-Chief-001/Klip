@@ -102,6 +102,15 @@ pub struct DaemonConfig {
     /// Send copied images to the other devices at once. Off (the default): a copied image waits until
     /// it is sent on purpose (`klip share`, the tray). Text is always sent automatically.
     pub auto_send_images: bool,
+    /// Take files that paired devices send (into `receive_dir`). Off: every file is refused.
+    pub accept_files: bool,
+    /// Where received files go (an absolute path). `None`: `<Downloads>/Klip`.
+    pub receive_dir: Option<String>,
+    /// Largest file accepted, in bytes.
+    pub max_file_bytes: u64,
+    /// Free space needed per byte of a received file (1; 2 on Android, which copies the file again
+    /// into shared storage). Not meant to be edited by hand.
+    pub file_space_factor: u64,
 }
 
 impl Default for DaemonConfig {
@@ -115,6 +124,10 @@ impl Default for DaemonConfig {
             max_clip_bytes: 32 * 1024 * 1024,
             lan_discovery: true,
             auto_send_images: false,
+            accept_files: true,
+            receive_dir: None,
+            max_file_bytes: 4 * 1024 * 1024 * 1024,
+            file_space_factor: 1,
         }
     }
 }
@@ -154,6 +167,20 @@ impl DaemonConfig {
         if self.max_history_items == 0 {
             return Err("max_history_items must be at least 1".into());
         }
+        if self.max_file_bytes == 0 || self.max_file_bytes > 64 * 1024 * 1024 * 1024 {
+            return Err("max_file_bytes must be between 1 and 68719476736 (64 GiB)".into());
+        }
+        if let Some(dir) = &self.receive_dir {
+            if dir.is_empty() || !std::path::Path::new(dir).is_absolute() {
+                return Err(
+                    "receive_dir must be an absolute path (for example /home/me/Downloads/Klip)"
+                        .into(),
+                );
+            }
+        }
+        if self.file_space_factor == 0 || self.file_space_factor > 8 {
+            return Err("file_space_factor must be between 1 and 8".into());
+        }
         Ok(())
     }
 }
@@ -172,6 +199,68 @@ fn default_device_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_file_keys_have_safe_defaults_and_are_validated() {
+        use super::*;
+        let d = DaemonConfig::default();
+        assert!(d.accept_files);
+        assert_eq!(d.receive_dir, None);
+        assert_eq!(d.max_file_bytes, 4 * 1024 * 1024 * 1024);
+        assert_eq!(d.file_space_factor, 1);
+        assert!(d.validate().is_ok());
+
+        for max in [0, 65 * 1024 * 1024 * 1024] {
+            let bad = DaemonConfig {
+                max_file_bytes: max,
+                ..DaemonConfig::default()
+            };
+            assert!(
+                bad.validate().unwrap_err().contains("max_file_bytes"),
+                "{max}"
+            );
+        }
+        for dir in ["", "relative/folder", "~/Downloads"] {
+            let c = DaemonConfig {
+                receive_dir: Some(dir.into()),
+                ..DaemonConfig::default()
+            };
+            assert!(c.validate().unwrap_err().contains("receive_dir"), "{dir:?}");
+        }
+        let ok = DaemonConfig {
+            receive_dir: Some(std::env::temp_dir().display().to_string()),
+            ..DaemonConfig::default()
+        };
+        assert!(ok.validate().is_ok());
+        let zero = DaemonConfig {
+            file_space_factor: 0,
+            ..ok
+        };
+        assert!(zero.validate().unwrap_err().contains("file_space_factor"));
+    }
+
+    #[test]
+    fn an_old_config_file_without_the_file_keys_still_loads_with_defaults() {
+        use super::*;
+        let dir = std::env::temp_dir().join(format!("klip-cfg-files-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let paths = KlipPaths::from_dir(&dir);
+        fs::write(
+            paths.config_file(),
+            r#"{"device_name":"Old","max_history_items":10}"#,
+        )
+        .unwrap();
+        let cfg = DaemonConfig::load(&paths).unwrap();
+        assert_eq!(cfg.device_name, "Old");
+        assert!(cfg.accept_files && cfg.receive_dir.is_none());
+        let mut changed = cfg.clone();
+        changed.accept_files = false;
+        changed.receive_dir = Some(std::env::temp_dir().display().to_string());
+        changed.save(&paths).unwrap();
+        let back = DaemonConfig::load(&paths).unwrap();
+        assert!(!back.accept_files);
+        assert_eq!(back.receive_dir, changed.receive_dir);
+    }
+
     #[test]
     fn the_windows_pipe_name_is_stable_per_directory_and_differs_between_directories() {
         use super::*;
