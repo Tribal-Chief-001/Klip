@@ -269,12 +269,12 @@ mod tests {
 
     #[test]
     fn a_folder_is_walked_with_its_structure_sizes_and_a_clean_top_name() {
-        let root = temp("walk1").join("Holiday: 2026");
+        let root = temp("walk1").join("Holiday 2026");
         put(&root.join("a.txt"), b"12345");
         put(&root.join("Day 1/raw/b.cr2"), &[0u8; 100]);
         put(&root.join("Day 1/c.jpg"), &[1u8; 10]);
         let w = walk(&root).unwrap();
-        assert_eq!(w.top, "Holiday_ 2026");
+        assert_eq!(w.top, "Holiday 2026");
         assert_eq!(w.total, 115);
         assert_eq!(w.skipped, 0);
         let mut seen: Vec<(Vec<String>, u64)> =
@@ -340,8 +340,18 @@ mod tests {
         );
     }
 
+    // Names with ':' or '*' (or a folder called CON) cannot exist on Windows: only a Unix sender can have them.
+    #[cfg(unix)]
     #[test]
     fn hostile_and_reserved_names_are_cleaned_per_component() {
+        let root = temp("walk6b").join("Holiday: 2026");
+        put(&root.join("a.txt"), b"x");
+        assert_eq!(walk(&root).unwrap().top, "Holiday_ 2026");
+        hostile_names_part_two();
+    }
+
+    #[cfg(unix)]
+    fn hostile_names_part_two() {
         let root = temp("walk6");
         put(&root.join("CON/a:b/x*.txt"), b"x");
         let w = walk(&root).unwrap();
