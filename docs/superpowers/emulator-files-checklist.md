@@ -19,3 +19,16 @@ Not verified: `SEND_MULTIPLE` (adb cannot attach a list of URIs; the code limits
 a pipe (cloud provider), the phone's storage filling up during the copy, the EXIF mirror operations on a real photo (the
 mapping is unit-tested), Android 8-9 (no emulator image), the real phone and its OEM power management.
 Seen and not caused by this work: at first start after `pm clear` the watchdog job logs `ForegroundServiceStartNotAllowedException`.
+
+## v0.9.0 run (2026-10-18): folders, resume and the version 2 protocol on the phone
+
+Same emulator and test peer, APK built from the `files-round3` branch (versionName 0.9.0-alpha).
+
+| Check | Result |
+|---|---|
+| Peer sends a 24-file nested folder `Album` (`Day 1/raw`, `Day 2`) | **First run: 21 of 24 arrived.** Three failed with "the file could not be saved": the app deleted the emptied staging folder after moving each file to Downloads, and the next file of the same send had no folder to be renamed into. Fixed (the app no longer deletes it; the engine recreates a missing folder; unit test). **Second run: all 24 files arrived with the structure under `Download/Klip/Album/...`, three spot-checked files byte-equal, one notification "Received 21 files from EmuPeer" (it counts up during the send), the peer's row ended Done.** |
+| Resume on the phone: a 200 MB random file cancelled by the sender at ~48% | The phone kept a 95,662,706-byte partial in its staging folder |
+| The same file sent again | The first progress seen was 48% (it continued from the kept part), the row ended Done, `cmp` of the file in Downloads against the original: equal, staging empty of partials |
+| Version 2 negotiated with the phone | Yes (folders and resume both need it) |
+
+Not run: SEND_MULTIPLE (adb cannot attach a list), the phone sending a folder (not built), a version-1-only peer, the real phone.
