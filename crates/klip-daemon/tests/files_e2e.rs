@@ -832,3 +832,41 @@ async fn a_hostile_display_name_becomes_a_safe_name() {
     assert!(files_in(&incoming).contains(&"evil.sh".to_string()));
     assert!(!a.dir.parent().unwrap().join("evil.sh").exists());
 }
+
+#[tokio::test]
+async fn a_device_unpaired_after_it_connected_cannot_deliver_its_file() {
+    use klip_net::file::{send_file, FileError, FileHeader};
+    let (a, b, incoming) = two_paired("unpaired-late", |_| {}).await;
+    let b_id = a.engine.sync.net.peers()[0].id;
+    // A opens the file stream while it is still paired, then B unpairs A before the header goes.
+    let mut streams = a.engine.sync.net.open_file_stream(b_id).await.unwrap();
+    b.engine
+        .sync
+        .unpair(&a.engine.node_id().fingerprint())
+        .await
+        .unwrap();
+    let data = vec![3u8; 10_000];
+    let header = FileHeader {
+        version: 1,
+        id: [4; 16],
+        name: "late.bin".into(),
+        size: 10_000,
+    };
+    let r = send_file(
+        &header,
+        &data[..],
+        &mut streams.tx,
+        &mut streams.rx,
+        &mut |_| {},
+    )
+    .await;
+    assert!(
+        matches!(
+            r,
+            Err(FileError::Rejected { .. }) | Err(FileError::Io(_)) | Err(FileError::Peer(_))
+        ),
+        "{r:?}"
+    );
+    streams.close();
+    assert!(files_in(&incoming).is_empty(), "{:?}", files_in(&incoming));
+}

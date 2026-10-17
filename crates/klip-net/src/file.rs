@@ -175,6 +175,38 @@ async fn peer_verdict<R: AsyncRead + Unpin>(rx: &mut R, fallback: FileError) -> 
     }
 }
 
+/// A transfer that moves fewer than this many bytes in a whole window is dropped: one byte every 29 seconds
+/// would otherwise hold a receive slot (and a file handle) for as long as a paired device likes.
+const PACE_WINDOW: Duration = Duration::from_secs(60);
+const PACE_MIN_BYTES: u64 = 1024;
+
+pub(crate) struct Pace {
+    start: tokio::time::Instant,
+    moved: u64,
+}
+
+impl Pace {
+    pub(crate) fn new(now: tokio::time::Instant) -> Self {
+        Self {
+            start: now,
+            moved: 0,
+        }
+    }
+
+    /// `n` more bytes moved at `now`. `false`: the window ended and too little moved in it.
+    pub(crate) fn tick(&mut self, now: tokio::time::Instant, n: u64) -> bool {
+        self.moved += n;
+        if now.duration_since(self.start) >= PACE_WINDOW {
+            if self.moved < PACE_MIN_BYTES {
+                return false;
+            }
+            self.start = now;
+            self.moved = 0;
+        }
+        true
+    }
+}
+
 fn short(text: &str) -> String {
     text.chars().take(200).collect()
 }
@@ -201,6 +233,7 @@ where
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; CHUNK];
     let mut sent = 0u64;
+    let mut pace = Pace::new(tokio::time::Instant::now());
     while sent < header.size {
         let want = (header.size - sent).min(CHUNK as u64) as usize;
         let n = source.read(&mut buf[..want]).await.map_err(io_err)?;
@@ -216,6 +249,9 @@ where
         }
         sent += n as u64;
         progress(sent);
+        if !pace.tick(tokio::time::Instant::now(), n as u64) {
+            return Err(FileError::Timeout);
+        }
     }
     let mut probe = [0u8; 1];
     if source.read(&mut probe).await.map_err(io_err)? != 0 {
@@ -281,6 +317,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
         let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; CHUNK];
         let mut got = 0u64;
+        let mut pace = Pace::new(tokio::time::Instant::now());
         while got < size {
             let want = (size - got).min(CHUNK as u64) as usize;
             let n = match timeout(IDLE_TIMEOUT, self.rx.read(&mut buf[..want])).await {
@@ -305,6 +342,10 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
             hasher.update(&buf[..n]);
             got += n as u64;
             progress(got);
+            if !pace.tick(tokio::time::Instant::now(), n as u64) {
+                self.bad("the transfer was too slow").await;
+                return Err(FileError::Timeout);
+            }
         }
         let mut trailer = [0u8; 32];
         match timeout(IDLE_TIMEOUT, self.rx.read_exact(&mut trailer)).await {
@@ -521,6 +562,51 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn pace_lets_a_slow_but_moving_transfer_live_and_drops_a_crawling_one() {
+        let t0 = tokio::time::Instant::now();
+        let s = Duration::from_secs;
+        let mut slow = Pace::new(t0);
+        assert!(slow.tick(t0 + s(10), 500));
+        assert!(
+            slow.tick(t0 + s(61), 600),
+            "1100 bytes in the first window is enough"
+        );
+        assert!(slow.tick(t0 + s(121), 2000), "and the window starts over");
+        let mut crawl = Pace::new(t0);
+        assert!(crawl.tick(t0 + s(29), 1));
+        assert!(crawl.tick(t0 + s(58), 1));
+        assert!(!crawl.tick(t0 + s(87), 1), "3 bytes in 87 seconds");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sender_that_sends_one_byte_every_29_seconds_is_dropped() {
+        let (mut client, server) = duplex(64 * 1024);
+        let (reply_tx, mut reply_rx) = duplex(64 * 1024);
+        let writer = tokio::spawn(async move {
+            write_frame(&mut client, &header(1_000_000)).await.unwrap();
+            let mut drip = 0u32;
+            loop {
+                tokio::time::sleep(Duration::from_secs(29)).await;
+                if client.write_all(&[1u8]).await.is_err() {
+                    return drip;
+                }
+                drip += 1;
+            }
+        });
+        let incoming = IncomingFile::open(server, reply_tx).await.unwrap();
+        let mut sink = tokio::io::sink();
+        let started = tokio::time::Instant::now();
+        let r = incoming.accept(&mut sink, &mut |_| {}).await;
+        assert!(matches!(r, Err(FileError::Timeout)), "{:?}", r.err());
+        assert!(
+            started.elapsed() < Duration::from_secs(120),
+            "dropped within two windows, not after the whole file"
+        );
+        let _ = read_frame(&mut reply_rx, Duration::from_secs(1)).await; // Accept
+        writer.abort();
     }
 
     #[tokio::test(start_paused = true)]

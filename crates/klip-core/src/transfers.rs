@@ -1,9 +1,10 @@
 //! The coordinator's side of file transfer: take what paired devices send, send what the person asks.
 use crate::files::{
-    default_receive_dir, prepare_send, receive_incoming, send_prepared, FilePolicy, PreparedFile,
+    default_receive_dir, prepare_send, receive_incoming_from, send_prepared, FilePolicy,
+    PreparedFile,
 };
 use crate::sync::{node_of, FileReceivedHook, SyncCoordinator};
-use klip_net::file::IncomingFile;
+use klip_net::file::{IncomingFile, RejectCode};
 use klip_net::{EndpointId, FileConnection, RecvStream, SendStream};
 use klip_proto::hlc::NodeId;
 use klip_proto::ipc::{TransferDirection, TransferInfo, TransferState};
@@ -133,9 +134,23 @@ impl SyncCoordinator {
         let me = Arc::clone(self);
         tokio::spawn(async move {
             if let Ok(incoming) = IncomingFile::open(rx, tx).await {
+                // The header can take a while to arrive: the device may have been unpaired meanwhile.
+                if !me.net.is_paired(&from) {
+                    incoming
+                        .reject(
+                            RejectCode::Other,
+                            "this device is not linked with you any more",
+                        )
+                        .await;
+                    conn.finished().await;
+                    return;
+                }
                 let peer = me.peer_name(&from);
                 let policy = me.file_policy();
-                if let Ok(path) = receive_incoming(incoming, &peer, &policy, &me.transfers).await {
+                let node = node_of(&from);
+                if let Ok(path) =
+                    receive_incoming_from(incoming, &peer, Some(node), &policy, &me.transfers).await
+                {
                     let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                     let hook = me.file_hook.lock().unwrap().clone();
                     if let Some(hook) = hook {
@@ -255,6 +270,7 @@ impl SyncCoordinator {
                 prepared.size,
                 TransferState::Waiting,
             );
+            self.transfers.tag_node(id, node_of(&peer.id));
             let lock = self.send_lock(node_of(&peer.id));
             let me = Arc::clone(self);
             let (peer_id, node_peer) = (peer.id, peer.name.clone());

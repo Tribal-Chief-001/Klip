@@ -841,7 +841,7 @@ impl SyncCoordinator {
                 self.net.unpair(&one.id);
                 self.alerted.lock().unwrap().remove(&node);
                 // Files still moving to or from that device stop with it.
-                self.transfers.cancel_peer(&one.name);
+                self.transfers.cancel_peer(node, &one.name);
                 Ok(one.name.clone())
             }
             many => Err(format!(

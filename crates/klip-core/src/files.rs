@@ -1,6 +1,7 @@
 //! Receiving and sending files, the parts that touch the disk: safe names, unique paths that never
 //! replace anything, free space, and partial files that become permanent only when complete.
 use klip_net::file::{send_file, FileError, FileHeader, IncomingFile, RejectCode};
+use klip_proto::hlc::NodeId;
 use klip_proto::ipc::{TransferDirection, TransferInfo, TransferState};
 use std::fs::{self, File, OpenOptions};
 use std::io;
@@ -199,6 +200,33 @@ pub struct PartialFile {
     dir: PathBuf,
 }
 
+#[cfg(windows)]
+const RENAME_RETRY_DELAYS: &[Duration] = &[
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+];
+#[cfg(not(windows))]
+const RENAME_RETRY_DELAYS: &[Duration] = &[];
+
+/// Run `rename`; when it fails, wait for each delay in turn and run it again. One try plus one per delay.
+async fn rename_retrying(
+    mut rename: impl FnMut() -> io::Result<()>,
+    delays: &[Duration],
+) -> io::Result<()> {
+    let mut result = rename();
+    for delay in delays {
+        if result.is_ok() {
+            break;
+        }
+        tokio::time::sleep(*delay).await;
+        result = rename();
+    }
+    result
+}
+
 impl PartialFile {
     pub fn create(dir: &Path, id: [u8; 16]) -> io::Result<Self> {
         ensure_dir(dir)?;
@@ -228,7 +256,8 @@ impl PartialFile {
             let (placeholder, target) = unique_path(&dir, &sanitize_file_name(wanted_name))?;
             drop(placeholder);
             // The placeholder is ours (made by create_new), so renaming over it replaces nothing of the person's.
-            match fs::rename(&path, &target) {
+            // On Windows a virus scanner or the indexer may hold the file for a moment: try again a few times.
+            match rename_retrying(|| fs::rename(&path, &target), RENAME_RETRY_DELAYS).await {
                 Ok(()) => Ok(target),
                 Err(e) => {
                     let _ = fs::remove_file(&target);
@@ -338,6 +367,10 @@ impl CancelToken {
 struct Entry {
     info: TransferInfo,
     cancel: watch::Sender<bool>,
+    /// Which device it is with (names are not unique); `None` until tagged.
+    node: Option<NodeId>,
+    /// The receiver is making the file permanent: too late to cancel.
+    committing: bool,
 }
 
 /// Every transfer that is running, and the last 50 that finished (memory only: names are private).
@@ -399,6 +432,8 @@ impl TransferRegistry {
                 },
             },
             cancel,
+            node: None,
+            committing: false,
         });
         Self::trim(&mut entries);
         drop(entries);
@@ -447,13 +482,33 @@ impl TransferRegistry {
             .collect()
     }
 
-    /// Ask a running transfer to stop. `false` when there is no running transfer with that id.
+    /// Remember which device a transfer is with, so unpairing one of two devices with the same name stops
+    /// only that one's transfers.
+    pub fn tag_node(&self, id: [u8; 16], node: NodeId) {
+        self.with(id, |e| e.node = Some(node));
+    }
+
+    /// The receiver is about to make the file permanent. `false`: it was cancelled first, do not commit.
+    /// After a `true` the transfer can no longer be cancelled (`cancel` answers `false`).
+    pub fn begin_commit(&self, id: [u8; 16]) -> bool {
+        let mut entries = self.entries.lock().unwrap();
+        match entries.iter_mut().rev().find(|e| e.info.id == id) {
+            Some(e) if !*e.cancel.borrow() => {
+                e.committing = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Ask a running transfer to stop. `false` when there is no running transfer with that id, or its file is
+    /// already being made permanent.
     pub fn cancel(&self, id: [u8; 16]) -> bool {
         let entries = self.entries.lock().unwrap();
         match entries
             .iter()
             .rev()
-            .find(|e| e.info.id == id && is_running(e.info.state))
+            .find(|e| e.info.id == id && is_running(e.info.state) && !e.committing)
         {
             Some(entry) => {
                 entry.cancel.send_replace(true);
@@ -522,6 +577,8 @@ impl TransferRegistry {
                 finished_ms: None,
             },
             cancel,
+            node: None,
+            committing: false,
         });
         Self::trim(&mut entries);
         drop(entries);
@@ -529,14 +586,19 @@ impl TransferRegistry {
         Some(CancelToken(token))
     }
 
-    /// Stop every running transfer with a device (it was unpaired).
-    pub fn cancel_peer(&self, peer: &str) -> usize {
+    /// Stop every running transfer with a device (it was unpaired): by identity, and by name for a transfer
+    /// that is not tagged with one yet. A file already being made permanent is left alone.
+    pub fn cancel_peer(&self, node: NodeId, name: &str) -> usize {
         let entries = self.entries.lock().unwrap();
         let mut stopped = 0;
-        for entry in entries
-            .iter()
-            .filter(|e| e.info.peer == peer && is_running(e.info.state))
-        {
+        for entry in entries.iter().filter(|e| {
+            is_running(e.info.state)
+                && !e.committing
+                && match e.node {
+                    Some(n) => n == node,
+                    None => e.info.peer == name,
+                }
+        }) {
             entry.cancel.send_replace(true);
             stopped += 1;
         }
@@ -649,6 +711,21 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    receive_incoming_from(incoming, peer, None, policy, reg).await
+}
+
+/// `receive_incoming` for a device whose identity is known (so unpairing it stops this transfer).
+pub async fn receive_incoming_from<R, W>(
+    incoming: IncomingFile<R, W>,
+    peer: &str,
+    node: Option<NodeId>,
+    policy: &FilePolicy,
+    reg: &TransferRegistry,
+) -> Result<PathBuf, FileError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let header = incoming.header().clone();
     // Our own id: the sender's is only a claim, and two transfers with one id would share a registry entry.
     let mut id = [0u8; 16];
@@ -700,10 +777,22 @@ where
         incoming.reject(code, &text).await;
         return Err(FileError::Rejected { code, text });
     };
+    if let Some(node) = node {
+        reg.tag_node(id, node);
+    }
     let mut progress = |n| reg.progress(id, n);
     let outcome = tokio::select! {
         r = incoming.accept(part.file(), &mut progress) => r,
         _ = cancel.cancelled() => Err(FileError::Cancelled),
+    };
+    // A cancel that came in after the last byte but before the rename still wins; after this the file is
+    // being made permanent and `cancel` says so.
+    let outcome = match outcome {
+        Ok(received) if !reg.begin_commit(id) => {
+            received.bad("the transfer was cancelled").await;
+            Err(FileError::Cancelled)
+        }
+        other => other,
     };
     match outcome {
         Ok(received) => match part.commit(&name).await {
@@ -1419,7 +1508,7 @@ mod tests {
             1,
             TransferState::Active,
         );
-        assert_eq!(reg.cancel_peer("Vivo"), 1);
+        assert_eq!(reg.cancel_peer(NodeId::new([7; 32]), "Vivo"), 1);
         assert!(a.is_cancelled() && !b.is_cancelled());
         assert!(!reg.cancel([9; 16]), "an unknown id is not an error");
     }
@@ -1513,6 +1602,124 @@ mod tests {
         assert_eq!(n(), 3);
         assert!(reg.begin_incoming("B", [3; 16], "z", 1, 1, 1).is_none());
         assert_eq!(n(), 3, "a refused one is not a change");
+    }
+
+    #[test]
+    fn two_devices_with_one_name_are_cancelled_independently() {
+        let reg = TransferRegistry::new();
+        let (a_node, b_node) = (NodeId::new([1; 32]), NodeId::new([2; 32]));
+        let a = reg.begin(
+            "Pixel",
+            TransferDirection::Sending,
+            [1; 16],
+            "x",
+            1,
+            TransferState::Active,
+        );
+        reg.tag_node([1; 16], a_node);
+        let b = reg.begin(
+            "Pixel",
+            TransferDirection::Sending,
+            [2; 16],
+            "y",
+            1,
+            TransferState::Active,
+        );
+        reg.tag_node([2; 16], b_node);
+        // An entry not tagged yet falls back to the name.
+        let c = reg.begin(
+            "Pixel",
+            TransferDirection::Receiving,
+            [3; 16],
+            "z",
+            1,
+            TransferState::Active,
+        );
+        assert_eq!(reg.cancel_peer(a_node, "Pixel"), 2);
+        assert!(a.is_cancelled() && c.is_cancelled() && !b.is_cancelled());
+    }
+
+    #[test]
+    fn a_cancel_that_arrives_first_stops_the_commit() {
+        let reg = TransferRegistry::new();
+        let token = reg.begin(
+            "A",
+            TransferDirection::Receiving,
+            [1; 16],
+            "x",
+            1,
+            TransferState::Active,
+        );
+        assert!(reg.cancel([1; 16]));
+        assert!(token.is_cancelled());
+        assert!(
+            !reg.begin_commit([1; 16]),
+            "cancelled before the rename: do not commit"
+        );
+    }
+
+    #[test]
+    fn a_commit_that_started_cannot_be_cancelled() {
+        let reg = TransferRegistry::new();
+        let token = reg.begin(
+            "A",
+            TransferDirection::Receiving,
+            [1; 16],
+            "x",
+            1,
+            TransferState::Active,
+        );
+        assert!(reg.begin_commit([1; 16]));
+        assert!(
+            !reg.cancel([1; 16]),
+            "the file is being made permanent: a cancel would be a lie"
+        );
+        assert!(!token.is_cancelled());
+        assert_eq!(
+            reg.cancel_peer(NodeId::new([9; 32]), "A"),
+            0,
+            "unpair leaves a committing file alone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_busy_rename_is_retried_a_few_times_then_given_up() {
+        let mut calls = 0;
+        let delays = [Duration::from_millis(1); 3];
+        let r = rename_retrying(
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(io::Error::other("busy"))
+                } else {
+                    Ok(())
+                }
+            },
+            &delays,
+        )
+        .await;
+        assert!(r.is_ok() && calls == 3);
+        let mut calls = 0;
+        let r = rename_retrying(
+            || {
+                calls += 1;
+                Err(io::Error::other("busy"))
+            },
+            &delays,
+        )
+        .await;
+        assert!(r.is_err());
+        assert_eq!(calls, 4, "one try plus one per delay");
+        let mut calls = 0;
+        let r = rename_retrying(
+            || {
+                calls += 1;
+                Err(io::Error::other("busy"))
+            },
+            &[],
+        )
+        .await;
+        assert!(r.is_err() && calls == 1, "no delays means one try (Unix)");
     }
 
     #[test]
