@@ -68,4 +68,5 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     // UniFFI-generated Kotlin bindings load the Rust library through JNA.
     implementation("net.java.dev.jna:jna:5.14.0@aar")
+    testImplementation("junit:junit:4.13.2")
 }
