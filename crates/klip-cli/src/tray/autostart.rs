@@ -149,7 +149,9 @@ pub fn run_value_is_klips(value: &str) -> bool {
         return false;
     };
     let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_lowercase();
-    file == "klip.exe" || file == "klip"
+    // `klip`, `klip.exe`, and the release file names (`klip-windows-x86_64.exe`), but not `klipper.exe`.
+    let stem = file.strip_suffix(".exe").unwrap_or(&file);
+    stem == "klip" || stem.starts_with("klip-")
 }
 
 /// The data of a `REG_SZ` value in the output of `reg query <key> /v <name>`.
@@ -284,11 +286,15 @@ mod tests {
         ));
         assert!(run_value_is_klips(r#""/usr/local/bin/klip" tray start"#));
         assert!(run_value_is_klips("  \"C:\\Klip\\KLIP.EXE\" tray start  "));
+        assert!(run_value_is_klips(
+            r#""C:\Users\me\Downloads\klip-windows-x86_64.exe" tray start"#
+        ));
         for foreign in [
             r#""C:\Tools\other.exe" tray start"#,
             r#""C:\Users\me\klip.exe" tray run"#,
             r#"C:\Users\me\klip.exe tray start"#,
             r#""C:\x\klip.exe.bak" tray start"#,
+            r#""C:\x\klipper.exe" tray start"#,
             "",
         ] {
             assert!(!run_value_is_klips(foreign), "{foreign}");

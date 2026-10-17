@@ -41,6 +41,10 @@ jobs:
 
       - name: Run complete test suite
         run: cargo test --workspace --verbose
+
+      # Needs the process to itself (it measures memory while 1 GiB moves), so it is not in the parallel run above.
+      - name: File transfer memory test (alone)
+        run: cargo test -p klip-daemon --test files_e2e -- --ignored memory_stays_flat --test-threads=1
         env:
           KLIP_REQUIRE_DBUS_TESTS: "1"
 

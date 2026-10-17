@@ -473,6 +473,7 @@ mod tests {
         assert_eq!(picker_command(|_| true).unwrap().0, "zenity");
     }
 
+    #[cfg(unix)]
     #[test]
     fn what_the_picker_prints_becomes_absolute_paths_exactly() {
         let out = "/home/me/My Photos/a b.jpg\n/tmp/\u{00fc}ber.txt\n\nrelative/ignored.txt\n/tmp/with\ttab.txt\n";

@@ -176,7 +176,10 @@ async fn perform(client: &DaemonClient, action: Action) -> Result<(), String> {
         },
         Action::OpenTerminal => {
             let exe = super::exe_path().map_err(|e| e.to_string())?;
-            super::open_terminal(&exe)
+            // osascript/cmd are waited for (their exit status is shown): not on an async worker.
+            tokio::task::spawn_blocking(move || super::open_terminal(&exe))
+                .await
+                .map_err(|e| e.to_string())?
         }
         Action::OpenFolder => super::open_folder(&receive_folder()),
         Action::SendFile => {

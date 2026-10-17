@@ -26,6 +26,9 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The receiver may need a while to flush and move a big file before it can say "done".
 pub const DONE_TIMEOUT: Duration = Duration::from_secs(300);
 pub const MAX_NAME_CHARS: usize = 255;
+/// What a receiver says when the bytes arrived but the hash did not match. A sender that resumed treats exactly this
+/// verdict as "the kept part was not the same file any more" and sends the file again from the start.
+pub const DAMAGED: &str = "the file arrived damaged";
 const VERSION: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,7 +385,13 @@ where
             return Err(FileError::TooShort);
         }
         hasher.update(&buf[..n]);
-        match timeout(IDLE_TIMEOUT, tx.write_all(&buf[..n])).await {
+        // The receiver may still be hashing the part it kept: the first chunk after a resume waits longer.
+        let wait = if offset > 0 && sent == offset {
+            DONE_TIMEOUT
+        } else {
+            IDLE_TIMEOUT
+        };
+        match timeout(wait, tx.write_all(&buf[..n])).await {
             Err(_) => return Err(FileError::Timeout),
             // The receiver stopped reading: it usually said why just before it hung up.
             Ok(Err(e)) => return Err(peer_verdict(rx, io_err(e)).await),
@@ -481,19 +490,29 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
         sink: &mut K,
         progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<Received<W>, FileError> {
-        self.take(FileReply::Accept, 0, blake3::Hasher::new(), sink, progress)
-            .await
+        self.take(
+            FileReply::Accept,
+            0,
+            std::future::ready(Ok(blake3::Hasher::new())),
+            sink,
+            progress,
+        )
+        .await
     }
 
     /// Version 2: say yes, but the first `offset` bytes are already here. `prefix` is a hasher the caller fed
     /// with exactly those bytes; `sink` gets only the rest. The trailer is checked against the whole file.
-    pub async fn accept_from<K: AsyncWrite + Unpin>(
+    pub async fn accept_from<K, P>(
         mut self,
         offset: u64,
-        prefix: blake3::Hasher,
+        prefix: P,
         sink: &mut K,
         progress: &mut (dyn FnMut(u64) + Send),
-    ) -> Result<Received<W>, FileError> {
+    ) -> Result<Received<W>, FileError>
+    where
+        K: AsyncWrite + Unpin,
+        P: std::future::Future<Output = std::io::Result<blake3::Hasher>>,
+    {
         if offset > self.header.size {
             self.bad("the offset is past the end of the file").await;
             return Err(FileError::Protocol("resume offset past the end".into()));
@@ -506,15 +525,27 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
         self.take(reply, offset, prefix, sink, progress).await
     }
 
-    async fn take<K: AsyncWrite + Unpin>(
+    async fn take<K, P>(
         mut self,
         reply: FileReply,
         offset: u64,
-        mut hasher: blake3::Hasher,
+        prefix: P,
         sink: &mut K,
         progress: &mut (dyn FnMut(u64) + Send),
-    ) -> Result<Received<W>, FileError> {
+    ) -> Result<Received<W>, FileError>
+    where
+        K: AsyncWrite + Unpin,
+        P: std::future::Future<Output = std::io::Result<blake3::Hasher>>,
+    {
         write_frame(&mut self.tx, &reply).await?;
+        // The reply is out: hashing what is already here happens now, while the sender hashes its side too.
+        let mut hasher = match prefix.await {
+            Ok(h) => h,
+            Err(e) => {
+                self.bad("the kept part could not be read").await;
+                return Err(FileError::Disk(e.to_string()));
+            }
+        };
         let size = self.header.size;
         let mut buf = vec![0u8; CHUNK];
         let mut got = offset;
@@ -564,7 +595,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
             Ok(Ok(_)) => {}
         }
         if !bool::from(trailer.ct_eq(hasher.finalize().as_bytes())) {
-            self.bad("the file arrived damaged").await;
+            self.bad(DAMAGED).await;
             return Err(FileError::HashMismatch);
         }
         if let Err(e) = sink.flush().await {
@@ -733,7 +764,10 @@ mod tests {
         let data = pattern(700_000);
         let (sent, got, _, _) = run(header(data.len() as u64), data, Some(1000), None).await;
         assert!(matches!(got, Err(FileError::HashMismatch)), "{got:?}");
-        assert!(matches!(sent, Err(FileError::Peer(_))), "{sent:?}");
+        assert!(
+            matches!(&sent, Err(FileError::Peer(t)) if t == DAMAGED),
+            "{sent:?}"
+        );
     }
 
     #[tokio::test]
@@ -879,7 +913,12 @@ mod tests {
         let incoming = IncomingFile::open_v2(r_r, r_w).await.unwrap();
         let mut sink = Vec::new();
         let got = incoming
-            .accept_from(have as u64, prefix, &mut sink, &mut |_| {})
+            .accept_from(
+                have as u64,
+                std::future::ready(Ok(prefix)),
+                &mut sink,
+                &mut |_| {},
+            )
             .await;
         let got = match got {
             Ok(received) => {

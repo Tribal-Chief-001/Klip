@@ -543,7 +543,10 @@ async fn an_offline_device_a_missing_file_and_an_unknown_name_are_reported_not_q
     );
 }
 
+// Measures this process's memory, so other tests running at the same time would spoil it: run alone with
+// `cargo test -p klip-daemon --test files_e2e -- --ignored memory_stays_flat` (the CI job does).
 #[cfg(target_os = "linux")]
+#[ignore = "measures process memory: run it alone"]
 #[tokio::test]
 async fn memory_stays_flat_while_a_gigabyte_moves() {
     fn rss_kib() -> u64 {
@@ -1215,4 +1218,29 @@ async fn a_hostile_folder_place_from_a_raw_stream_stays_inside_the_top_folder() 
         .collect();
     assert_eq!(landed.len(), 1, "{found:?}");
     assert!(landed[0].starts_with(&incoming), "{:?}", landed[0]);
+}
+
+#[tokio::test]
+async fn a_folder_stops_at_once_when_the_other_device_does_not_accept_files() {
+    let (a, _b, incoming) = two_paired("folder-off", |c| c.accept_files = false).await;
+    let (top, _files) = make_folder(&a.dir.join("out"), 30);
+    let row = a.engine.sync.send_file(top, None).await.remove(0).unwrap();
+    let started = Instant::now();
+    let done = wait_transfer(&a, 20, "the folder to stop", |t| {
+        t.id == row.id && finished(t)
+    })
+    .await;
+    assert_eq!(done.state, TransferState::Failed, "{done:?}");
+    assert!(
+        done.error
+            .as_deref()
+            .unwrap()
+            .contains("stopped after 0 of 30 files"),
+        "{done:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "one refusal, not thirty"
+    );
+    assert!(final_files_in(&incoming).is_empty());
 }

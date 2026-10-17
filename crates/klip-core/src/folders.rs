@@ -119,6 +119,8 @@ pub fn place_in_folder(top: &Path, rel: &[String]) -> io::Result<PathBuf> {
 struct Batch {
     dir: PathBuf,
     last_used: Instant,
+    /// Files of this send being received right now: a folder in use is never cleaned up.
+    active: usize,
 }
 
 type BatchKey = (Vec<u8>, [u8; 16]);
@@ -150,15 +152,16 @@ impl BatchBook {
     ) -> io::Result<PathBuf> {
         let mut map = self.batches.lock().unwrap();
         map.retain(|_, b| {
-            let idle = now.saturating_duration_since(b.last_used) > BATCH_IDLE;
+            let idle = b.active == 0 && now.saturating_duration_since(b.last_used) > BATCH_IDLE;
             if idle {
-                let _ = fs::remove_dir(&b.dir); // only succeeds while empty
+                prune_empty(&b.dir); // only removes what is empty
             }
             !idle
         });
         let key = (device.to_vec(), batch);
         if let Some(b) = map.get_mut(&key) {
             b.last_used = now;
+            b.active += 1;
             return Ok(b.dir.clone());
         }
         let dir = new_top_folder(base, &sanitize_file_name(top))?;
@@ -167,20 +170,56 @@ impl BatchBook {
             Batch {
                 dir: dir.clone(),
                 last_used: now,
+                active: 1,
             },
         );
         Ok(dir)
     }
 
-    /// A file of this send failed: when its folder is still empty it was never used, take it away.
+    /// A file of this send was received: the send is quiet again from now on.
+    pub fn finished(&self, device: &[u8], batch: [u8; 16]) {
+        self.finished_at(Instant::now(), device, batch);
+    }
+
+    pub fn finished_at(&self, now: Instant, device: &[u8], batch: [u8; 16]) {
+        if let Some(b) = self
+            .batches
+            .lock()
+            .unwrap()
+            .get_mut(&(device.to_vec(), batch))
+        {
+            b.active = b.active.saturating_sub(1);
+            b.last_used = now;
+        }
+    }
+
+    /// A file of this send failed. The folders made for it that are still empty (it never got a file) are taken
+    /// away, and when that was the whole top folder the send is forgotten.
     pub fn failed(&self, device: &[u8], batch: [u8; 16]) {
         let mut map = self.batches.lock().unwrap();
-        if let Some(b) = map.get(&(device.to_vec(), batch)) {
-            if fs::remove_dir(&b.dir).is_ok() {
-                map.remove(&(device.to_vec(), batch));
+        let key = (device.to_vec(), batch);
+        if let Some(b) = map.get_mut(&key) {
+            b.active = b.active.saturating_sub(1);
+            if b.active == 0 {
+                prune_empty(&b.dir);
+                if !b.dir.exists() {
+                    map.remove(&key);
+                }
             }
         }
     }
+}
+
+/// Remove `dir` and every folder under it that holds no file at all, deepest first. Files are never touched.
+fn prune_empty(dir: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                prune_empty(&e.path());
+            }
+        }
+    }
+    let _ = fs::remove_dir(dir); // fails while anything is left inside
 }
 
 /// `base/name`, or `base/name (2)`, ... made with `create_dir` so two sends can never share one.
@@ -373,6 +412,8 @@ mod tests {
         let empty = book.dir_at(t0, b"Pad", [1; 16], "Empty", &base).unwrap();
         let used = book.dir_at(t0, b"Pad", [2; 16], "Used", &base).unwrap();
         put(&used.join("f.txt"), b"x");
+        book.finished_at(t0, b"Pad", [1; 16]);
+        book.finished_at(t0, b"Pad", [2; 16]);
         // Any later request prunes what has been idle for over an hour.
         book.dir_at(
             t0 + Duration::from_secs(3601),
@@ -384,6 +425,74 @@ mod tests {
         .unwrap();
         assert!(!empty.exists(), "an empty folder nobody used is removed");
         assert!(used.exists(), "a folder with files is never removed");
+    }
+
+    #[test]
+    fn a_failed_file_takes_away_the_whole_empty_folder_tree_it_made_but_never_a_file() {
+        let base = temp("batch4");
+        let book = BatchBook::default();
+        let top = book
+            .dir_at(Instant::now(), b"Pad", [1; 16], "T", &base)
+            .unwrap();
+        place_in_folder(&top, &["a".into(), "b".into(), "c".into()]).unwrap();
+        book.failed(b"Pad", [1; 16]);
+        assert!(!top.exists(), "the empty tree is gone");
+
+        let top = book
+            .dir_at(Instant::now(), b"Pad", [2; 16], "T", &base)
+            .unwrap();
+        let deep = place_in_folder(&top, &["x".into(), "y".into()]).unwrap();
+        place_in_folder(&top, &["empty".into(), "tree".into()]).unwrap();
+        put(&deep.join("keep.txt"), b"data");
+        book.failed(b"Pad", [2; 16]);
+        assert!(
+            deep.join("keep.txt").exists(),
+            "a received file is never removed"
+        );
+        assert!(!top.join("empty").exists(), "the empty branch is pruned");
+    }
+
+    #[test]
+    fn a_folder_with_a_file_in_flight_survives_other_transfers_and_is_quiet_from_its_last_file() {
+        let base = temp("batch5");
+        let book = BatchBook::default();
+        let t0 = Instant::now();
+        let busy = book.dir_at(t0, b"Pad", [1; 16], "Long", &base).unwrap();
+        // Two hours later another transfer asks: the first file of "Long" is still arriving.
+        book.dir_at(
+            t0 + Duration::from_secs(7200),
+            b"Tab",
+            [9; 16],
+            "Other",
+            &base,
+        )
+        .unwrap();
+        assert!(
+            busy.exists(),
+            "a send with a file in flight is not cleaned up"
+        );
+        book.finished_at(t0 + Duration::from_secs(7200), b"Pad", [1; 16]);
+        book.dir_at(
+            t0 + Duration::from_secs(7200 + 1800),
+            b"Tab",
+            [8; 16],
+            "Third",
+            &base,
+        )
+        .unwrap();
+        assert!(busy.exists(), "quiet for only half an hour");
+        book.dir_at(
+            t0 + Duration::from_secs(7200 + 3700),
+            b"Tab",
+            [7; 16],
+            "Fourth",
+            &base,
+        )
+        .unwrap();
+        assert!(
+            !busy.exists(),
+            "an hour after its last file an empty folder goes"
+        );
     }
 
     #[test]

@@ -54,6 +54,20 @@ pub fn started_or_error(
     Ok(started)
 }
 
+/// A resumed send that the receiver judged damaged (the kept part was not the same file any more) is sent again
+/// from the start, once. Any other verdict (the person cancelled over there, the disk is full, too slow) is final.
+fn retry_from_zero(resumed: u64, fresh_key: bool, result: &Result<(), FileError>) -> bool {
+    resumed > 0
+        && !fresh_key
+        && matches!(result, Err(FileError::Peer(text)) if text == klip_net::file::DAMAGED)
+}
+
+/// Why one file of a folder did not go: it alone (the others go on), or the whole send must stop.
+enum FolderFail {
+    File(FileError),
+    Stop(String),
+}
+
 /// What a send reads from: a path (opened once per receiving device) or a file somebody opened.
 enum Source {
     Path(PathBuf),
@@ -153,6 +167,11 @@ impl SyncCoordinator {
                 }
                 let peer = me.peer_name(&from);
                 let policy = me.file_policy();
+                // Kept partial files older than a day go whenever a transfer starts, not only when the daemon does.
+                let sweep_dir = policy.dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::files::sweep_partials(&sweep_dir, PARTIAL_MAX_AGE)
+                });
                 let node = node_of(&from);
                 if let Ok(path) =
                     receive_incoming_from(incoming, &peer, Some(node), &policy, &me.transfers).await
@@ -320,7 +339,8 @@ impl SyncCoordinator {
     ) {
         let mut batch = [0u8; 16];
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut batch);
-        let (mut failed, mut first_error, mut base) = (0usize, None::<String>, 0u64);
+        let (mut failed, mut sent, mut first_error, mut base) =
+            (0usize, 0usize, None::<String>, 0u64);
         for entry in &walked.entries {
             if token.is_cancelled() {
                 self.transfers
@@ -336,8 +356,23 @@ impl SyncCoordinator {
                 .send_one_of_folder(peer_id, id, entry, &place, base, token)
                 .await;
             match outcome {
-                Ok(()) => base += entry.size,
-                Err(FileError::Cancelled) => {
+                Ok(()) => {
+                    base += entry.size;
+                    sent += 1;
+                }
+                Err(FolderFail::Stop(why)) => {
+                    let total = walked.entries.len();
+                    self.transfers.finish(
+                        id,
+                        TransferState::Failed,
+                        Some(format!(
+                            "{node_peer}: stopped after {sent} of {total} files: {why}"
+                        )),
+                        None,
+                    );
+                    return;
+                }
+                Err(FolderFail::File(FileError::Cancelled)) => {
                     self.transfers.finish(
                         id,
                         TransferState::Cancelled,
@@ -346,22 +381,7 @@ impl SyncCoordinator {
                     );
                     return;
                 }
-                Err(FileError::Protocol(_))
-                | Err(FileError::Rejected {
-                    code: RejectCode::Disabled,
-                    ..
-                }) if failed == 0 && base == 0 => {
-                    // The very first file already says this device cannot take the folder: stop here.
-                    let why = outcome.err().map(|e| e.to_string()).unwrap_or_default();
-                    self.transfers.finish(
-                        id,
-                        TransferState::Failed,
-                        Some(format!("{node_peer}: {why}")),
-                        None,
-                    );
-                    return;
-                }
-                Err(e) => {
+                Err(FolderFail::File(e)) => {
                     failed += 1;
                     base += entry.size; // keep the bar honest: this file's share is accounted for
                     self.transfers.progress(id, base);
@@ -392,20 +412,25 @@ impl SyncCoordinator {
         place: &klip_net::file::FolderPlace,
         base: u64,
         token: &mut crate::files::CancelToken,
-    ) -> Result<(), FileError> {
-        let mut prepared = prepare_send(&entry.path)
-            .await
-            .map_err(|e| FileError::Io(format!("cannot read {}: {e}", entry.path.display())))?;
+    ) -> Result<(), FolderFail> {
+        let mut prepared = prepare_send(&entry.path).await.map_err(|e| {
+            FolderFail::File(FileError::Io(format!(
+                "cannot read {}: {e}",
+                entry.path.display()
+            )))
+        })?;
         let mut fresh_key = false;
+        let mut busy_tries = 0;
         loop {
+            // The device is gone or too old: every other file would fail the same way (after a long wait).
             let mut streams = self
                 .net
                 .open_file_stream(peer_id)
                 .await
-                .map_err(|e| FileError::Io(e.to_string()))?;
+                .map_err(|e| FolderFail::Stop(e.to_string()))?;
             if streams.version() < 2 {
                 streams.close();
-                return Err(FileError::Protocol(
+                return Err(FolderFail::Stop(
                     "the other device cannot receive a folder: update Klip on it".into(),
                 ));
             }
@@ -423,11 +448,30 @@ impl SyncCoordinator {
             )
             .await;
             streams.close();
-            if resumed > 0 && !fresh_key && matches!(result, Err(FileError::Peer(_))) {
+            if retry_from_zero(resumed, fresh_key, &result) {
                 fresh_key = true;
                 continue;
             }
-            return result;
+            match result {
+                // The device as a whole says no: asking again for the other files only wastes time.
+                Err(FileError::Rejected {
+                    code: RejectCode::Disabled | RejectCode::Paused,
+                    text,
+                }) => return Err(FolderFail::Stop(text)),
+                // Busy is usually the receiver still holding the part of a transfer that just broke off.
+                Err(FileError::Rejected {
+                    code: RejectCode::Busy,
+                    ..
+                }) if busy_tries < 4 => {
+                    busy_tries += 1;
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+                        _ = token.cancelled() => return Err(FolderFail::File(FileError::Cancelled)),
+                    }
+                    continue;
+                }
+                other => return other.map_err(FolderFail::File),
+            }
         }
     }
 
@@ -532,10 +576,7 @@ impl SyncCoordinator {
                             )
                             .await;
                             streams.close();
-                            if resumed > 0
-                                && !fresh_key
-                                && matches!(result, Err(FileError::Peer(_)))
-                            {
+                            if retry_from_zero(resumed, fresh_key, &result) {
                                 fresh_key = true;
                                 me.transfers.progress(id, 0);
                                 continue;
@@ -562,5 +603,28 @@ impl SyncCoordinator {
             );
         }
         answers
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_damaged_verdict_after_a_resume_sends_the_file_again_from_the_start() {
+        let damaged = Err(FileError::Peer(klip_net::file::DAMAGED.to_string()));
+        assert!(retry_from_zero(5, false, &damaged));
+        assert!(!retry_from_zero(0, false, &damaged), "nothing was resumed");
+        assert!(!retry_from_zero(5, true, &damaged), "only once");
+        for other in [
+            FileError::Peer("the transfer was cancelled".into()),
+            FileError::Peer("the file could not be saved".into()),
+            FileError::Peer("the transfer was too slow".into()),
+            FileError::Timeout,
+            FileError::Cancelled,
+        ] {
+            assert!(!retry_from_zero(5, false, &Err(other)));
+        }
+        assert!(!retry_from_zero(5, false, &Ok(())));
     }
 }

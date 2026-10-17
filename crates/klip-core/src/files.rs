@@ -1013,7 +1013,8 @@ where
         policy.max_incoming,
         policy.max_incoming_per_peer,
     ) else {
-        part.discard().await;
+        // The kept part is not to blame for this refusal: leave what it holds for the next try.
+        part.keep(device.clone()).await;
         let (code, text) = refuse(
             RejectCode::Busy,
             "this device is already receiving other files; try again in a moment".into(),
@@ -1035,7 +1036,7 @@ where
         match made {
             Ok(dir) => target_dir = Some(dir),
             Err(e) => {
-                part.discard().await;
+                part.keep(device.clone()).await;
                 reg.batches.failed(&device, place.batch);
                 let text = format!("this device cannot save the folder: {e}");
                 reg.finish(id, TransferState::Failed, Some(text.clone()), None);
@@ -1047,18 +1048,17 @@ where
             }
         }
     }
-    // What the earlier attempt left must still be hashed here; an unusable one is thrown away.
-    let mut prefix = blake3::Hasher::new();
+    // What the earlier attempt left is hashed after the reply (the sender hashes its side meanwhile); an unusable
+    // part is thrown away and the file is received from the start.
+    let kept_path = part.path().to_path_buf();
     if offset > header.size {
         offset = 0;
         let _ = part.restart().await;
     } else if offset > 0 {
-        match part.hash_existing(offset).await {
-            Ok(hasher) => prefix = hasher,
-            Err(_) => {
-                offset = 0;
-                let _ = part.restart().await;
-            }
+        use tokio::io::AsyncSeekExt;
+        if part.file().seek(io::SeekFrom::Start(offset)).await.is_err() {
+            offset = 0;
+            let _ = part.restart().await;
         }
     }
     let mut progress = |n| reg.progress(id, n);
@@ -1066,6 +1066,13 @@ where
     let outcome = tokio::select! {
         r = async {
             if resumable {
+                let prefix = async {
+                    if offset == 0 {
+                        Ok(blake3::Hasher::new())
+                    } else {
+                        hash_prefix_of(&kept_path, offset).await
+                    }
+                };
                 incoming.accept_from(offset, prefix, part.file(), &mut progress).await
             } else {
                 incoming.accept(part.file(), &mut progress).await
@@ -1086,6 +1093,9 @@ where
         Ok(received) => match part.commit_in(target_dir.as_deref(), &name).await {
             Ok(path) => {
                 received.ok().await;
+                if let Some(place) = &place {
+                    reg.batches.finished(&device, place.batch);
+                }
                 reg.finish(
                     id,
                     TransferState::Done,
@@ -1131,6 +1141,25 @@ where
             Err(e)
         }
     }
+}
+
+/// BLAKE3 state after the first `len` bytes of the file at `path` (read through a handle of its own).
+async fn hash_prefix_of(path: &Path, len: u64) -> io::Result<blake3::Hasher> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut left = len;
+    while left > 0 {
+        let want = left.min(buf.len() as u64) as usize;
+        let n = file.read(&mut buf[..want]).await?;
+        if n == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        hasher.update(&buf[..n]);
+        left -= n as u64;
+    }
+    Ok(hasher)
 }
 
 /// A file opened and measured for sending; it must be a regular file.
@@ -2134,6 +2163,38 @@ mod tests {
             "{got:?}"
         );
         assert!(matches!(sent, Err(FileError::Rejected { .. })), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn a_busy_answer_leaves_the_kept_part_alone() {
+        let dir = temp("resume8");
+        let mut p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let data = data(3 * MIB);
+        let _ = exchange_v2(&p, &reg, "Pad", [4; 32], &data, Some(2 * MIB)).await;
+        assert_eq!(partials_in(&dir).len(), 1);
+        p.max_incoming_per_peer = 0; // every new transfer from Pad is now answered Busy
+        let (sent, _, got) = exchange_v2(&p, &reg, "Pad", [4; 32], &data, None).await;
+        assert!(
+            matches!(
+                got,
+                Err(FileError::Rejected {
+                    code: RejectCode::Busy,
+                    ..
+                })
+            ),
+            "{got:?} / {sent:?}"
+        );
+        assert_eq!(
+            partials_in(&dir).len(),
+            1,
+            "the part is still there for the next try"
+        );
+        p.max_incoming_per_peer = 2;
+        let (sent, offset, got) = exchange_v2(&p, &reg, "Pad", [4; 32], &data, None).await;
+        sent.unwrap();
+        assert_eq!(offset, 2 * MIB as u64);
+        assert_eq!(fs::read(got.unwrap()).unwrap(), data);
     }
 
     #[test]

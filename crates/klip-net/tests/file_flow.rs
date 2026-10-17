@@ -267,7 +267,12 @@ async fn two_nodes_that_speak_both_versions_use_version_two_and_can_resume() {
         prefix.update(&prefix_data);
         let mut sink = Vec::new();
         let received = incoming
-            .accept_from(have as u64, prefix, &mut sink, &mut |_| {})
+            .accept_from(
+                have as u64,
+                std::future::ready(Ok(prefix)),
+                &mut sink,
+                &mut |_| {},
+            )
             .await
             .unwrap();
         received.ok().await;
