@@ -32,6 +32,11 @@ class FileTransferNotifier(private val ctx: Context) {
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
 
+    init {
+        // A previous process may have been killed mid-transfer: its notification (and its dead Cancel button) must go.
+        runCatching { ctx.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID) }
+    }
+
     private val tick = object : Runnable {
         override fun run() {
             val running = update()

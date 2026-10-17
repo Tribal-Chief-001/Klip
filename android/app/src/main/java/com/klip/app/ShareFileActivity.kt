@@ -14,7 +14,9 @@ import android.widget.Toast
 class ShareFileActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val uris = streamUris()
+        // Another app controls the extras: a bundle that cannot be read must not take the process down.
+        val all = try { streamUris() } catch (e: Throwable) { emptyList() }
+        val uris = all.filter { FileText.shareableScheme(it.scheme) }
         if (uris.isEmpty()) {
             Toast.makeText(this, "Klip: no file received", Toast.LENGTH_SHORT).show()
             finish()

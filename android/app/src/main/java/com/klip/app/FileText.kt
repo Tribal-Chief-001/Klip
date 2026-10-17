@@ -51,6 +51,12 @@ object FileText {
     fun mimeFor(name: String): String =
         mimes[name.substringAfterLast('.', "").lowercase()] ?: "application/octet-stream"
 
+    /**
+     * Only `content://` URIs are read. A `file://` URI would let any app that can start our exported share
+     * activity make Klip open its own private files (the keystore) and send them to the computer.
+     */
+    fun shareableScheme(scheme: String?): Boolean = scheme.equals("content", ignoreCase = true)
+
     private const val MAX_NAME = 255
 
     /** A display name from another app, made safe to use as a file name: no path, no control characters. */

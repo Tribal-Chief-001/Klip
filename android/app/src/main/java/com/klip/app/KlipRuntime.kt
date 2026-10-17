@@ -131,6 +131,14 @@ object KlipRuntime {
         ).also { engine = it; applyStoredPause(ctx, it) }
     }
 
+    /** True while a file is being sent or received. */
+    fun transferRunning(): Boolean =
+        runCatching {
+            engine?.transfers()?.any {
+                it.state == uniffi.klip_android.TransferStateView.WAITING || it.state == uniffi.klip_android.TransferStateView.ACTIVE
+            } ?: false
+        }.getOrDefault(false)
+
     fun stop() = synchronized(lock) {
         engine?.let { runCatching { it.stop() } }
         engine = null

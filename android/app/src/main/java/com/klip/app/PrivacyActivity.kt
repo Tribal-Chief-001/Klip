@@ -78,7 +78,7 @@ class PrivacyActivity : Activity() {
             setOnCheckedChangeListener { _, on ->
                 if (on != KlipRuntime.receiveFiles(this@PrivacyActivity)) {
                     KlipRuntime.setReceiveFiles(this@PrivacyActivity, on)
-                    KlipSyncService.restart(this@PrivacyActivity)
+                    applyAfterRestart()
                 }
             }
         })
@@ -95,7 +95,7 @@ class PrivacyActivity : Activity() {
             val next = limits.firstOrNull { it > now } ?: limits.first()
             KlipRuntime.setMaxFileMb(this, next)
             showLimit()
-            KlipSyncService.restart(this)
+            applyAfterRestart()
         }, top = 4)
         files.add(
             tv("Kept inside Klip right now: ${FileText.size(FileReceiver.keptBytes(this))} (files that could not be moved to Downloads, and half-received files). " +
@@ -160,6 +160,17 @@ class PrivacyActivity : Activity() {
         val fp = KlipRuntime.engine?.let { runCatching { it.deviceFingerprint() }.getOrNull() } ?: "starting…"
         b.add(tv(fp, 18f, pal.text, 1, mono = true))
         b.add(tv("Other devices show this when you link, so you can check you are linking the right one.", 13f, pal.dim), top = 6, bottom = 8)
+    }
+
+    /** A file setting is read when the engine starts. Do not cut a running transfer short to apply it. */
+    private fun applyAfterRestart() {
+        if (KlipRuntime.transferRunning()) {
+            android.widget.Toast.makeText(
+                this, "Saved. It applies when Klip next restarts (a file is moving right now).", android.widget.Toast.LENGTH_LONG
+            ).show()
+        } else {
+            KlipSyncService.restart(this)
+        }
     }
 
     private fun section(b: LinearLayout, title: String, text: String) {

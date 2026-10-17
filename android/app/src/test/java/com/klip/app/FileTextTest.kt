@@ -56,6 +56,16 @@ class FileTextTest {
         assertEquals("photo 😀.jpg", FileText.safeName("photo 😀.jpg"))
     }
 
+    @Test fun only_content_uris_may_be_shared_never_file_paths_into_the_apps_own_storage() {
+        assertTrue(FileText.shareableScheme("content"))
+        assertTrue(FileText.shareableScheme("CONTENT"))
+        assertFalse(FileText.shareableScheme("file"))
+        assertFalse(FileText.shareableScheme("android.resource"))
+        assertFalse(FileText.shareableScheme("http"))
+        assertFalse(FileText.shareableScheme(null))
+        assertFalse(FileText.shareableScheme(""))
+    }
+
     @Test fun a_relative_folder_is_cleaned_component_by_component() {
         assertEquals("", FileText.safeRelDir(""))
         assertEquals("Trip/Day 1", FileText.safeRelDir("Trip/Day 1"))

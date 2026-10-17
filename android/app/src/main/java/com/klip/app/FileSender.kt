@@ -6,6 +6,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import android.widget.Toast
 import java.io.File
@@ -82,23 +84,23 @@ object FileSender {
         toast(app, summary(started, devices, errors.distinct()))
     }
 
-    private fun sendOne(app: Context, engine: uniffi.klip_android.KlipEngine, item: Item): List<uniffi.klip_android.TransferView> =
+    private fun isRegular(pfd: ParcelFileDescriptor): Boolean =
+        try { OsConstants.S_ISREG(Os.fstat(pfd.fileDescriptor).st_mode) } catch (e: Throwable) { false }
+
+    private fun sendOne(app: Context, engine: uniffi.klip_android.KlipEngine, item: Item): List<uniffi.klip_android.TransferView> {
+        if (isRegular(item.pfd)) return engine.sendFileFd(item.pfd.fd, item.name)
+        // A pipe from a cloud provider cannot be read twice or measured: copy it into the cache first.
+        val copy = copyToCache(app, item)
         try {
-            engine.sendFileFd(item.pfd.fd, item.name)
-        } catch (e: uniffi.klip_android.KlipException) {
-            // A pipe from a cloud provider cannot be read twice or measured: copy it into the cache first.
-            if (e.message?.contains("regular") != true) throw e
-            val copy = copyToCache(app, item)
-            try {
-                ParcelFileDescriptor.open(copy, ParcelFileDescriptor.MODE_READ_ONLY).use {
-                    engine.sendFileFd(it.fd, item.name)
-                }
-            } finally {
-                // The engine works on its own duplicate: deleting the name now is safe on Linux.
-                copy.delete()
-                copy.parentFile?.delete()
+            return ParcelFileDescriptor.open(copy, ParcelFileDescriptor.MODE_READ_ONLY).use {
+                engine.sendFileFd(it.fd, item.name)
             }
+        } finally {
+            // The engine works on its own duplicate: deleting the name now is safe on Linux.
+            copy.delete()
+            copy.parentFile?.delete()
         }
+    }
 
     private fun copyToCache(app: Context, item: Item): File {
         val dir = File(File(app.cacheDir, "outgoing"), UUID.randomUUID().toString()).apply { mkdirs() }

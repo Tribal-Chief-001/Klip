@@ -136,6 +136,23 @@ object FileReceiver {
         ctx.getSystemService(NotificationManager::class.java).notify(nextNotification.getAndIncrement(), n)
     }
 
+    /**
+     * At service start: a file that could not be moved to Downloads (storage was full, the app was killed in the
+     * middle of the copy) is tried again instead of waiting to be deleted. Files younger than two minutes are
+     * left alone: they may be mid-copy right now.
+     */
+    fun retryStaged(ctx: Context) {
+        val app = ctx.applicationContext
+        val root = File(app.filesDir, "incoming")
+        val now = System.currentTimeMillis()
+        root.walkTopDown().filter { it.isFile && !(it.name.startsWith(".klip-") && it.name.endsWith(".part")) }
+            .filter { now - it.lastModified() > 2 * 60_000 }
+            .forEach { f ->
+                val rel = f.parentFile?.relativeTo(root)?.path?.takeIf { it != "." } ?: ""
+                onReceived(app, f.path, f.name, f.length(), "an earlier transfer", rel)
+            }
+    }
+
     /** Bytes kept inside Klip's own storage (staged files and partial transfers), for the settings screen. */
     fun keptBytes(ctx: Context): Long =
         File(ctx.filesDir, "incoming").walkTopDown().filter { it.isFile }.sumOf { it.length() }
