@@ -38,6 +38,7 @@
 - You decide what is linked: pairing needs a one-time QR/ticket **and** your approval on the other device.
 - Honest feedback: when you send something, Klip tells you whether the other device really put it on its clipboard, or why not.
 - If a copy cannot reach a device, Klip says so at that moment: a desktop notification on the laptop (once per outage), and the phone's notification shows how long the laptop has been gone.
+- **Send files** between your linked devices, with `klip send-file photo.jpg` (any size up to 4 GiB by default, checked end to end with a BLAKE3 hash; nothing is ever overwritten). See [Sending files](#sending-files).
 - **A tray icon (Linux):** a small menu to send the waiting image, pause, switch automatic images and open the terminal app; it starts at login (see below).
 - **A full-screen app:** run `klip` on a terminal to see devices, pair, browse the history, send text, read the log and change settings without remembering commands.
 
@@ -189,6 +190,22 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 | Stop syncing for a while | `klip pause 600` … `klip resume` |
 | Remove a device | `klip unpair "Pixel 8"` (name or start of its fingerprint) |
 
+### Sending files
+
+```bash
+klip send-file report.pdf photos/*.jpg          # to every linked device that is online
+klip send-file movie.mkv --to "Pixel 8"         # to one device
+klip send-file big.iso --no-wait                # start it and return; see it with `klip transfers`
+klip transfers                                   # running and recent transfers
+klip transfers --cancel 3fa9                     # stop one (the start of its id)
+```
+
+- Files arrive in `~/Downloads/Klip` on a computer (set `receive_dir` to change it). A name that is taken gets ` (2)`, ` (3)`: an existing file is never replaced. Odd or dangerous names (`../`, `CON`, trailing dots) are cleaned.
+- Each file goes over its own encrypted stream, so clips keep syncing while a big file moves. The receiver writes a hidden `.klip-….part` file, checks the BLAKE3 hash, and only then gives it its name; a failed or cancelled transfer leaves nothing behind.
+- Both devices must be online together (same rule as clips). **There is no resume in this version:** an interrupted transfer starts again from zero.
+- The other device can refuse: `"accept_files": false`, a file over its `max_file_bytes`, not enough free disk space (it keeps 512 MiB free), or too many transfers at once. You are told why.
+- On Linux a desktop notice says "Received 1 file from <device> (<size>)", never the file name.
+
 ### Phone → computer (Android limits)
 
 **Why isn't it automatic?** Android 10+ only lets the app *in front* read the clipboard, and — verified on Android 14 — it does not even tell Klip that something was copied while another app is in front. So Klip cannot notice a copy by itself. (Computer → phone is instant because *writing* the clipboard is allowed.) Ways around it, easiest first, none needs special permissions:
@@ -241,13 +258,17 @@ systemctl --user status klip.service
   "max_history_items": 50,
   "history_ttl_hours": 24,
   "poll_interval_ms": 100,
-  "auto_send_images": false
+  "auto_send_images": false,
+  "accept_files": true,
+  "receive_dir": "/home/you/Downloads/Klip",
+  "max_file_bytes": 4294967296
 }
 ```
 
 - `"relay": "n0"` (default) uses n0's public relay and discovery servers so devices on different networks can find each other. `"relay": "lan"` uses **no third-party servers at all**, but then both devices must be on the same network.
 - `history_ttl_hours` (default **24**): clips older than this are forgotten from the history automatically (also from `klip history` and the app). `0` keeps them until the item count and size limits push them out. The history lives in memory only, so a restart clears it anyway.
 - `auto_send_images` (default **false**): `false` = a copied image waits until you send it (tray, `klip share`); `true` = every copied image is sent at once. The tray and `klip images auto|manual` change it while Klip runs and save it here. Text is not affected.
+- `accept_files` (default **true**): receive files from linked devices. `receive_dir` must be an absolute path (default: your Downloads folder, subfolder `Klip`). `max_file_bytes` (default 4 GiB) is the biggest file this device accepts.
 - `lan_discovery` announces the device ID on your local network (mDNS) so same-Wi-Fi devices connect without internet.
 - Environment: `KLIP_CONFIG_DIR` (separate instance), `KLIP_CLIPBOARD=memory` (don't touch the OS clipboard — servers/demos).
 
@@ -268,6 +289,8 @@ systemctl --user status klip.service
 | `klip history clear` | forget all clips kept on this computer |
 | `klip send "<text>"` | send text now, with per-device result (`klip send -` reads standard input) |
 | `klip share` | send the image you copied last (held for 10 minutes), with a per-device result |
+| `klip send-file FILE... [--to NAME] [--no-wait]` | send files to your linked devices; exit code 1 if any did not arrive |
+| `klip transfers [--cancel ID]` | running and recent file transfers; stop one |
 | `klip images [auto\|manual]` | show or choose whether copied images are sent at once or wait for `klip share` |
 | `klip tray [start\|run\|install\|uninstall\|status]` | the tray icon (Linux): start it, or make it start at login |
 | `klip install-service` | create the auto-start unit for your OS |
@@ -290,7 +313,7 @@ systemctl --user status klip.service
 - **Images (v0.5.0, manual since v0.6.0):** a PNG/WebP copied on the computer waits until you send it (tray menu, middle click, `klip share`, or switch on automatic sending); then it lands on the phone's clipboard and pastes into other apps. From the phone, **Share → Klip** an image, or copy an image and tap the tile or the notification button; anything that is not PNG/WebP (JPEG, HEIC...) is converted to PNG first, which also removes EXIF/GPS data, applies the photo's rotation, and scales it down if it would be over the limit. Never automatic from the phone (Android does not let Klip read the clipboard in the background). Limits: 12 MB on the phone (32 MiB on a computer), at most 36 megapixels (about 8K); a bigger image, a file that is not really a PNG/WebP, or a "decompression bomb" is refused before it is decoded, and the sender is told. Received images are kept as files in the app's cache; old ones are removed when the next image arrives or when Klip restarts (the newest 4 are kept, none older than an hour at that moment), so the last received image can stay there longer. Animated GIFs and several images at once are not supported. Tested on the author's phone: a screenshot copied on the Linux computer arrives on the phone and pastes into WhatsApp.
 - Clips are limited to 32 MiB by default (12 MB on the phone). **Android is stricter for text: a text clip over about 0.9 MB cannot be put on the phone's clipboard** (Android passes it through one Binder transaction of about 1 MB). The sender is told "the other device could not write its clipboard"; nothing crashes (it did before 0.3.6: see the [release notes](https://github.com/Tribal-Chief-001/Klip/releases/tag/v0.3.6-alpha)).
 - **What is preserved.** Text is sent as UTF-8 bytes and written back unchanged: tabs, indentation, trailing spaces, blank lines, CRLF and bare CR, emoji, CJK, right-to-left text, combining and zero-width characters, a BOM, links with query strings, and very long lines. Tested between two desktop daemons with a 400 KB+ source-like file (byte for byte), and on an Android 14 emulator with 57 KB, 249 KB and 504 KB code files (accepted; a 504 KB clip made the round trip phone → laptop with the same size and the same start; no full byte-for-byte comparison on Android).
-- **What is not.** Only *plain text* is synced between phone and computer: rich formatting (bold, colours, syntax highlighting copied from a web page or an editor), HTML tables and files are not carried over a phone (images are, see above). A copy that an app marks as sensitive (password managers) is not sent automatically by the optional helper.
+- **What is not.** Only *plain text* is synced between phone and computer: rich formatting (bold, colours, syntax highlighting copied from a web page or an editor), HTML tables are not carried over a phone (images are, see above; files go with `klip send-file`, computer to computer only for now). A copy that an app marks as sensitive (password managers) is not sent automatically by the optional helper.
 - Large text from the terminal: `cat main.rs | klip send -` is limited by the daemon's clip limit (32 MiB by default) plus 64 KiB; text over the limit is refused before it is sent, with the limit in the message. (The argument form is limited to about 128 KB by Linux.)
 - Idle cost (measured on a release build, one linked device, Linux/X11): about **14 MB** resident memory, ~**3 wakeups per second**, no measurable CPU. Capture is event-driven (the X server tells Klip when the clipboard changes); the remaining wakeups are iroh's connection upkeep. Without X11 events (headless / `KLIP_CLIPBOARD=memory`) Klip falls back to polling and uses more.
 - Release binary: 8.2 MB (stripped, size-optimised; 7.8 MB before the terminal app). The terminal app idles at about 8 MB resident and 0.125 % of one core (measured over 120 s on a release build).
