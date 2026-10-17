@@ -182,6 +182,8 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 |---|---|
 | Copy text on the computer, paste on the phone | Just copy. It arrives on the phone's clipboard by itself. |
 | Copy an image on the computer, paste on the phone | Copy it, then use *Send the last copied image* in the tray menu (or middle-click the tray icon, or run `klip share`). Images wait for you on purpose. |
+| Send a file from the phone | In any app (Files, Gallery, ...): Share → **Send as a file with Klip**. It goes to every linked device that is online; a notification shows the progress and has a Cancel button. |
+| Get a file on the phone | Send it from the computer (`klip send-file`). It arrives in **Downloads/Klip** and a notification says so (never with the file's name). |
 | Copy on the phone, paste on the computer | Share → Klip, or tile / notification button (Android can't notice a copy by itself — see [why](#phone--computer-android-limits)). |
 | A quick menu in the panel | the tray icon (`klip tray install` to start it at login) |
 | Do everything in one terminal screen | `klip` (the full-screen app: devices, pair, history, send, log, settings) |
@@ -191,6 +193,8 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 | Remove a device | `klip unpair "Pixel 8"` (name or start of its fingerprint) |
 
 ### Sending files
+
+The phone takes part too: it receives into `Downloads/Klip` (switch and size limit under **Privacy → Receive files**, default limit 2 GiB because a received file exists twice for a moment) and sends from the Share sheet ("Send as a file with Klip", one file or several).
 
 ```bash
 klip send-file report.pdf photos/*.jpg          # to every linked device that is online
