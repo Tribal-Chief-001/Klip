@@ -22,7 +22,15 @@ object FolderSender {
 
     fun start(ctx: Context, tree: Uri) {
         val app = ctx.applicationContext
-        Thread { run(app, tree) }.start()
+        Thread {
+            try {
+                run(app, tree)
+            } catch (e: Throwable) {
+                // A provider may throw anything (a revoked grant, a closed cloud account): never take the app down.
+                Log.w(TAG, "cannot send the folder: ${e.message}", e)
+                toast(app, "Klip: cannot read the folder (${e.message ?: e.javaClass.simpleName})")
+            }
+        }.start()
     }
 
     private fun run(app: Context, tree: Uri) {
@@ -93,13 +101,19 @@ object FolderSender {
         )
         val out = ArrayList<FolderWalk.Child>()
         ctx.contentResolver.query(uri, cols, null, null, null)?.use { c ->
+            // A provider may return more columns, in another order, than were asked for: read them by name.
+            val id = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val name = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mime = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            val size = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_SIZE)
+            val flagsAt = c.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_FLAGS)
             while (c.moveToNext()) {
-                val flags = c.getInt(4)
+                val flags = c.getInt(flagsAt)
                 out += FolderWalk.Child(
-                    id = c.getString(0),
-                    name = c.getString(1) ?: "file",
-                    isDir = c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR,
-                    size = if (c.isNull(3)) -1 else c.getLong(3),
+                    id = c.getString(id),
+                    name = c.getString(name) ?: "file",
+                    isDir = c.getString(mime) == DocumentsContract.Document.MIME_TYPE_DIR,
+                    size = if (c.isNull(size)) -1 else c.getLong(size),
                     virtual = flags and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT != 0,
                 )
             }
@@ -109,7 +123,8 @@ object FolderSender {
 
     private fun displayName(ctx: Context, doc: Uri): String? = try {
         ctx.contentResolver.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use {
-            if (it.moveToFirst()) it.getString(0) else null
+            val at = it.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            if (at >= 0 && it.moveToFirst()) it.getString(at) else null
         }
     } catch (e: Throwable) {
         null

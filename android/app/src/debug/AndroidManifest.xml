@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only in debug builds: helpers for the emulator checks (many files at once, a pipe, a document tree). Never in a release APK. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name="com.klip.app.debug.DebugShareManyActivity" android:exported="true" />
+        <activity android:name="com.klip.app.debug.DebugSendFolderActivity" android:exported="true" />
+
+        <provider
+            android:name="com.klip.app.debug.DebugFilesProvider"
+            android:authorities="${applicationId}.debugfiles"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+        <provider
+            android:name="com.klip.app.debug.DebugTreeProvider"
+            android:authorities="${applicationId}.debugtree"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+</manifest>

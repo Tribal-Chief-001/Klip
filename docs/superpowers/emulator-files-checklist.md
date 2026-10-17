@@ -32,3 +32,16 @@ Same emulator and test peer, APK built from the `files-round3` branch (versionNa
 | Version 2 negotiated with the phone | Yes (folders and resume both need it) |
 
 Not run: SEND_MULTIPLE (adb cannot attach a list), the phone sending a folder (not built), a version-1-only peer, the real phone.
+
+## v0.10.0 run (2026-10-18): the phone sends folders and many files; storage full
+
+Same emulator and test peer; the debug-only harness in `android/app/src/debug/` (not in the release APK) shares files, a
+pipe-backed file and a small document tree.
+
+| Check | Result |
+|---|---|
+| `SEND_MULTIPLE` with 40 files and 2 pipe-backed files (`am start ...DebugShareManyActivity --ei count 40 --ei pipes 2`) | All 42 arrived at the peer, byte for byte (the generator is re-run in Python), no error; the pipe files went through the cache copy |
+| The phone sends a document tree as a folder (`DebugSendFolderActivity`: `Trip/` with `a.txt`, `Day 1/b.bin`, `Day 1/raw/c.cr2`, `Day 2/d.jpg` and a virtual "Cloud doc") | **First run crashed the app**: the provider threw `SecurityException` ("not a descendant of root", a bug of the debug provider) and nothing caught it on the worker thread. Fixed: every provider error is now caught and shown as "Klip: cannot read the folder (...)", the app stays up (checked with the broken provider). **Second run**: the folder arrived as `root/` instead of `Trip/`: the display name was read by column position and the provider returns all columns. Fixed (columns by name). **Third run**: `Trip/` with the right structure; three files byte-equal, one (`b.bin`) failed with "the other device stopped answering" because the overloaded emulator stalled for 30 s (the folder went on and finished the others, as designed); **fourth run (`Trip (2)`): all four files byte-equal, the virtual document skipped** |
+| Phone storage nearly full (about 250 MB free, `fallocate` in `/data/local/tmp`), the peer sends 190 MB | Refused at once by the phone: "this device does not have enough free space for the file"; nothing staged; space freed again |
+
+Not run: the system's own folder picker UI, a version-1-only peer on the phone, Android 8-9 (no image), the real phone.
