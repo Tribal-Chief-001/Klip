@@ -619,8 +619,12 @@ impl SyncCoordinator {
     pub async fn handle_net_event(self: &Arc<Self>, event: NetEvent) {
         match event {
             NetEvent::File {
-                from, tx, rx, conn, ..
-            } => self.spawn_incoming_file(from, tx, rx, conn),
+                from,
+                tx,
+                rx,
+                conn,
+                version,
+            } => self.spawn_incoming_file(from, tx, rx, conn, version),
             NetEvent::Clip { from, payload, ack } => {
                 let outcome = self.apply_remote_clip(&from, payload).await;
                 let _ = ack.send(outcome);

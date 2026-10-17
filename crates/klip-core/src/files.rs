@@ -886,6 +886,7 @@ pub async fn prepare_send(path: &Path) -> io::Result<PreparedFile> {
 pub async fn send_prepared<R, W>(
     mut prepared: PreparedFile,
     id: [u8; 16],
+    version: u8,
     tx: &mut W,
     rx: &mut R,
     mut cancel: CancelToken,
@@ -914,7 +915,19 @@ where
             tokio::io::AsyncSeekExt::seek(&mut prepared.file, std::io::SeekFrom::Start(0))
                 .await
                 .map_err(|e| FileError::Io(e.to_string()))?;
-            send_file(&header, prepared.file, tx, rx, &mut progress).await
+            if version >= 2 {
+                let v2 = klip_net::file::FileHeaderV2 {
+                    version: 2,
+                    id,
+                    name: header.name.clone(),
+                    size: header.size,
+                    resume_key: [0; 32],
+                    folder: None,
+                };
+                klip_net::file::send_file_v2(&v2, prepared.file, tx, rx, &mut progress).await
+            } else {
+                send_file(&header, prepared.file, tx, rx, &mut progress).await
+            }
         } => r,
         _ = cancel.cancelled() => Err(FileError::Cancelled),
     };
@@ -1788,7 +1801,7 @@ mod tests {
         );
         let sender = async {
             let (mut tx, mut rx) = (s_w, r_r);
-            send_prepared(prepared, [id; 16], &mut tx, &mut rx, token, &send_reg).await
+            send_prepared(prepared, [id; 16], 1, &mut tx, &mut rx, token, &send_reg).await
         };
         let receiver = async {
             let incoming = IncomingFile::open(s_r, r_w).await?;

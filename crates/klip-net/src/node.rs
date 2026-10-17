@@ -263,10 +263,11 @@ impl KlipNode {
 
         let mut alpns = vec![SYNC_ALPN.to_vec(), PAIR_ALPN.to_vec()];
         if cfg.file_transfer {
-            alpns.push(FILE_ALPN.to_vec());
+            // The server's order decides when both versions fit: version 2 must come first.
             if cfg.file_v2 {
                 alpns.push(FILE_ALPN_V2.to_vec());
             }
+            alpns.push(FILE_ALPN.to_vec());
         }
         let builder = match cfg.relay {
             RelayChoice::N0Default => Endpoint::builder(presets::N0),

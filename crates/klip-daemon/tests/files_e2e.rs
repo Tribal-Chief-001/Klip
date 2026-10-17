@@ -392,20 +392,22 @@ async fn clips_still_arrive_while_a_big_file_is_moving() {
 
 #[tokio::test]
 async fn a_hostile_name_and_a_lying_header_from_a_raw_stream_do_no_harm() {
-    use klip_net::file::{send_file, FileHeader};
+    use klip_net::file::{send_file_v2, FileHeaderV2};
     let (a, b, incoming) = two_paired("hostile", |_| {}).await;
     let b_id = a.engine.sync.net.peers()[0].id;
 
     // A hostile name with honest data: it lands inside the folder under a safe name.
     let mut streams = a.engine.sync.net.open_file_stream(b_id).await.unwrap();
     let data = vec![7u8; 4096];
-    let header = FileHeader {
-        version: 1,
+    let header = FileHeaderV2 {
+        version: 2,
         id: [1; 16],
         name: "../../evil.sh".into(),
         size: 4096,
+        resume_key: [0; 32],
+        folder: None,
     };
-    send_file(
+    send_file_v2(
         &header,
         &data[..],
         &mut streams.tx,
@@ -420,13 +422,15 @@ async fn a_hostile_name_and_a_lying_header_from_a_raw_stream_do_no_harm() {
 
     // A header that promises 5 MB and delivers 1 KB: nothing is kept.
     let mut streams = a.engine.sync.net.open_file_stream(b_id).await.unwrap();
-    let header = FileHeader {
-        version: 1,
+    let header = FileHeaderV2 {
+        version: 2,
         id: [2; 16],
         name: "liar.bin".into(),
         size: 5_000_000,
+        resume_key: [0; 32],
+        folder: None,
     };
-    let r = send_file(
+    let r = send_file_v2(
         &header,
         &vec![1u8; 1000][..],
         &mut streams.tx,
@@ -835,7 +839,7 @@ async fn a_hostile_display_name_becomes_a_safe_name() {
 
 #[tokio::test]
 async fn a_device_unpaired_after_it_connected_cannot_deliver_its_file() {
-    use klip_net::file::{send_file, FileError, FileHeader};
+    use klip_net::file::{send_file_v2, FileError, FileHeaderV2};
     let (a, b, incoming) = two_paired("unpaired-late", |_| {}).await;
     let b_id = a.engine.sync.net.peers()[0].id;
     // A opens the file stream while it is still paired, then B unpairs A before the header goes.
@@ -846,13 +850,15 @@ async fn a_device_unpaired_after_it_connected_cannot_deliver_its_file() {
         .await
         .unwrap();
     let data = vec![3u8; 10_000];
-    let header = FileHeader {
-        version: 1,
+    let header = FileHeaderV2 {
+        version: 2,
         id: [4; 16],
         name: "late.bin".into(),
         size: 10_000,
+        resume_key: [0; 32],
+        folder: None,
     };
-    let r = send_file(
+    let r = send_file_v2(
         &header,
         &data[..],
         &mut streams.tx,

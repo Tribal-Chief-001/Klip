@@ -130,10 +130,16 @@ impl SyncCoordinator {
         tx: SendStream,
         rx: RecvStream,
         conn: FileConnection,
+        version: u8,
     ) {
         let me = Arc::clone(self);
         tokio::spawn(async move {
-            if let Ok(incoming) = IncomingFile::open(rx, tx).await {
+            let opened = if version >= 2 {
+                IncomingFile::open_v2(rx, tx).await
+            } else {
+                IncomingFile::open(rx, tx).await
+            };
+            if let Ok(incoming) = opened {
                 // The header can take a while to arrive: the device may have been unpaired meanwhile.
                 if !me.net.is_paired(&from) {
                     incoming
@@ -303,6 +309,7 @@ impl SyncCoordinator {
                         let _ = send_prepared(
                             prepared,
                             id,
+                            streams.version(),
                             &mut streams.tx,
                             &mut streams.rx,
                             token,
