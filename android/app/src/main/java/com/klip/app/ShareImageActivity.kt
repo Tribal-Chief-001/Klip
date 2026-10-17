@@ -17,16 +17,22 @@ class ShareImageActivity : Activity() {
             finish()
             return
         }
-        // Read now: the permission the sharing app granted may end when this activity finishes.
-        val raw = try {
-            ImageSender.readBounded(this, uri)
-        } catch (e: Throwable) {
-            Toast.makeText(this, "Klip: ${e.message}", Toast.LENGTH_LONG).show()
-            finish()
-            return
-        }
-        SendHelper.sendImage(this, raw)
-        finish()
+        // Read on a worker: a slow (cloud-backed) source must not freeze the screen. The sharing app's permission
+        // to read may end when this activity finishes, so it stays (invisibly) until the bytes are read.
+        val app = applicationContext
+        Thread {
+            val raw = try {
+                ImageSender.readBounded(app, uri)
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    Toast.makeText(app, "Klip: ${e.message}", Toast.LENGTH_LONG).show()
+                    finish()
+                }
+                return@Thread
+            }
+            runOnUiThread { finish() }
+            SendHelper.sendImage(app, raw)
+        }.start()
     }
 
     private fun streamUri(): Uri? {

@@ -81,6 +81,14 @@ class ClipboardWriter(
         FileReceiver.onReceived(ctx, path, name, size.toLong(), from, relDir)
     }
 
+    override fun transfersChanged() {
+        try {
+            KlipRuntime.transfersChanged?.invoke()
+        } catch (e: Throwable) {
+            Log.w(TAG, "transfer notification failed: ${e.message}")
+        }
+    }
+
     /** The text travels in the notification's intent (a Binder transaction too), so only small clips use it. */
     private fun offerTapToCopy(text: String, sensitive: Boolean): Boolean = try {
         postTapToCopy(text, sensitive)

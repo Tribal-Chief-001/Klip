@@ -76,11 +76,14 @@ class CopyTrampolineActivity : Activity() {
             // An image on the clipboard: sent when the person asks (tile, notification button), never
             // automatically.
             if (!quiet && uri != null && clip.description.hasMimeType("image/*")) {
-                try {
-                    SendHelper.sendImage(app, ImageSender.readBounded(app, uri))
-                } catch (e: Throwable) {
-                    toast(app, "Klip: ${e.message}")
-                }
+                // Off the main thread: a slow source must not freeze the screen.
+                Thread {
+                    try {
+                        SendHelper.sendImage(app, ImageSender.readBounded(app, uri))
+                    } catch (e: Throwable) {
+                        toast(app, "Klip: ${e.message}")
+                    }
+                }.start()
                 return
             }
             if (!quiet) toast(app, "Klip: the clipboard is empty")

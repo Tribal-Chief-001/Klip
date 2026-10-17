@@ -2,5 +2,6 @@
     <string name="app_name">Klip</string>
     <string name="share_label">Klip</string>
     <string name="tile_label">Klip</string>
+    <string name="share_file_label">Send as a file with Klip</string>
     <string name="process_text_label">Send to Klip</string>
 </resources>

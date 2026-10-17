@@ -33,6 +33,9 @@ object KlipRuntime {
 
     private val lock = Any()
 
+    /** Set by the service: the engine says a file transfer began or ended. */
+    @Volatile var transfersChanged: (() -> Unit)? = null
+
     /** What Klip itself last put on the clipboard (and when): used to tell its own writes apart from user copies. */
     @Volatile var lastWrittenText: String? = null
     @Volatile var lastWrittenAtMs: Long = 0

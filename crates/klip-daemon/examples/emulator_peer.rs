@@ -9,7 +9,10 @@
 //! - `PEER_RELAY=lan` keeps everything on this machine; `PEER_NAME` sets the device name;
 //! - copies `<work-dir>/inject.png` or `inject.webp` to its clipboard when the file appears
 //!   (it is renamed to `*.sent`), which sends it to the paired phone;
-//! - writes every image that arrives to `<work-dir>/received-<n>.<ext>`.
+//! - writes every image that arrives to `<work-dir>/received-<n>.<ext>`;
+//! - receives files into `<work-dir>/files/`; every path listed (one per line) in `<work-dir>/send-file.txt`
+//!   is sent to the paired phone (the file is renamed to `send-file.txt.sent`); every finished transfer is
+//!   appended to `<work-dir>/files.log` as `<received|sent> <state> <size> <name>`.
 use klip_daemon::{DaemonConfig, DaemonEngine, RelayMode};
 use klip_platform::memory::MemoryClipboardDriver;
 use klip_proto::clip::ClipContentType;
@@ -37,6 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             RelayMode::N0
         },
         lan_discovery: false,
+        receive_dir: Some(work.join("files").display().to_string()),
         ..DaemonConfig::default()
     };
     let engine = Arc::new(DaemonEngine::init_with(config, paths, Some(clipboard.clone())).await?);
@@ -58,12 +62,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("ready");
 
+    let mut logged: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
     let mut received = 0u32;
     let mut last_seen: Option<[u8; 32]> = None;
     loop {
         if !manual && engine.sync.poll_pairing().pending.is_some() {
             engine.sync.decide_pairing(true);
             println!("approved a pairing request");
+        }
+        let list = work.join("send-file.txt");
+        if list.exists() {
+            let text = std::fs::read_to_string(&list)?;
+            std::fs::rename(&list, work.join("send-file.txt.sent"))?;
+            for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                let answers = engine.sync.send_file(PathBuf::from(line), None).await;
+                println!("send-file {line}: {answers:?}");
+            }
+        }
+        for t in engine.sync.transfers() {
+            use klip_proto::ipc::{TransferDirection, TransferState};
+            if matches!(t.state, TransferState::Waiting | TransferState::Active)
+                || !logged.insert(t.id)
+            {
+                continue;
+            }
+            let dir = if t.direction == TransferDirection::Sending {
+                "sent"
+            } else {
+                "received"
+            };
+            let line = format!("{dir} {:?} {} {}\n", t.state, t.size, t.name);
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(work.join("files.log"))?
+                .write_all(line.as_bytes())?;
         }
         for (name, ct) in [
             ("inject.png", ClipContentType::ImagePng),

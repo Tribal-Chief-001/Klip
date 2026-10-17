@@ -89,6 +89,7 @@ class KlipSyncService : Service() {
     private var note: String? = null
     private var noteUntil = 0L
     private lateinit var power: PowerManager
+    private lateinit var transfers: FileTransferNotifier
 
     /** While the screen is on, re-check the status every few seconds; while it is off, do nothing at all. */
     private val ticker = object : Runnable {
@@ -110,6 +111,8 @@ class KlipSyncService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannels()
+        transfers = FileTransferNotifier(this)
+        KlipRuntime.transfersChanged = { transfers.changed() }
         showForeground("Starting…")
         clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         power = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -140,6 +143,7 @@ class KlipSyncService : Service() {
             }
             ACTION_TEST_BG_WRITE -> scheduleBackgroundWriteTest()
             ACTION_REPOST -> refreshNotification(force = true)
+            FileTransferNotifier.ACTION_CANCEL_ALL -> scope.launch { transfers.cancelAll() }
             else -> {
                 if (!started) startEngine()
                 refreshNotification() // e.g. notifications were switched back on while Klip was running
@@ -308,6 +312,8 @@ class KlipSyncService : Service() {
         runCatching { unregisterReceiver(screenReceiver) }
         runCatching { clipboard.removePrimaryClipChangedListener(clipListener) }
         runCatching { multicastLock?.takeIf { it.isHeld }?.release() }
+        KlipRuntime.transfersChanged = null
+        runCatching { transfers.stop() }
         scope.cancel()
         // Stopping the engine waits for the network to shut down; never block the main thread.
         Thread({ KlipRuntime.stop() }, "klip-stop").start()

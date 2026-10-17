@@ -80,18 +80,20 @@ object ImageSender {
         while (max(b.outWidth, b.outHeight) / sample > DECODE_MAX_SIDE) sample *= 2
         val bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size, BitmapFactory.Options().also { it.inSampleSize = sample })
             ?: return null
-        val degrees = runCatching {
-            when (ExifInterface(ByteArrayInputStream(raw)).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-                ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-                ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-                else -> 0f
-            }
-        }.getOrDefault(0f)
-        if (degrees == 0f) return bmp
-        val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(degrees) }, true)
-        if (rotated !== bmp) bmp.recycle()
-        return rotated
+        val orientation = runCatching {
+            ExifInterface(ByteArrayInputStream(raw)).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)
+        }.getOrDefault(1)
+        val ops = ExifOrient.ops(orientation)
+        if (ops.rotateDegrees == 0f && !ops.flipHorizontal && !ops.flipVertical) return bmp
+        // Rotate first, then mirror: the order ExifOrient documents (post* calls apply in sequence).
+        val matrix = Matrix().apply {
+            if (ops.rotateDegrees != 0f) postRotate(ops.rotateDegrees)
+            if (ops.flipHorizontal) postScale(-1f, 1f)
+            if (ops.flipVertical) postScale(1f, -1f)
+        }
+        val turned = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
+        if (turned !== bmp) bmp.recycle()
+        return turned
     }
 
     private fun isPngOrWebp(b: ByteArray): Boolean {
