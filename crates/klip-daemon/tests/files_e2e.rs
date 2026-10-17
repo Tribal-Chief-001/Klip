@@ -38,6 +38,20 @@ impl TestDaemon {
 }
 
 fn fresh_dir(tag: &str) -> PathBuf {
+    // These tests move gigabytes and kept partials stay on disk: clear what earlier runs left behind
+    // (another process id in the name) so /tmp does not fill up, once per run.
+    static CLEANED: std::sync::Once = std::sync::Once::new();
+    CLEANED.call_once(|| {
+        let mine = format!("klip-e2e-{}-", std::process::id());
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with("klip-e2e-") && !name.starts_with(&mine) {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        }
+    });
     let dir = std::env::temp_dir().join(format!("klip-e2e-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     dir

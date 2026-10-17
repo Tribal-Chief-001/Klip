@@ -228,10 +228,11 @@ fn cancel_works_and_an_unknown_id_is_false() {
     let started = phone
         .send_file_fd(file.as_raw_fd(), "huge.bin".into())
         .unwrap();
-    assert!(wait_until(30, || phone
-        .transfers()
-        .iter()
-        .any(|t| t.done > 10 << 20)));
+    assert!(
+        wait_until(30, || phone.transfers().iter().any(|t| t.done > 10 << 20)),
+        "{:?}",
+        phone.transfers()
+    );
     assert!(phone.cancel_transfer(started[0].id.clone()));
     assert!(wait_until(20, || phone.transfers().iter().all(finished)));
     assert_eq!(phone.transfers()[0].state, TransferStateView::Cancelled);
