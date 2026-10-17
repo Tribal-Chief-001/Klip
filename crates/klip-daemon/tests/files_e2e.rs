@@ -174,7 +174,15 @@ async fn two_paired(
     tag: &str,
     tweak_b: impl FnOnce(&mut DaemonConfig),
 ) -> (TestDaemon, TestDaemon, PathBuf) {
-    let a = start_daemon("Alpha", fresh_dir(&format!("{tag}-a")), false).await;
+    two_paired_with(tag, |_| {}, tweak_b).await
+}
+
+async fn two_paired_with(
+    tag: &str,
+    tweak_a: impl FnOnce(&mut DaemonConfig),
+    tweak_b: impl FnOnce(&mut DaemonConfig),
+) -> (TestDaemon, TestDaemon, PathBuf) {
+    let a = start_daemon_with("Alpha", fresh_dir(&format!("{tag}-a")), false, tweak_a).await;
     let b_dir = fresh_dir(&format!("{tag}-b"));
     let incoming = b_dir.join("incoming");
     let incoming_for_config = incoming.display().to_string();
@@ -1319,4 +1327,82 @@ async fn cancelling_on_the_sending_side_tells_the_receiver_and_nothing_is_kept()
         "a deliberate cancel is not a cut: the receiver keeps nothing ({:?})",
         files_in(&incoming)
     );
+}
+
+#[tokio::test]
+async fn a_version_one_receiver_gets_a_single_file_whole_and_refuses_a_folder_with_update_klip() {
+    let (a, _b, incoming) = two_paired("v1recv", |c| c.file_protocol_v2 = false).await;
+    let file = make_file(&a.dir.join("out"), "one.bin", 3_000_000);
+    let started = send(&a, &file).await;
+    let done = wait_transfer(&a, 30, "the file", |t| t.id == started.id && finished(t)).await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        std::fs::read(incoming.join("one.bin")).unwrap(),
+        std::fs::read(&file).unwrap()
+    );
+
+    let (top, _files) = make_folder(&a.dir.join("out2"), 6);
+    let row = a.engine.sync.send_file(top, None).await.remove(0).unwrap();
+    let t = wait_transfer(&a, 20, "the folder to be refused", |t| {
+        t.id == row.id && finished(t)
+    })
+    .await;
+    assert_eq!(t.state, TransferState::Failed, "{t:?}");
+    assert!(t.error.as_deref().unwrap().contains("update Klip"), "{t:?}");
+    assert_eq!(
+        files_in(&incoming),
+        ["one.bin"],
+        "nothing of the folder arrived"
+    );
+}
+
+#[tokio::test]
+async fn a_version_one_sender_delivers_to_a_version_two_receiver() {
+    let (a, _b, incoming) = two_paired_with("v1send", |c| c.file_protocol_v2 = false, |_| {}).await;
+    let file = make_file(&a.dir.join("out"), "old.bin", 2_000_000);
+    let started = send(&a, &file).await;
+    let done = wait_transfer(&a, 30, "the file", |t| t.id == started.id && finished(t)).await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        std::fs::read(incoming.join("old.bin")).unwrap(),
+        std::fs::read(&file).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn a_cut_to_a_version_one_receiver_starts_again_from_zero_and_keeps_nothing() {
+    let (a, _b, incoming) = two_paired("v1cut", |c| c.file_protocol_v2 = false).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 600 * 1024 * 1024);
+    let first = send(&a, &huge).await;
+    wait_transfer(&a, 30, "bytes to move", |t| {
+        t.id == first.id && t.done > 20 * 1024 * 1024
+    })
+    .await;
+    assert!(a.engine.sync.cancel_transfer(first.id));
+    wait_transfer(&a, 20, "the cancel", |t| t.id == first.id && finished(t)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(
+        files_in(&incoming).is_empty(),
+        "version 1 keeps no partial: {:?}",
+        files_in(&incoming)
+    );
+    let second = send(&a, &huge).await;
+    let mut first_seen = 0;
+    let end = Instant::now() + Duration::from_secs(20);
+    while first_seen == 0 {
+        first_seen = a
+            .engine
+            .sync
+            .transfers()
+            .iter()
+            .find(|t| t.id == second.id)
+            .map_or(0, |t| t.done);
+        assert!(Instant::now() < end);
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(
+        first_seen < 10 * 1024 * 1024,
+        "a version 1 receiver cannot resume: first progress {first_seen}"
+    );
+    assert!(a.engine.sync.cancel_transfer(second.id));
 }

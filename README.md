@@ -277,6 +277,7 @@ systemctl --user status klip.service
 - `history_ttl_hours` (default **24**): clips older than this are forgotten from the history automatically (also from `klip history` and the app). `0` keeps them until the item count and size limits push them out. The history lives in memory only, so a restart clears it anyway.
 - `auto_send_images` (default **false**): `false` = a copied image waits until you send it (tray, `klip share`); `true` = every copied image is sent at once. The tray and `klip images auto|manual` change it while Klip runs and save it here. Text is not affected.
 - `accept_files` (default **true**): receive files from linked devices. `receive_dir` must be an absolute path (default: your Downloads folder, subfolder `Klip`). `max_file_bytes` (default 4 GiB) is the biggest file this device accepts.
+- `file_protocol_v2` (default **true**): speak the newer file protocol (resume, folders). `false` makes this device behave like one that only has the first version (whole files, no folders): only for tracking down a problem.
 - `lan_discovery` announces the device ID on your local network (mDNS) so same-Wi-Fi devices connect without internet.
 - Environment: `KLIP_CONFIG_DIR` (separate instance), `KLIP_CLIPBOARD=memory` (don't touch the OS clipboard — servers/demos).
 

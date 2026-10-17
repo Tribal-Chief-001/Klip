@@ -80,6 +80,7 @@ impl CoreEngine {
             },
             max_clip_bytes: config.max_clip_bytes,
             lan_discovery: config.lan_discovery,
+            file_v2: config.file_protocol_v2,
             ..NetConfig::default()
         };
         let (net, net_events) = KlipNode::start(net_cfg, identity.seed(), trusted).await?;

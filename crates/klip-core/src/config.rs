@@ -111,6 +111,9 @@ pub struct DaemonConfig {
     /// Free space needed per byte of a received file (1; 2 on Android, which copies the file again
     /// into shared storage). Not meant to be edited by hand.
     pub file_space_factor: u64,
+    /// Speak file transfer version 2 (resume, folders). On unless you are chasing a problem: off makes this device
+    /// behave like one that only has version 1 (whole files, no folders).
+    pub file_protocol_v2: bool,
 }
 
 impl Default for DaemonConfig {
@@ -128,6 +131,7 @@ impl Default for DaemonConfig {
             receive_dir: None,
             max_file_bytes: 4 * 1024 * 1024 * 1024,
             file_space_factor: 1,
+            file_protocol_v2: true,
         }
     }
 }
@@ -199,6 +203,15 @@ fn default_device_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_file_protocol_switch_defaults_on_is_read_from_json_and_unknown_keys_still_fail() {
+        use super::*;
+        assert!(DaemonConfig::default().file_protocol_v2);
+        let off: DaemonConfig = serde_json::from_str(r#"{"file_protocol_v2": false}"#).unwrap();
+        assert!(!off.file_protocol_v2);
+        assert!(serde_json::from_str::<DaemonConfig>(r#"{"file_protocol_v3": true}"#).is_err());
+    }
+
     #[test]
     fn the_file_keys_have_safe_defaults_and_are_validated() {
         use super::*;
