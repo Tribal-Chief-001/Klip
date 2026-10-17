@@ -7,6 +7,8 @@
     <!-- Lets the engine receive mDNS multicast on Wi-Fi (finding paired devices on the same LAN). -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Keeps the CPU and Wi-Fi awake only while a file is moving (FileTransferNotifier). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <!-- Android 14+: the always-on connection uses specialUse (dataSync is limited to 6 h/24 h and

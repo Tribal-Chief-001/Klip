@@ -110,18 +110,24 @@ class FileTransferNotifier(private val ctx: Context) {
     }
 
     private fun acquireLocks() {
-        runCatching {
+        try {
             val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
             val w = wake ?: pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "klip:transfer").also { wake = it; it.setReferenceCounted(false) }
             w.acquire(LOCK_MS)
             val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val l = wifi ?: wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "klip:transfer").also { wifi = it; it.setReferenceCounted(false) }
             if (!l.isHeld) l.acquire()
+        } catch (e: Throwable) {
+            android.util.Log.w("KlipTransfers", "cannot hold the wake locks: ${e.message}")
         }
     }
 
     private fun releaseLocks() {
-        runCatching { wake?.takeIf { it.isHeld }?.release() }
-        runCatching { wifi?.takeIf { it.isHeld }?.release() }
+        try {
+            wake?.takeIf { it.isHeld }?.release()
+            wifi?.takeIf { it.isHeld }?.release()
+        } catch (e: Throwable) {
+            android.util.Log.w("KlipTransfers", "cannot release the wake locks: ${e.message}")
+        }
     }
 }
