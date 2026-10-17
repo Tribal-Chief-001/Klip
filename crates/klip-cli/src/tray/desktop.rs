@@ -20,6 +20,8 @@ enum UserEvent {
     Out(Out),
     /// Sent to ourselves once the icon exists: it makes the system draw it right away.
     Wake,
+    /// The controller ended (a stop signal, Quit): nothing is left to show, so the loop ends too.
+    Exit,
 }
 
 /// macOS: a template image (black with alpha) that the system tints for a light or dark menu bar,
@@ -191,9 +193,12 @@ pub fn run(
         tokio::spawn(async move {
             while let Some(out) = pictures.recv().await {
                 if proxy.send_event(UserEvent::Out(out)).is_err() {
-                    break;
+                    return;
                 }
             }
+            // The controller is gone. Without this the loop would run on, a dead icon that ignores
+            // SIGTERM and Ctrl-C (tokio's handler is what swallowed them).
+            let _ = proxy.send_event(UserEvent::Exit);
         });
     }
 
@@ -222,6 +227,7 @@ pub fn run(
             // The problem is already the first line of the menu.
             Event::UserEvent(UserEvent::Out(Out::Problem(_)))
             | Event::UserEvent(UserEvent::Wake) => {}
+            Event::UserEvent(UserEvent::Exit) => *flow = ControlFlow::Exit,
             Event::UserEvent(UserEvent::Menu(e)) => match Action::from_id(&e.id.0) {
                 Some(Action::Quit) => *flow = ControlFlow::Exit,
                 Some(action) => {

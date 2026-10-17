@@ -33,7 +33,8 @@ fn current_user_sid() -> io::Result<String> {
             if needed == 0 {
                 return Err(io::Error::last_os_error());
             }
-            let mut buf = vec![0u8; needed as usize];
+            // u64 words: TOKEN_USER needs pointer alignment, which a byte buffer does not promise.
+            let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
             if GetTokenInformation(
                 token,
                 TokenUser,

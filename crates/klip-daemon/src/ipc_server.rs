@@ -81,21 +81,52 @@ impl IpcServer {
             tokio::select! {
                 _ = self.shutdown.wait() => break,
                 connected = server.connect() => {
-                    if connected.is_err() {
-                        break;
-                    }
-                    let ready = server;
-                    server = match security.create(&name, false) {
-                        Ok(next) => next,
-                        Err(_) => break,
+                    // One failed connect or one failed create must not end the control channel for
+                    // good (every command would then say "not running"): log it, make a fresh
+                    // instance (retrying with a growing pause) and carry on until shutdown.
+                    let ready = match connected {
+                        Ok(()) => Some(server),
+                        Err(e) => {
+                            eprintln!("control pipe: a client could not connect ({e})");
+                            None
+                        }
                     };
-                    let sync = Arc::clone(&self.sync);
-                    let shutdown = Arc::clone(&self.shutdown);
-                    tokio::spawn(async move {
-                        Self::handle_client(ready, sync, shutdown).await;
-                    });
+                    server = match self.next_instance(&mut security, &name).await {
+                        Some(next) => next,
+                        None => break,
+                    };
+                    if let Some(ready) = ready {
+                        let sync = Arc::clone(&self.sync);
+                        let shutdown = Arc::clone(&self.shutdown);
+                        tokio::spawn(async move {
+                            Self::handle_client(ready, sync, shutdown).await;
+                        });
+                    }
                 }
             }
+        }
+    }
+
+    /// The next pipe instance, retried until it exists; `None` when the daemon shuts down first.
+    #[cfg(windows)]
+    async fn next_instance(
+        &self,
+        security: &mut crate::ipc_pipe::PipeSecurity,
+        name: &str,
+    ) -> Option<tokio::net::windows::named_pipe::NamedPipeServer> {
+        let mut pause = Duration::from_millis(100);
+        loop {
+            match security.create(name, false) {
+                Ok(next) => return Some(next),
+                Err(e) => {
+                    eprintln!("control pipe: cannot create the next instance ({e}); retrying")
+                }
+            }
+            tokio::select! {
+                _ = self.shutdown.wait() => return None,
+                _ = tokio::time::sleep(pause) => {}
+            }
+            pause = (pause * 2).min(Duration::from_secs(5));
         }
     }
 
