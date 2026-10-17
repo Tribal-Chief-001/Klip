@@ -9,9 +9,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// (path, name, size, from, rel_dir)
+type Received = (String, String, u64, String, String);
+
 #[derive(Default)]
 struct Bridge {
-    files: Mutex<Vec<(String, String, u64, String, String)>>,
+    files: Mutex<Vec<Received>>,
 }
 
 impl ClipboardBridge for Bridge {
