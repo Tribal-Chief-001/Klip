@@ -1,0 +1,11 @@
+Send files to your linked devices (they arrive in the other device's Klip folder)
+
+Usage: klip send-file [OPTIONS] <FILES>...
+
+Arguments:
+  <FILES>...  The files to send
+
+Options:
+      --to <TO>  Send only to this device (name or start of the fingerprint); default: every linked device
+      --no-wait  Start the transfer and return at once
+  -h, --help     Print help

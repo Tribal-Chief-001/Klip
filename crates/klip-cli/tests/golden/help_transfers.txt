@@ -1,0 +1,7 @@
+Show running and recent file transfers, or stop one
+
+Usage: klip transfers [OPTIONS]
+
+Options:
+      --cancel <ID>  Stop the running transfer whose id starts with this (see the first column)
+  -h, --help         Print help

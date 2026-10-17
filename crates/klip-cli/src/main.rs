@@ -4,7 +4,7 @@ use klip_cli::ops::{log_tail, request_cap, spawn_daemon_process, unpair_all_comp
 use klip_cli::ui::{print_history, print_pair_card, print_pair_request, print_status_card};
 use klip_daemon::config::DaemonConfig;
 use klip_daemon::engine::DaemonEngine;
-use klip_proto::ipc::{IpcRequest, IpcResponse};
+use klip_proto::ipc::{IpcRequest, IpcResponse, TransferInfo, TransferState};
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 use std::sync::Arc;
@@ -75,6 +75,24 @@ enum Commands {
         /// Text to send, or `-` to read it from standard input (for big or multi-line text:
         /// `cat main.rs | klip send -`)
         text: String,
+    },
+    /// Send files to your linked devices (they arrive in the other device's Klip folder)
+    SendFile {
+        /// The files to send
+        #[arg(required = true)]
+        files: Vec<std::path::PathBuf>,
+        /// Send only to this device (name or start of the fingerprint); default: every linked device
+        #[arg(long)]
+        to: Option<String>,
+        /// Start the transfer and return at once
+        #[arg(long)]
+        no_wait: bool,
+    },
+    /// Show running and recent file transfers, or stop one
+    Transfers {
+        /// Stop the running transfer whose id starts with this (see the first column)
+        #[arg(long, value_name = "ID")]
+        cancel: Option<String>,
     },
     /// Install the auto-start service for your OS
     InstallService,
@@ -201,6 +219,197 @@ async fn rpc_hint(req: IpcRequest) -> AnyResult<IpcResponse> {
         Ok(other) => Ok(other),
         Err(e) => Err(e.into()),
     }
+}
+
+/// The first 8 hex digits of a transfer id: enough to pick one by hand.
+fn short_id(id: &[u8; 16]) -> String {
+    id[..4].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+async fn get_transfers() -> AnyResult<Vec<TransferInfo>> {
+    match rpc_hint(IpcRequest::GetTransfers).await? {
+        IpcResponse::Transfers(list) => Ok(list),
+        other => Err(format!("unexpected reply: {other:?}").into()),
+    }
+}
+
+fn percent(t: &TransferInfo) -> u64 {
+    (t.done * 100).checked_div(t.size).unwrap_or(100)
+}
+
+fn is_running(t: &TransferInfo) -> bool {
+    matches!(t.state, TransferState::Waiting | TransferState::Active)
+}
+
+fn describe(t: &TransferInfo) -> String {
+    let arrow = match t.direction {
+        klip_proto::ipc::TransferDirection::Sending => "→",
+        klip_proto::ipc::TransferDirection::Receiving => "←",
+    };
+    format!(
+        "{arrow} {}  {} ({})",
+        t.peer,
+        t.name,
+        klip_daemon::human_size(t.size)
+    )
+}
+
+async fn send_files(
+    files: Vec<std::path::PathBuf>,
+    to: Option<String>,
+    no_wait: bool,
+) -> AnyResult<()> {
+    let mut started: Vec<TransferInfo> = Vec::new();
+    let mut problems = 0;
+    for file in &files {
+        // The daemon is another process with its own working directory: it gets absolute paths only.
+        let abs = match std::fs::canonicalize(file) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("{} {}: {e}", "✗".red().bold(), file.display());
+                problems += 1;
+                continue;
+            }
+        };
+        let Some(path) = abs.to_str().map(str::to_string) else {
+            eprintln!(
+                "{} {}: the path is not valid text",
+                "✗".red().bold(),
+                file.display()
+            );
+            problems += 1;
+            continue;
+        };
+        match rpc_hint(IpcRequest::SendFile {
+            path,
+            to: to.clone(),
+        })
+        .await
+        {
+            Ok(IpcResponse::TransfersStarted(list)) => started.extend(list),
+            Ok(other) => return Err(format!("unexpected reply: {other:?}").into()),
+            Err(e) => {
+                eprintln!("{} {}: {e}", "✗".red().bold(), file.display());
+                problems += 1;
+            }
+        }
+    }
+    if no_wait {
+        for t in &started {
+            println!(
+                "{} {}  [{}]",
+                "…".cyan().bold(),
+                describe(t),
+                short_id(&t.id)
+            );
+        }
+    } else {
+        problems += wait_for(&started).await?;
+    }
+    if problems > 0 {
+        return Err(format!(
+            "{problems} of {} file transfers did not complete",
+            started.len().max(files.len())
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Follow the transfers until each has ended; returns how many did not end well.
+async fn wait_for(started: &[TransferInfo]) -> AnyResult<usize> {
+    let tty = std::io::stderr().is_terminal();
+    let begun = std::time::Instant::now();
+    let mut first_done: Option<u64> = None;
+    let mut reported = std::collections::HashSet::new();
+    let mut failed = 0;
+    while reported.len() < started.len() {
+        let all = get_transfers().await?;
+        let mut moved = 0;
+        for s in started {
+            if reported.contains(&s.id) {
+                continue;
+            }
+            let Some(t) = all.iter().find(|t| t.id == s.id) else {
+                eprintln!(
+                    "{} {}: Klip lost track of this transfer",
+                    "✗".red().bold(),
+                    describe(s)
+                );
+                reported.insert(s.id);
+                failed += 1;
+                continue;
+            };
+            if is_running(t) {
+                moved += t.done;
+                if tty {
+                    let pct = percent(t);
+                    let base = *first_done.get_or_insert(t.done);
+                    let rate = (moved.saturating_sub(base)) as f64
+                        / begun.elapsed().as_secs_f64().max(0.001);
+                    eprint!(
+                        "\r\x1b[2K{}  {pct}%  {}/s",
+                        t.name,
+                        klip_daemon::human_size(rate as u64)
+                    );
+                }
+                continue;
+            }
+            if tty {
+                eprint!("\r\x1b[2K");
+            }
+            reported.insert(t.id);
+            match t.state {
+                TransferState::Done => println!("{} {}", "✓".green().bold(), describe(t)),
+                _ => {
+                    failed += 1;
+                    let why = t.error.as_deref().unwrap_or("cancelled");
+                    eprintln!("{} {}: {why}", "✗".red().bold(), describe(t));
+                }
+            }
+        }
+        if reported.len() < started.len() {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+    Ok(failed)
+}
+
+async fn transfers_command(cancel: Option<String>) -> AnyResult<()> {
+    let list = get_transfers().await?;
+    if let Some(prefix) = cancel {
+        let prefix = prefix.to_lowercase();
+        let hits: Vec<&TransferInfo> = list
+            .iter()
+            .filter(|t| is_running(t) && short_id(&t.id).starts_with(&prefix))
+            .collect();
+        return match hits.as_slice() {
+            [t] => match rpc_hint(IpcRequest::CancelTransfer { id: t.id }).await? {
+                IpcResponse::TransferCancelled(true) => {
+                    println!("{} Stopped {}", "✓".green().bold(), describe(t));
+                    Ok(())
+                }
+                IpcResponse::TransferCancelled(false) => Err("that transfer has just ended".into()),
+                other => Err(format!("unexpected reply: {other:?}").into()),
+            },
+            [] => Err(format!("no running transfer has an id starting with \"{prefix}\"").into()),
+            _ => Err("more than one running transfer matches; type more of the id".into()),
+        };
+    }
+    if list.is_empty() {
+        println!("No file transfers yet.");
+    }
+    for t in &list {
+        let state = match t.state {
+            TransferState::Waiting => "waiting".to_string(),
+            TransferState::Active => format!("{}%", percent(t)),
+            TransferState::Done => "done".to_string(),
+            TransferState::Cancelled => "stopped".to_string(),
+            TransferState::Failed => format!("failed: {}", t.error.as_deref().unwrap_or("unknown")),
+        };
+        println!("{}  {}  {state}", short_id(&t.id), describe(t));
+    }
+    Ok(())
 }
 
 fn print_sent(bytes: usize, delivered: &[String], failed: &[(String, String)]) -> AnyResult<()> {
@@ -401,6 +610,8 @@ async fn run(cli: Cli) -> AnyResult<()> {
                 other => return Err(format!("unexpected reply: {other:?}").into()),
             }
         }
+        Commands::SendFile { files, to, no_wait } => send_files(files, to, no_wait).await?,
+        Commands::Transfers { cancel } => transfers_command(cancel).await?,
         Commands::InstallService => install_service()?,
         Commands::Tray { action } => tray_command(action.unwrap_or(TrayAction::Start)).await?,
         Commands::Share => match rpc_hint(IpcRequest::SendPendingImage).await? {
