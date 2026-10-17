@@ -39,7 +39,7 @@ object FileReceiver {
         run.count++
         run.bytes += size
         run.lastMs = now
-        return run.id to FileText.receivedBatch(from, run.count, run.bytes)
+        return run.id to FileText.receivedBatch(from, run.count, run.bytes, inAppFolder = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q)
     }
 
     fun onReceived(ctx: Context, stagedPath: String, name: String, size: Long, from: String, relDir: String) {

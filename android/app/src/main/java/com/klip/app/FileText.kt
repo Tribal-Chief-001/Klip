@@ -20,8 +20,11 @@ object FileText {
     fun received(from: String, bytes: Long) = "Received 1 file from $from (${size(bytes)})"
 
     /** One notice for a whole folder: "Received 12 files from X (40.0 MiB)". */
-    fun receivedBatch(from: String, count: Int, bytes: Long) =
-        if (count == 1) received(from, bytes) else "Received $count files from $from (${size(bytes)})"
+    fun receivedBatch(from: String, count: Int, bytes: Long, inAppFolder: Boolean = false): String {
+        val base = if (count == 1) received(from, bytes) else "Received $count files from $from (${size(bytes)})"
+        // Android 8-9 have no Downloads access without a permission prompt: the file stays in the app's own folder.
+        return if (inAppFolder) "$base. It is in Klip's own folder: Android 8-9 cannot show it in Downloads." else base
+    }
 
     /** "Sending 2 files, 45%"; empty when nothing is running. */
     fun progress(rows: List<Row>): String {

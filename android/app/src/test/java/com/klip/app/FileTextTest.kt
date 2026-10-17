@@ -23,6 +23,18 @@ class FileTextTest {
         assertEquals("Received 12 files from Laptop (40.0 MiB)", FileText.receivedBatch("Laptop", 12, 40L * 1024 * 1024))
     }
 
+    @Test fun on_android_8_and_9_the_notice_says_where_the_file_is() {
+        assertEquals(
+            "Received 1 file from Laptop (3.0 MiB). It is in Klip's own folder: Android 8-9 cannot show it in Downloads.",
+            FileText.receivedBatch("Laptop", 1, 3L * 1024 * 1024, inAppFolder = true)
+        )
+        assertEquals(
+            "Received 3 files from Laptop (1.0 KiB). It is in Klip's own folder: Android 8-9 cannot show it in Downloads.",
+            FileText.receivedBatch("Laptop", 3, 1024, inAppFolder = true).replace("Received 3 files", "Received 3 files")
+        )
+        assertEquals("Received 1 file from Laptop (3.0 MiB)", FileText.receivedBatch("Laptop", 1, 3L * 1024 * 1024, inAppFolder = false))
+    }
+
     @Test fun progress_line_counts_files_and_percent() {
         val sending = FileText.Row(outgoing = true, size = 100, done = 45, running = true)
         assertEquals("Sending 1 file, 45%", FileText.progress(listOf(sending)))

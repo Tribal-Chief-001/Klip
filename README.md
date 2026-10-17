@@ -194,7 +194,7 @@ Phone is the one showing the code? In the app tap **Show a QR code for another d
 
 ### Sending files
 
-The phone takes part too: it receives into `Downloads/Klip` (switch and size limit under **Privacy → Receive files**, default limit 2 GiB because a received file exists twice for a moment) and sends from the Share sheet ("Send as a file with Klip", one file or several).
+The phone takes part too: it receives into `Downloads/Klip` (on Android 8 and 9 the file stays in Klip's own folder instead, and the notification says so), sends a folder with **Send a folder** on the main screen, (switch and size limit under **Privacy → Receive files**, default limit 2 GiB because a received file exists twice for a moment) and sends from the Share sheet ("Send as a file with Klip", one file or several).
 
 ```bash
 klip send-file report.pdf photos/*.jpg          # to every linked device that is online
