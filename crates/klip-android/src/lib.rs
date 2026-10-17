@@ -69,6 +69,21 @@ fn duplicate_fd(fd: i32) -> Result<std::fs::File, KlipError> {
     Ok(std::fs::File::from(owned))
 }
 
+/// An open descriptor the app handed over for good (`detachFd`): the engine owns and closes it.
+#[cfg(unix)]
+fn take_fd(fd: i32) -> std::io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: `FolderSource::open_fd` documents that the engine owns the descriptor it returns.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+#[cfg(not(unix))]
+fn take_fd(_fd: i32) -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::other(
+        "file descriptors are only available on Android",
+    ))
+}
+
 /// The engine is only used on Android; the crate still builds on every host (the workspace does).
 #[cfg(not(unix))]
 fn duplicate_fd(_fd: i32) -> Result<std::fs::File, KlipError> {
@@ -135,6 +150,24 @@ pub struct TransferView {
     pub done: u64,
     pub state: TransferStateView,
     pub error: Option<String>,
+}
+
+/// One file of a folder the app lists from a document tree.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FolderFile {
+    /// The folders between the top folder and the file.
+    pub rel: Vec<String>,
+    pub name: String,
+    pub size: u64,
+}
+
+/// Implemented by the app: hands out the descriptor of a listed file when the engine asks for it (one at a time, when
+/// that file's turn comes, so a thousand descriptors are never open at once).
+#[uniffi::export(with_foreign)]
+pub trait FolderSource: Send + Sync {
+    /// An open, readable descriptor of file `index` of the list; the engine owns it from now on and closes it
+    /// (the app must detach it, not just share it). `-1`: the file cannot be opened.
+    fn open_fd(&self, index: u32) -> i32;
 }
 
 fn view(t: klip_proto::ipc::TransferInfo) -> TransferView {
@@ -549,6 +582,40 @@ impl KlipEngine {
             .rt
             .block_on(self.core.sync.send_open_file(file, name.clone(), None));
         klip_core::started_or_error(&name, answers)
+            .map(|list| list.into_iter().map(view).collect())
+            .map_err(fail)
+    }
+
+    /// Send a folder of files the app listed (`files`, at most 1000 and 16 levels deep) to every connected linked device.
+    /// `source` gives each file's descriptor when its turn comes. Returns the started rows (one per device).
+    pub fn send_folder(
+        &self,
+        top: String,
+        files: Vec<FolderFile>,
+        source: Arc<dyn FolderSource>,
+    ) -> Result<Vec<TransferView>, KlipError> {
+        let entries = files
+            .into_iter()
+            .map(|f| klip_core::folders::ExternalEntry {
+                rel: f.rel,
+                name: f.name,
+                size: f.size,
+            })
+            .collect();
+        let opener: klip_core::folders::Opener = Arc::new(move |index| {
+            let fd = source.open_fd(index as u32);
+            if fd < 0 {
+                return Err(std::io::Error::other("the file could not be opened"));
+            }
+            take_fd(fd)
+        });
+        let answers = self.rt.block_on(self.core.sync.send_folder_entries(
+            top.clone(),
+            entries,
+            opener,
+            None,
+        ));
+        klip_core::started_or_error(&top, answers)
             .map(|list| list.into_iter().map(view).collect())
             .map_err(fail)
     }
