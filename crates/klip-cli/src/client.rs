@@ -64,6 +64,34 @@ fn timeout_for(req: &IpcRequest) -> Duration {
     }
 }
 
+/// What failing to open the control pipe means. Only a pipe that does not exist is "the daemon is not
+/// running"; a busy pipe or a refused one must not send the person off to start a second daemon.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn pipe_open_error(code: Option<i32>, busy_retries: u32) -> ClientError {
+    const ERROR_FILE_NOT_FOUND: i32 = 2;
+    const ERROR_PATH_NOT_FOUND: i32 = 3;
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    match code {
+        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) => ClientError::Down(
+            "Klip daemon is not running or not responding. Launch it with `klip start`."
+                .to_string(),
+        ),
+        Some(ERROR_ACCESS_DENIED) => ClientError::Io(
+            "Windows refused access to the Klip control pipe (is Klip running as another user?)"
+                .to_string(),
+        ),
+        Some(ERROR_PIPE_BUSY) => ClientError::Io(format!(
+            "the Klip daemon is busy (the control pipe stayed busy for {} s); try again",
+            u64::from(busy_retries) * 50 / 1000
+        )),
+        Some(other) => {
+            ClientError::Io(format!("cannot open the Klip control pipe (error {other})"))
+        }
+        None => ClientError::Io("cannot open the Klip control pipe".to_string()),
+    }
+}
+
 impl DaemonClient {
     pub fn new(sock: impl Into<PathBuf>) -> Self {
         Self { sock: sock.into() }
@@ -132,10 +160,7 @@ impl DaemonClient {
                     tries += 1;
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
-                Err(_) => return Err(ClientError::Down(
-                    "Klip daemon is not running or not responding. Launch it with `klip start`."
-                        .to_string(),
-                )),
+                Err(e) => return Err(pipe_open_error(e.raw_os_error(), tries)),
             }
         };
         Self::talk(stream, req, max_request_bytes).await
@@ -306,5 +331,26 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ClientError::Io(_)), "{err:?}");
         daemon.await.unwrap();
+    }
+
+    #[test]
+    fn only_a_missing_pipe_means_the_daemon_is_not_running() {
+        assert!(
+            matches!(pipe_open_error(Some(2), 0), ClientError::Down(_)),
+            "file not found"
+        );
+        assert!(
+            matches!(pipe_open_error(Some(3), 0), ClientError::Down(_)),
+            "path not found"
+        );
+        match pipe_open_error(Some(5), 0) {
+            ClientError::Io(m) => assert!(m.to_lowercase().contains("access"), "{m}"),
+            other => panic!("access denied is not 'down': {other:?}"),
+        }
+        match pipe_open_error(Some(231), 20) {
+            ClientError::Io(m) => assert!(m.to_lowercase().contains("busy"), "{m}"),
+            other => panic!("a busy pipe is not 'down': {other:?}"),
+        }
+        assert!(matches!(pipe_open_error(None, 0), ClientError::Io(_)));
     }
 }

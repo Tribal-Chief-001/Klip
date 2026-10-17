@@ -25,16 +25,27 @@ async fn next_summary(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn commands_reach_the_daemon_and_the_picture_follows() {
-    let d = Isolated::start("controller", LAN_ONLY);
-    // This file holds a single test, so changing the environment cannot race another one.
-    std::env::set_var("KLIP_CONFIG_DIR", &d.dir);
+async fn the_picture_follows_the_daemon_from_stopped_to_running_and_commands_reach_it() {
+    // This file's other test never reads the environment, so changing it here cannot race it.
+    let nobody = std::env::temp_dir().join(format!("klip-ctl-nobody-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&nobody);
+    std::fs::create_dir_all(&nobody).unwrap();
+    std::env::set_var("KLIP_CONFIG_DIR", &nobody);
     let (cmd_tx, cmd_rx) = unbounded_channel();
     let (out_tx, mut out_rx) = unbounded_channel();
     let controller = tokio::spawn(run(cmd_rx, out_tx));
 
-    // The first picture comes by itself.
-    next_summary(&mut out_rx, "the first picture", |s| {
+    // No daemon: the first picture is "stopped".
+    next_summary(&mut out_rx, "a stopped picture", |s| {
+        s.state == State::Stopped
+    })
+    .await;
+
+    // A daemon comes up (it may take a moment); the next refresh sees it.
+    let d = Isolated::start("controller", LAN_ONLY);
+    std::env::set_var("KLIP_CONFIG_DIR", &d.dir);
+    cmd_tx.send(Cmd::Refresh).unwrap();
+    next_summary(&mut out_rx, "the first picture of a running daemon", |s| {
         s.state == State::NoDevices
     })
     .await;
@@ -78,19 +89,25 @@ async fn commands_reach_the_daemon_and_the_picture_follows() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn with_no_daemon_the_picture_is_stopped_and_closing_the_output_ends_the_controller() {
-    let dir = std::env::temp_dir().join(format!("klip-ctl-nodaemon-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // A second test in this process would share the variable, so this one lives in its own check.
+async fn the_controller_ends_when_nobody_listens_or_nobody_asks() {
+    // The output is gone (the platform closed): the controller notices at its next picture or action.
     let (cmd_tx, cmd_rx) = unbounded_channel();
     let (out_tx, out_rx) = unbounded_channel();
-    drop(out_rx); // the presentation is gone
+    drop(out_rx);
+    let controller = tokio::spawn(run(cmd_rx, out_tx));
+    cmd_tx.send(Cmd::Refresh).unwrap();
+    tokio::time::timeout(Duration::from_secs(20), controller)
+        .await
+        .expect("the controller ends when its output is closed")
+        .unwrap();
+
+    // The command side is gone (the platform dropped its sender): it ends at once.
+    let (cmd_tx, cmd_rx) = unbounded_channel();
+    let (out_tx, _out_rx) = unbounded_channel();
     let controller = tokio::spawn(run(cmd_rx, out_tx));
     drop(cmd_tx);
     tokio::time::timeout(Duration::from_secs(10), controller)
         .await
-        .expect("the controller ends when nobody listens")
+        .expect("the controller ends when nobody can ask it anything")
         .unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
 }

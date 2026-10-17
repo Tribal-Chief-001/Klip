@@ -175,7 +175,7 @@ jobs:
       - name: Control channel and core tests
         run: cargo test -p klip-core -p klip-daemon
 
-      - name: Tray smoke start (macOS)
+      - name: Tray smoke start and stop (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -184,12 +184,13 @@ jobs:
           ./target/debug/klip tray run > "$RUNNER_TEMP/tray.log" 2>&1 &
           PID=$!
           sleep 10
-          if kill -0 $PID 2>/dev/null; then
-            echo "tray is running, pid $PID, rss (KiB): $(ps -o rss= -p $PID)"
-            kill $PID
-          else
-            echo "tray exited early:"; cat "$RUNNER_TEMP/tray.log"
-          fi
+          kill -0 $PID 2>/dev/null || { echo "the tray exited early:"; cat "$RUNNER_TEMP/tray.log"; exit 1; }
+          echo "tray is running, pid $PID, rss (KiB): $(ps -o rss= -p $PID)"
+          # A stop request (what a person's kill or a logout sends) must end it, not leave a dead icon.
+          kill -TERM $PID
+          for i in $(seq 1 20); do kill -0 $PID 2>/dev/null || break; sleep 0.5; done
+          if kill -0 $PID 2>/dev/null; then echo "the tray ignored SIGTERM"; kill -9 $PID; cat "$RUNNER_TEMP/tray.log"; exit 1; fi
+          echo "the tray ended on SIGTERM"
           cat "$RUNNER_TEMP/tray.log"
           if grep -qi "panicked" "$RUNNER_TEMP/tray.log"; then echo "the tray panicked"; exit 1; fi
 
@@ -227,6 +228,8 @@ jobs:
             Stop-Process -Id $p.Id -Force
           } else {
             Write-Host "tray exited early with code $($p.ExitCode)"
+            Get-Content "$env:RUNNER_TEMP\tray.out", "$env:RUNNER_TEMP\tray.err" -ErrorAction SilentlyContinue
+            throw "the tray exited early"
           }
           Get-Content "$env:RUNNER_TEMP\tray.out", "$env:RUNNER_TEMP\tray.err" -ErrorAction SilentlyContinue
           if ((Get-Content "$env:RUNNER_TEMP\tray.err" -Raw -ErrorAction SilentlyContinue) -match "panicked") { throw "the tray panicked" }

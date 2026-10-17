@@ -91,3 +91,29 @@ fn the_image_mode_can_be_shown_changed_and_is_kept_in_config_json() {
     assert!(!bad.status.success());
     assert!(text(&bad).contains("possible values"), "{}", text(&bad));
 }
+
+#[test]
+fn many_clients_at_once_all_get_an_answer() {
+    // On Windows one pipe instance serves one client at a time: the others must wait their turn
+    // (a busy pipe is retried), not be told the daemon is down.
+    let d = Isolated::start("parallel", LAN_ONLY);
+    let env = d.env_pairs();
+    let handles: Vec<_> = (0..16)
+        .map(|_| {
+            let env = env.clone();
+            std::thread::spawn(move || {
+                std::process::Command::new(env!("CARGO_BIN_EXE_klip"))
+                    .arg("status")
+                    .envs(env)
+                    .stdin(std::process::Stdio::null())
+                    .output()
+                    .unwrap()
+            })
+        })
+        .collect();
+    for h in handles {
+        let out = h.join().unwrap();
+        assert!(out.status.success(), "{}", text(&out));
+        assert!(text(&out).contains("STATE"), "{}", text(&out));
+    }
+}
