@@ -138,7 +138,10 @@ jobs:
 
       # File names, free space, partial files and the transfer protocol behave differently per OS.
       - name: File transfer tests (names, space, partial files, protocol)
-        run: cargo test -p klip-core --lib files:: && cargo test -p klip-net --lib file:: && cargo test -p klip-net --test file_flow
+        run: |
+          cargo test -p klip-core --lib files::
+          cargo test -p klip-net --lib file::
+          cargo test -p klip-net --test file_flow
 
       - name: File transfer between two real daemons (macOS)
         if: runner.os == 'macOS'
