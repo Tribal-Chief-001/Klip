@@ -137,6 +137,32 @@ pub fn run_key_value(exe: &str) -> Result<String, String> {
     Ok(format!("\"{exe}\" tray start"))
 }
 
+/// Is this `Run` value Klip's own (`"<path>\\klip.exe" tray start`)? Only then may it be replaced or removed:
+/// another programme could have used the name `KlipTray`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn run_value_is_klips(value: &str) -> bool {
+    let value = value.trim();
+    let Some(rest) = value.strip_suffix(" tray start") else {
+        return false;
+    };
+    let Some(path) = rest.strip_prefix('"').and_then(|r| r.strip_suffix('"')) else {
+        return false;
+    };
+    let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_lowercase();
+    file == "klip.exe" || file == "klip"
+}
+
+/// The data of a `REG_SZ` value in the output of `reg query <key> /v <name>`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn parse_reg_sz(output: &str, name: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let line = line.trim();
+        let rest = line.strip_prefix(name)?.trim_start();
+        let data = rest.strip_prefix("REG_SZ")?;
+        Some(data.trim().to_string())
+    })
+}
+
 /// Where this OS keeps the login entry, for messages.
 #[cfg(target_os = "macos")]
 fn launch_agent_path() -> Option<PathBuf> {
@@ -155,6 +181,16 @@ fn reg(args: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|e| format!("cannot run reg.exe: {e}"))
 }
 
+/// What the `KlipTray` Run value holds now, if it exists.
+#[cfg(windows)]
+fn current_run_value() -> Option<String> {
+    let out = reg(&["query", RUN_KEY, "/v", "KlipTray"]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_reg_sz(&String::from_utf8_lossy(&out.stdout), "KlipTray")
+}
+
 /// Register the tray to start at login; returns where (for the message).
 pub fn install(exe: &str) -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -166,6 +202,13 @@ pub fn install(exe: &str) -> Result<String, String> {
     #[cfg(windows)]
     {
         let value = run_key_value(exe)?;
+        if let Some(existing) = current_run_value() {
+            if !run_value_is_klips(&existing) {
+                return Err(format!(
+                    "the Run entry KlipTray already belongs to something else ({existing}); not replacing it"
+                ));
+            }
+        }
         let out = reg(&[
             "add", RUN_KEY, "/v", "KlipTray", "/t", "REG_SZ", "/d", &value, "/f",
         ])?;
@@ -192,8 +235,13 @@ pub fn uninstall() -> Result<bool, String> {
     }
     #[cfg(windows)]
     {
-        if !installed() {
+        let Some(existing) = current_run_value() else {
             return Ok(false);
+        };
+        if !run_value_is_klips(&existing) {
+            return Err(format!(
+                "the Run entry KlipTray belongs to something else ({existing}); not removing it"
+            ));
         }
         let out = reg(&["delete", RUN_KEY, "/v", "KlipTray", "/f"])?;
         return if out.status.success() {
@@ -228,6 +276,35 @@ pub fn installed() -> bool {
 mod tests {
     use super::*;
     use crate::tray::clean_exe;
+
+    #[test]
+    fn only_a_run_value_that_starts_klips_tray_is_klips() {
+        assert!(run_value_is_klips(
+            r#""C:\Users\me\bin\klip.exe" tray start"#
+        ));
+        assert!(run_value_is_klips(r#""/usr/local/bin/klip" tray start"#));
+        assert!(run_value_is_klips("  \"C:\\Klip\\KLIP.EXE\" tray start  "));
+        for foreign in [
+            r#""C:\Tools\other.exe" tray start"#,
+            r#""C:\Users\me\klip.exe" tray run"#,
+            r#"C:\Users\me\klip.exe tray start"#,
+            r#""C:\x\klip.exe.bak" tray start"#,
+            "",
+        ] {
+            assert!(!run_value_is_klips(foreign), "{foreign}");
+        }
+    }
+
+    #[test]
+    fn the_data_of_a_reg_query_is_read_exactly() {
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n    KlipTray    REG_SZ    \"C:\\a b\\klip.exe\" tray start\r\n\r\n";
+        assert_eq!(
+            parse_reg_sz(out, "KlipTray").as_deref(),
+            Some("\"C:\\a b\\klip.exe\" tray start")
+        );
+        assert_eq!(parse_reg_sz(out, "Other"), None);
+        assert_eq!(parse_reg_sz("", "KlipTray"), None);
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("klip-autostart-{}-{tag}", std::process::id()));

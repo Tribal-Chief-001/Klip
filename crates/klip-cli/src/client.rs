@@ -154,7 +154,11 @@ impl DaemonClient {
         const ERROR_PIPE_BUSY: i32 = 231;
         let mut tries = 0;
         let stream = loop {
-            match ClientOptions::new().open(self.sock.as_os_str()) {
+            // SECURITY_IDENTIFICATION: whoever owns the pipe may learn who we are but never act as us.
+            match ClientOptions::new()
+                .security_qos_flags(0x0001_0000)
+                .open(self.sock.as_os_str())
+            {
                 Ok(stream) => break stream,
                 Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 20 => {
                     tries += 1;

@@ -230,6 +230,38 @@ fn spawn_fetch(events: &UnboundedSender<Event>) {
 }
 
 /// Run until `Do(Quit)`, a stop signal, the command channel closing, or the output channel closing.
+/// At most one poll runs at a time; a refresh asked for meanwhile is remembered and runs right after it.
+#[derive(Default)]
+struct RefreshGate {
+    fetching: bool,
+    pending: bool,
+}
+
+impl RefreshGate {
+    /// A refresh is wanted: `true` when a poll should start now.
+    fn request(&mut self) -> bool {
+        if self.fetching {
+            self.pending = true;
+            false
+        } else {
+            self.fetching = true;
+            true
+        }
+    }
+
+    /// The poll ended: `true` when another one was asked for while it ran.
+    fn finished(&mut self) -> bool {
+        self.fetching = false;
+        if self.pending {
+            self.pending = false;
+            self.fetching = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub async fn run(mut cmds: UnboundedReceiver<Cmd>, out: UnboundedSender<Out>) {
     let (events, mut inbox) = unbounded_channel::<Event>();
     let mut base = Summary::stopped();
@@ -237,7 +269,7 @@ pub async fn run(mut cmds: UnboundedReceiver<Cmd>, out: UnboundedSender<Out>) {
     let mut problem: Option<(String, Instant)> = None;
     let mut last: Option<Summary> = None;
     let mut running: HashSet<Action> = HashSet::new();
-    let mut fetching = false;
+    let mut gate = RefreshGate::default();
     let mut tick = tokio::time::interval(POLL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let stop = stop_signal();
@@ -274,7 +306,10 @@ pub async fn run(mut cmds: UnboundedReceiver<Cmd>, out: UnboundedSender<Out>) {
                     refresh = true;
                 }
                 Some(Event::Fetched(picture)) => {
-                    fetching = false;
+                    // A refresh asked for during this poll (after an action, say) runs now, not 15 s later.
+                    if gate.finished() {
+                        spawn_fetch(&events);
+                    }
                     if let Some(picture) = picture {
                         base = picture;
                         have_picture = true;
@@ -283,8 +318,7 @@ pub async fn run(mut cmds: UnboundedReceiver<Cmd>, out: UnboundedSender<Out>) {
             },
         }
         // A poll never waits for another one, and never blocks a click or Quit.
-        if refresh && !fetching {
-            fetching = true;
+        if refresh && gate.request() {
             spawn_fetch(&events);
         }
         if problem
@@ -309,6 +343,17 @@ pub async fn run(mut cmds: UnboundedReceiver<Cmd>, out: UnboundedSender<Out>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refresh_asked_for_during_a_poll_runs_right_after_it_and_only_once() {
+        let mut gate = RefreshGate::default();
+        assert!(gate.request(), "idle: start at once");
+        assert!(!gate.request(), "a poll is running: remember it");
+        assert!(!gate.request(), "asking twice is still one more poll");
+        assert!(gate.finished(), "the remembered refresh runs now");
+        assert!(!gate.finished(), "and the next end has nothing left");
+        assert!(gate.request(), "idle again");
+    }
 
     #[test]
     fn a_send_is_a_problem_only_when_nobody_got_it_or_somebody_did_not() {

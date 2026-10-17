@@ -16,6 +16,18 @@ pub struct LinuxClipboardDriver {
     echo_shield: EchoShield,
     local_node: NodeId,
     changes: Option<tokio::sync::watch::Receiver<u64>>,
+    /// Size of the last copied image that was over the limit (said once, not on every poll).
+    oversize_seen: Mutex<Option<(u32, u32)>>,
+}
+
+/// Remember the size of the last image that was too big. `true` the first time a size is seen, so it is mentioned once
+/// and not again for every poll of a session that cannot be told about clipboard changes.
+fn first_sight_of_oversize(last: &mut Option<(u32, u32)>, width: u32, height: u32) -> bool {
+    if *last == Some((width, height)) {
+        return false;
+    }
+    *last = Some((width, height));
+    true
 }
 
 /// Watch the X11 CLIPBOARD selection owner with XFIXES: the X server pushes an event whenever any
@@ -97,6 +109,7 @@ impl LinuxClipboardDriver {
             echo_shield,
             local_node,
             changes: spawn_x11_change_watcher(),
+            oversize_seen: Mutex::new(None),
         }
     }
 }
@@ -155,6 +168,17 @@ impl ClipboardDriver for LinuxClipboardDriver {
         if let Ok(img) = cb.get_image() {
             // Would be refused by every receiver anyway: do not spend a PNG encode on it.
             if klip_diff::too_many_pixels(img.width as u32, img.height as u32) {
+                let first = first_sight_of_oversize(
+                    &mut self.oversize_seen.lock().unwrap(),
+                    img.width as u32,
+                    img.height as u32,
+                );
+                if first {
+                    eprintln!(
+                        "[klip_platform] a copied image of {} x {} pixels is over the limit and is not synced",
+                        img.width, img.height
+                    );
+                }
                 return Ok(None);
             }
             if let Ok(png_bytes) =
@@ -227,5 +251,26 @@ impl ClipboardDriver for LinuxClipboardDriver {
 
     fn change_signal(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         self.changes.clone()
+    }
+}
+
+#[cfg(test)]
+mod oversize_tests {
+    use super::first_sight_of_oversize;
+
+    #[test]
+    fn an_oversize_image_is_mentioned_once_per_size() {
+        let mut last = None;
+        assert!(first_sight_of_oversize(&mut last, 9000, 9000));
+        assert!(!first_sight_of_oversize(&mut last, 9000, 9000));
+        assert!(!first_sight_of_oversize(&mut last, 9000, 9000));
+        assert!(
+            first_sight_of_oversize(&mut last, 8000, 8000),
+            "a different image is news"
+        );
+        assert!(
+            first_sight_of_oversize(&mut last, 9000, 9000),
+            "and coming back to the first is news again"
+        );
     }
 }

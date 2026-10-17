@@ -178,18 +178,34 @@ pub fn windows_terminal_args(exe: &str) -> Result<Vec<String>, String> {
 #[cfg(windows)]
 pub fn open_terminal(exe: &Path) -> Result<(), String> {
     let args = windows_terminal_args(&exe.to_string_lossy())?;
-    let mut child = Command::new("cmd")
+    let out = Command::new("cmd")
         .args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(0x0800_0000) // the cmd.exe itself stays hidden; `start` makes the console
-        .spawn()
+        .output()
         .map_err(|e| format!("cannot run cmd.exe: {e}"))?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    match failure_text(
+        "cmd",
+        out.status.success(),
+        &String::from_utf8_lossy(&out.stderr),
+    ) {
+        Some(text) => Err(text),
+        None => Ok(()),
+    }
+}
+
+/// A child that was started and exited non-zero: the line to show (the programme's own complaint when it gave one).
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+pub fn failure_text(program: &str, success: bool, stderr: &str) -> Option<String> {
+    if success {
+        return None;
+    }
+    let why = stderr.lines().map(str::trim).find(|l| !l.is_empty());
+    Some(match why {
+        Some(why) => format!("{program}: {why}"),
+        None => format!("{program} did not open the terminal"),
+    })
 }
 
 /// The AppleScript that opens Terminal and runs `exe`. The path goes through a shell, so it is quoted,
@@ -220,15 +236,19 @@ pub fn open_terminal(exe: &Path) -> Result<(), String> {
         .arg("-e")
         .arg(script)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut child = detach(&mut command)
-        .spawn()
+        .stderr(Stdio::piped());
+    // Wait for it: a denied "control Terminal" permission is an exit status, and the person should be told.
+    let out = detach(&mut command)
+        .output()
         .map_err(|e| format!("cannot run osascript: {e}"))?;
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    match failure_text(
+        "osascript",
+        out.status.success(),
+        &String::from_utf8_lossy(&out.stderr),
+    ) {
+        Some(text) => Err(text),
+        None => Ok(()),
+    }
 }
 
 /// Open the terminal app (`klip` with no arguments) in the first terminal program that exists.
@@ -410,6 +430,19 @@ pub fn pick_files() -> Result<Vec<PathBuf>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_helper_becomes_a_line_for_the_menu_and_a_success_does_not() {
+        assert_eq!(failure_text("osascript", true, "ignored"), None);
+        assert_eq!(
+            failure_text("osascript", false, "\n  execution error: Not authorized to send Apple events to Terminal. (-1743)\n").as_deref(),
+            Some("osascript: execution error: Not authorized to send Apple events to Terminal. (-1743)")
+        );
+        assert_eq!(
+            failure_text("cmd", false, "  \n").as_deref(),
+            Some("cmd did not open the terminal")
+        );
+    }
+
     #[test]
     fn the_folder_is_opened_with_the_programme_each_system_has() {
         let (program, args) = open_command(Path::new("/home/me/Downloads/Klip"));
