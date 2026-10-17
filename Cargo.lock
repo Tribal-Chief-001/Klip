@@ -2773,6 +2773,7 @@ dependencies = [
 name = "klip-net"
 version = "0.7.0"
 dependencies = [
+ "blake3",
  "data-encoding",
  "iroh",
  "iroh-mdns-address-lookup",

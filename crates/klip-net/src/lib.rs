@@ -9,6 +9,7 @@
 //! - Sync is online-only by design: there is no mailbox or store-and-forward.
 
 mod error;
+pub mod file;
 mod node;
 mod proto;
 mod ticket;
