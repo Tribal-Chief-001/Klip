@@ -13,6 +13,10 @@ use tokio::time::timeout;
 
 /// ALPN of the file transfer protocol (paired peers only). The clip protocol is not touched.
 pub const FILE_ALPN: &[u8] = b"klip/file/1";
+/// Version 2: resume and folders. A device offers it first and falls back to version 1 with an older peer.
+pub const FILE_ALPN_V2: &[u8] = b"klip/file/2";
+/// A folder path holds at most this many components (each at most `MAX_NAME_CHARS` characters).
+pub const MAX_FOLDER_DEPTH: usize = 16;
 /// Largest header, reply or verdict frame.
 pub const MAX_FILE_FRAME: usize = 2048;
 /// Size of the buffers file bytes move through (memory per transfer is about this).
@@ -32,6 +36,28 @@ pub struct FileHeader {
     pub size: u64,
 }
 
+/// Where a file of a folder goes: the folder's name, a random id shared by every file of one send, and the
+/// folders between the top one and the file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderPlace {
+    pub batch: [u8; 16],
+    pub top: String,
+    pub rel: Vec<String>,
+}
+
+/// The version 2 header: the version 1 fields, then what resume and folders need.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileHeaderV2 {
+    pub version: u8,
+    pub id: [u8; 16],
+    pub name: String,
+    pub size: u64,
+    /// Chosen by the sender from the file's name, size, modification time and first bytes: the same file sent
+    /// again gets the same key, so the receiver can find the partial it kept.
+    pub resume_key: [u8; 32],
+    pub folder: Option<FolderPlace>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectCode {
     Disabled,
@@ -45,7 +71,14 @@ pub enum RejectCode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FileReply {
     Accept,
-    Reject { code: RejectCode, text: String },
+    Reject {
+        code: RejectCode,
+        text: String,
+    },
+    /// Version 2 only: "I already hold the first `offset` bytes, send the rest". Appended after the v1 variants.
+    AcceptFrom {
+        offset: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +152,33 @@ pub fn parse_header(bytes: &[u8]) -> Result<FileHeader, FileError> {
         || header.name.contains('\0')
     {
         return Err(FileError::Protocol("unusable file name".into()));
+    }
+    Ok(header)
+}
+
+fn plain_part(text: &str) -> bool {
+    !text.is_empty() && text.chars().count() <= MAX_NAME_CHARS && !text.contains('\0')
+}
+
+/// A version 2 header, checked like the version 1 one, and its folder place if it has one.
+pub fn parse_header_v2(bytes: &[u8]) -> Result<FileHeaderV2, FileError> {
+    let header: FileHeaderV2 =
+        postcard::from_bytes(bytes).map_err(|e| FileError::Protocol(e.to_string()))?;
+    if header.version != 2 {
+        return Err(FileError::Protocol(
+            "unsupported file transfer version".into(),
+        ));
+    }
+    if !plain_part(&header.name) {
+        return Err(FileError::Protocol("unusable file name".into()));
+    }
+    if let Some(place) = &header.folder {
+        if !plain_part(&place.top)
+            || place.rel.len() > MAX_FOLDER_DEPTH
+            || !place.rel.iter().all(|c| plain_part(c))
+        {
+            return Err(FileError::Protocol("unusable folder".into()));
+        }
     }
     Ok(header)
 }
@@ -214,7 +274,7 @@ fn short(text: &str) -> String {
 /// Send one file. `source` must hold exactly `header.size` bytes; `progress` gets the running total.
 pub async fn send_file<S, W, R>(
     header: &FileHeader,
-    mut source: S,
+    source: S,
     tx: &mut W,
     rx: &mut R,
     progress: &mut (dyn FnMut(u64) + Send),
@@ -225,17 +285,78 @@ where
     R: AsyncRead + Unpin,
 {
     write_frame(tx, header).await?;
-    let reply: FileReply = postcard::from_bytes(&read_frame(rx, IDLE_TIMEOUT).await?)
-        .map_err(|e| FileError::Protocol(e.to_string()))?;
-    if let FileReply::Reject { code, text } = reply {
-        return Err(FileError::Rejected { code, text });
+    match read_reply(rx).await? {
+        FileReply::Accept => send_body(header.size, 0, source, tx, rx, progress).await,
+        FileReply::Reject { code, text } => Err(FileError::Rejected { code, text }),
+        FileReply::AcceptFrom { .. } => Err(FileError::Protocol("unexpected resume offer".into())),
     }
+}
+
+/// Version 2: like `send_file`, but the receiver may already hold the first bytes. Those are read from `source`
+/// and hashed here (not sent), so the trailer still covers the whole file.
+pub async fn send_file_v2<S, W, R>(
+    header: &FileHeaderV2,
+    source: S,
+    tx: &mut W,
+    rx: &mut R,
+    progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<(), FileError>
+where
+    S: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    write_frame(tx, header).await?;
+    match read_reply(rx).await? {
+        FileReply::Accept => send_body(header.size, 0, source, tx, rx, progress).await,
+        FileReply::AcceptFrom { offset } if offset <= header.size => {
+            send_body(header.size, offset, source, tx, rx, progress).await
+        }
+        FileReply::AcceptFrom { .. } => {
+            Err(FileError::Protocol("resume offset past the end".into()))
+        }
+        FileReply::Reject { code, text } => Err(FileError::Rejected { code, text }),
+    }
+}
+
+async fn read_reply<R: AsyncRead + Unpin>(rx: &mut R) -> Result<FileReply, FileError> {
+    postcard::from_bytes(&read_frame(rx, IDLE_TIMEOUT).await?)
+        .map_err(|e| FileError::Protocol(e.to_string()))
+}
+
+/// The bytes after the reply: skip (and hash) the first `offset`, send the rest, the trailer, read the verdict.
+async fn send_body<S, W, R>(
+    size: u64,
+    offset: u64,
+    mut source: S,
+    tx: &mut W,
+    rx: &mut R,
+    progress: &mut (dyn FnMut(u64) + Send),
+) -> Result<(), FileError>
+where
+    S: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; CHUNK];
-    let mut sent = 0u64;
+    let mut skipped = 0u64;
+    while skipped < offset {
+        let want = (offset - skipped).min(CHUNK as u64) as usize;
+        let n = source.read(&mut buf[..want]).await.map_err(io_err)?;
+        if n == 0 {
+            return Err(FileError::TooShort);
+        }
+        hasher.update(&buf[..n]);
+        skipped += n as u64;
+    }
+    if offset > 0 {
+        progress(offset);
+    }
+    let mut sent = offset;
     let mut pace = Pace::new(tokio::time::Instant::now());
-    while sent < header.size {
-        let want = (header.size - sent).min(CHUNK as u64) as usize;
+    while sent < size {
+        let want = (size - sent).min(CHUNK as u64) as usize;
         let n = source.read(&mut buf[..want]).await.map_err(io_err)?;
         if n == 0 {
             return Err(FileError::TooShort);
@@ -276,6 +397,8 @@ where
 /// A file offered by the other device: its header has been read and checked, nothing else yet.
 pub struct IncomingFile<R, W> {
     header: FileHeader,
+    /// The full version 2 header when this is a version 2 transfer.
+    v2: Option<FileHeaderV2>,
     rx: R,
     tx: W,
 }
@@ -283,7 +406,33 @@ pub struct IncomingFile<R, W> {
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
     pub async fn open(mut rx: R, tx: W) -> Result<Self, FileError> {
         let header = parse_header(&read_frame(&mut rx, IDLE_TIMEOUT).await?)?;
-        Ok(Self { header, rx, tx })
+        Ok(Self {
+            header,
+            v2: None,
+            rx,
+            tx,
+        })
+    }
+
+    /// The first frame of a version 2 connection. `header()` has the common fields; `v2()` the rest.
+    pub async fn open_v2(mut rx: R, tx: W) -> Result<Self, FileError> {
+        let v2 = parse_header_v2(&read_frame(&mut rx, IDLE_TIMEOUT).await?)?;
+        let header = FileHeader {
+            version: v2.version,
+            id: v2.id,
+            name: v2.name.clone(),
+            size: v2.size,
+        };
+        Ok(Self {
+            header,
+            v2: Some(v2),
+            rx,
+            tx,
+        })
+    }
+
+    pub fn v2(&self) -> Option<&FileHeaderV2> {
+        self.v2.as_ref()
     }
 
     pub fn header(&self) -> &FileHeader {
@@ -308,15 +457,50 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
     /// Say yes and take the bytes into `sink`. Returns only when exactly `size` bytes arrived and
     /// their hash matches; the caller then makes the file permanent and answers with `ok()` or `bad()`.
     pub async fn accept<K: AsyncWrite + Unpin>(
-        mut self,
+        self,
         sink: &mut K,
         progress: &mut (dyn FnMut(u64) + Send),
     ) -> Result<Received<W>, FileError> {
-        write_frame(&mut self.tx, &FileReply::Accept).await?;
+        self.take(FileReply::Accept, 0, blake3::Hasher::new(), sink, progress)
+            .await
+    }
+
+    /// Version 2: say yes, but the first `offset` bytes are already here. `prefix` is a hasher the caller fed
+    /// with exactly those bytes; `sink` gets only the rest. The trailer is checked against the whole file.
+    pub async fn accept_from<K: AsyncWrite + Unpin>(
+        mut self,
+        offset: u64,
+        prefix: blake3::Hasher,
+        sink: &mut K,
+        progress: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<Received<W>, FileError> {
+        if offset > self.header.size {
+            self.bad("the offset is past the end of the file").await;
+            return Err(FileError::Protocol("resume offset past the end".into()));
+        }
+        let reply = if offset == 0 {
+            FileReply::Accept
+        } else {
+            FileReply::AcceptFrom { offset }
+        };
+        self.take(reply, offset, prefix, sink, progress).await
+    }
+
+    async fn take<K: AsyncWrite + Unpin>(
+        mut self,
+        reply: FileReply,
+        offset: u64,
+        mut hasher: blake3::Hasher,
+        sink: &mut K,
+        progress: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<Received<W>, FileError> {
+        write_frame(&mut self.tx, &reply).await?;
         let size = self.header.size;
-        let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; CHUNK];
-        let mut got = 0u64;
+        let mut got = offset;
+        if offset > 0 {
+            progress(offset);
+        }
         let mut pace = Pace::new(tokio::time::Instant::now());
         while got < size {
             let want = (size - got).min(CHUNK as u64) as usize;
@@ -562,6 +746,207 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn header_v2(size: u64, folder: Option<FolderPlace>) -> FileHeaderV2 {
+        FileHeaderV2 {
+            version: 2,
+            id: [7; 16],
+            name: "report.pdf".into(),
+            size,
+            resume_key: [9; 32],
+            folder,
+        }
+    }
+
+    #[test]
+    fn a_v2_header_round_trips_and_the_reply_has_the_new_variant_last() {
+        let place = FolderPlace {
+            batch: [5; 16],
+            top: "Trip".into(),
+            rel: vec!["Day 1".into(), "raw".into()],
+        };
+        let h = header_v2(10, Some(place));
+        assert_eq!(
+            parse_header_v2(&postcard::to_stdvec(&h).unwrap()).unwrap(),
+            h
+        );
+        // v1 replies keep their bytes; AcceptFrom is appended after them.
+        assert_eq!(postcard::to_stdvec(&FileReply::Accept).unwrap(), [0]);
+        assert_eq!(
+            postcard::to_stdvec(&FileReply::Reject {
+                code: RejectCode::Disabled,
+                text: String::new()
+            })
+            .unwrap(),
+            [1, 0, 0]
+        );
+        assert_eq!(
+            postcard::to_stdvec(&FileReply::AcceptFrom { offset: 5 }).unwrap(),
+            [2, 5]
+        );
+    }
+
+    #[test]
+    fn v2_headers_with_bad_folder_places_are_refused() {
+        let ok = |p: FolderPlace| {
+            parse_header_v2(&postcard::to_stdvec(&header_v2(1, Some(p))).unwrap()).is_ok()
+        };
+        let base = || FolderPlace {
+            batch: [1; 16],
+            top: "Top".into(),
+            rel: vec!["a".into()],
+        };
+        assert!(ok(base()));
+        assert!(!ok(FolderPlace {
+            top: String::new(),
+            ..base()
+        }));
+        assert!(!ok(FolderPlace {
+            top: "a\0b".into(),
+            ..base()
+        }));
+        assert!(!ok(FolderPlace {
+            top: "x".repeat(256),
+            ..base()
+        }));
+        assert!(!ok(FolderPlace {
+            rel: vec![String::new()],
+            ..base()
+        }));
+        assert!(!ok(FolderPlace {
+            rel: vec!["a\0".into()],
+            ..base()
+        }));
+        assert!(!ok(FolderPlace {
+            rel: vec!["x".repeat(256)],
+            ..base()
+        }));
+        assert!(ok(FolderPlace {
+            rel: vec!["d".into(); 16],
+            ..base()
+        }));
+        assert!(!ok(FolderPlace {
+            rel: vec!["d".into(); 17],
+            ..base()
+        }));
+        let mut v1 = header_v2(1, None);
+        v1.version = 1;
+        assert!(
+            parse_header_v2(&postcard::to_stdvec(&v1).unwrap()).is_err(),
+            "a v2 parser wants version 2"
+        );
+    }
+
+    /// Run a v2 transfer where the receiver already holds `have` bytes whose hash it computed itself.
+    async fn resumed(
+        data: &[u8],
+        have: usize,
+        prefix_is_really: &[u8],
+    ) -> (Result<(), FileError>, Result<Vec<u8>, FileError>, Vec<u64>) {
+        let (s_w, r_r) = duplex(64 * 1024);
+        let (r_w, s_r) = duplex(64 * 1024);
+        let h = header_v2(data.len() as u64, None);
+        let (mut tx, mut rx) = (s_w, s_r);
+        let src = data.to_vec();
+        let sender = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let r = send_file_v2(&h, &src[..], &mut tx, &mut rx, &mut |n| seen.push(n)).await;
+            (r, seen)
+        });
+        let mut prefix = blake3::Hasher::new();
+        prefix.update(&prefix_is_really[..have]);
+        let incoming = IncomingFile::open_v2(r_r, r_w).await.unwrap();
+        let mut sink = Vec::new();
+        let got = incoming
+            .accept_from(have as u64, prefix, &mut sink, &mut |_| {})
+            .await;
+        let got = match got {
+            Ok(received) => {
+                received.ok().await;
+                Ok(sink)
+            }
+            Err(e) => Err(e),
+        };
+        let (sent, seen) = sender.await.unwrap();
+        (sent, got, seen)
+    }
+
+    #[tokio::test]
+    async fn a_resumed_transfer_sends_only_the_missing_bytes_and_checks_the_whole_hash() {
+        let data = pattern(600_000);
+        let (sent, got, seen) = resumed(&data, 250_000, &data).await;
+        sent.unwrap();
+        assert_eq!(got.unwrap(), data[250_000..]);
+        assert_eq!(
+            seen.first(),
+            Some(&250_000),
+            "progress starts at the offset"
+        );
+        assert_eq!(seen.last(), Some(&600_000));
+    }
+
+    #[tokio::test]
+    async fn a_wrong_prefix_ends_in_a_hash_failure_on_both_sides() {
+        let data = pattern(600_000);
+        let mut other = data.clone();
+        other[100] ^= 0xFF;
+        let (sent, got, _) = resumed(&data, 250_000, &other).await;
+        assert!(matches!(got, Err(FileError::HashMismatch)), "{got:?}");
+        assert!(matches!(sent, Err(FileError::Peer(_))), "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn offset_zero_and_offset_equal_to_size_both_work() {
+        let data = pattern(70_000);
+        let (sent, got, _) = resumed(&data, 0, &data).await;
+        sent.unwrap();
+        assert_eq!(got.unwrap(), data);
+        let (sent, got, _) = resumed(&data, 70_000, &data).await;
+        sent.unwrap();
+        assert!(got.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_offset_past_the_end_is_a_protocol_error_for_the_sender() {
+        let (mut client_tx, mut srv_rx) = duplex(64 * 1024);
+        let (mut srv_tx, mut client_rx) = duplex(64 * 1024);
+        let data = pattern(100);
+        let h = header_v2(100, None);
+        let sender = tokio::spawn(async move {
+            send_file_v2(&h, &data[..], &mut client_tx, &mut client_rx, &mut |_| {}).await
+        });
+        let _ = read_frame(&mut srv_rx, Duration::from_secs(5))
+            .await
+            .unwrap();
+        write_frame(&mut srv_tx, &FileReply::AcceptFrom { offset: 101 })
+            .await
+            .unwrap();
+        assert!(matches!(sender.await.unwrap(), Err(FileError::Protocol(_))));
+    }
+
+    #[tokio::test]
+    async fn a_v1_sender_refuses_a_resume_offer_it_never_asked_for() {
+        let (mut client_tx, mut srv_rx) = duplex(64 * 1024);
+        let (mut srv_tx, mut client_rx) = duplex(64 * 1024);
+        let data = pattern(100);
+        let sender = tokio::spawn(async move {
+            send_file(
+                &header(100),
+                &data[..],
+                &mut client_tx,
+                &mut client_rx,
+                &mut |_| {},
+            )
+            .await
+        });
+        let _ = read_frame(&mut srv_rx, Duration::from_secs(5))
+            .await
+            .unwrap();
+        write_frame(&mut srv_tx, &FileReply::AcceptFrom { offset: 10 })
+            .await
+            .unwrap();
+        assert!(matches!(sender.await.unwrap(), Err(FileError::Protocol(_))));
     }
 
     #[test]

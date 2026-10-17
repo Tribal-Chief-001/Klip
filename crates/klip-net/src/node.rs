@@ -1,5 +1,5 @@
 use crate::error::NetError;
-use crate::file::FILE_ALPN;
+use crate::file::{FILE_ALPN, FILE_ALPN_V2};
 use crate::proto::{
     sanitize_name, PairReply, PairRequest, MAX_CONTROL_BYTES, PAIR_ALPN, SYNC_ALPN,
 };
@@ -87,6 +87,9 @@ pub struct NetConfig {
     /// Speak the file transfer protocol (an extra ALPN). Always on in Klip itself; off only in tests
     /// that need a device that predates files.
     pub file_transfer: bool,
+    /// Also speak file transfer version 2 (resume, folders). Always on in Klip itself; off only in tests that
+    /// need a device that has version 1 only.
+    pub file_v2: bool,
 }
 
 impl Default for NetConfig {
@@ -99,6 +102,7 @@ impl Default for NetConfig {
             max_clip_bytes: 32 * 1024 * 1024,
             lan_discovery: true,
             file_transfer: true,
+            file_v2: true,
         }
     }
 }
@@ -162,6 +166,8 @@ pub enum NetEvent {
         from: EndpointId,
         tx: SendStream,
         rx: RecvStream,
+        /// 1 or 2: which file protocol this connection speaks.
+        version: u8,
         conn: FileConnection,
     },
     /// A device was added to the trusted set (host or joiner side).
@@ -191,6 +197,15 @@ pub struct FileStreams {
 }
 
 impl FileStreams {
+    /// The file protocol the two devices agreed on: 2 when both speak it, else 1.
+    pub fn version(&self) -> u8 {
+        if self.conn.alpn() == FILE_ALPN_V2 {
+            2
+        } else {
+            1
+        }
+    }
+
     /// The transfer is over (verdict read): close the connection.
     pub fn close(self) {
         self.conn.close(CODE_DONE.into(), b"done");
@@ -249,6 +264,9 @@ impl KlipNode {
         let mut alpns = vec![SYNC_ALPN.to_vec(), PAIR_ALPN.to_vec()];
         if cfg.file_transfer {
             alpns.push(FILE_ALPN.to_vec());
+            if cfg.file_v2 {
+                alpns.push(FILE_ALPN_V2.to_vec());
+            }
         }
         let builder = match cfg.relay {
             RelayChoice::N0Default => Endpoint::builder(presets::N0),
@@ -689,13 +707,14 @@ impl KlipNode {
                     conn.close(CODE_UNPAIRED.into(), b"not paired");
                 }
             }
-            a if a == FILE_ALPN => self.handle_file(conn, remote).await,
+            a if a == FILE_ALPN => self.handle_file(conn, remote, 1).await,
+            a if a == FILE_ALPN_V2 => self.handle_file(conn, remote, 2).await,
             _ => conn.close(CODE_UNPAIRED.into(), b"unsupported protocol"),
         }
     }
 
     /// A file connection: paired devices only, one stream, handed to the application.
-    async fn handle_file(&self, conn: Connection, remote: EndpointId) {
+    async fn handle_file(&self, conn: Connection, remote: EndpointId, version: u8) {
         if !self.is_paired(&remote) {
             conn.close(CODE_UNPAIRED.into(), b"not paired");
             return;
@@ -712,6 +731,7 @@ impl KlipNode {
             from: remote,
             tx,
             rx,
+            version,
             conn: FileConnection {
                 conn: conn.clone(),
                 _slot: slot,
@@ -729,11 +749,25 @@ impl KlipNode {
         if !self.is_paired(&id) {
             return Err(NetError::UnknownPeer);
         }
-        let dialled = timeout(
-            CONNECT_TIMEOUT,
-            self.endpoint.connect(EndpointAddr::new(id), FILE_ALPN),
-        )
-        .await;
+        // Offer version 2 and accept version 1: an older device answers with the one it knows.
+        let attempt = async {
+            let (primary, extra) = if self.inner.cfg.file_v2 {
+                (FILE_ALPN_V2, vec![FILE_ALPN.to_vec()])
+            } else {
+                (FILE_ALPN, Vec::new())
+            };
+            let connecting = self
+                .endpoint
+                .connect_with_opts(
+                    EndpointAddr::new(id),
+                    primary,
+                    iroh::endpoint::ConnectOptions::new().with_additional_alpns(extra),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            connecting.await.map_err(|e| e.to_string())
+        };
+        let dialled = timeout(CONNECT_TIMEOUT, attempt).await;
         let conn = match dialled {
             Err(_) => return Err(NetError::Connect("timed out".into())),
             Ok(Err(e)) => {
