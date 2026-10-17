@@ -59,6 +59,22 @@ impl KlipEngine {
     }
 }
 
+/// A duplicate of the caller's descriptor as a `File` (the caller may close its own right after).
+#[cfg(unix)]
+fn duplicate_fd(fd: i32) -> Result<std::fs::File, KlipError> {
+    // SAFETY: the caller keeps `fd` open for the duration of the call; we only duplicate it.
+    let owned = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
+        .try_clone_to_owned()
+        .map_err(fail)?;
+    Ok(std::fs::File::from(owned))
+}
+
+/// The engine is only used on Android; the crate still builds on every host (the workspace does).
+#[cfg(not(unix))]
+fn duplicate_fd(_fd: i32) -> Result<std::fs::File, KlipError> {
+    Err(fail("file descriptors are only available on Android"))
+}
+
 fn fail<E: std::fmt::Display>(e: E) -> KlipError {
     KlipError::Failed {
         reason: e.to_string(),
@@ -513,15 +529,10 @@ impl KlipEngine {
         if fd < 0 {
             return Err(fail("invalid file descriptor"));
         }
-        // SAFETY: the caller keeps `fd` open for the duration of this call; we only duplicate it.
-        let owned = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
-            .try_clone_to_owned()
-            .map_err(fail)?;
-        let answers = self.rt.block_on(self.core.sync.send_open_file(
-            std::fs::File::from(owned),
-            name.clone(),
-            None,
-        ));
+        let file = duplicate_fd(fd)?;
+        let answers = self
+            .rt
+            .block_on(self.core.sync.send_open_file(file, name.clone(), None));
         klip_core::started_or_error(&name, answers)
             .map(|list| list.into_iter().map(view).collect())
             .map_err(fail)

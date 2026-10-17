@@ -1,5 +1,6 @@
 //! File transfer through the Android-facing API: two engines pair over real iroh endpoints (LAN only,
 //! discovery off) and send files from a raw descriptor, as the app does with the Share sheet.
+#![cfg(unix)]
 
 use klip_android::{
     is_valid_pairing_ticket, ClipboardBridge, KlipEngine, TransferStateView, TransferView,
