@@ -136,6 +136,15 @@ jobs:
       - name: Tray unit and command tests
         run: cargo test -p klip-cli --lib --test tray_cli --test tray_controller
 
+      # File names, free space, partial files and the transfer protocol behave differently per OS.
+      - name: File transfer tests (names, space, partial files, protocol)
+        run: cargo test -p klip-core --lib files:: && cargo test -p klip-net --lib file:: && cargo test -p klip-net --test file_flow
+
+      - name: File transfer between two real daemons (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        run: cargo test -p klip-cli --test cli_files -- --test-threads=1
+
       # Real daemons on this OS: start, send, history, stop through the control channel (the Unix
       # socket on macOS, the named pipe on Windows).
       - name: Windows daemon manual check (control pipe)
