@@ -1371,6 +1371,7 @@ mod tests {
         assert!(!reg.cancel([9; 16]), "an unknown id is not an error");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_fifo_is_refused_at_once_instead_of_blocking() {
         let dir = temp("fifo");
