@@ -77,6 +77,10 @@ class ClipboardWriter(
         }
     }
 
+    override fun fileReceived(path: String, name: String, size: ULong, from: String, relDir: String) {
+        FileReceiver.onReceived(ctx, path, name, size.toLong(), from, relDir)
+    }
+
     /** The text travels in the notification's intent (a Binder transaction too), so only small clips use it. */
     private fun offerTapToCopy(text: String, sensitive: Boolean): Boolean = try {
         postTapToCopy(text, sensitive)

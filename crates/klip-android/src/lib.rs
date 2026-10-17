@@ -80,6 +80,10 @@ pub trait ClipboardBridge: Send + Sync {
     /// the name it was saved under, `rel_dir` the folder inside the staging folder (`""` for a single
     /// file). The app copies it to Downloads. Called on a blocking thread, not on the engine's workers.
     fn file_received(&self, path: String, name: String, size: u64, from: String, rel_dir: String);
+
+    /// A file transfer began or ended (never for progress). The app then polls `transfers()` once a
+    /// second until nothing runs. Called on a blocking thread.
+    fn transfers_changed(&self);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -349,6 +353,12 @@ impl KlipEngine {
                 });
             },
         ));
+        let change_bridge = Arc::clone(&driver.bridge);
+        let handle = rt.handle().clone();
+        core.sync.set_transfers_changed_hook(Arc::new(move || {
+            let bridge = Arc::clone(&change_bridge);
+            handle.spawn_blocking(move || bridge.transfers_changed());
+        }));
         Ok(Arc::new(Self { rt, core, driver }))
     }
 

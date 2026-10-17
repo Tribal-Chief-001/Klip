@@ -97,6 +97,11 @@ impl SyncCoordinator {
         *self.file_hook.lock().unwrap() = Some(hook);
     }
 
+    /// Called whenever a transfer begins or ends (never for progress), from whatever thread did it.
+    pub fn set_transfers_changed_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        self.transfers.set_on_change(hook);
+    }
+
     /// The transfers that are running and the last 50 that finished.
     pub fn transfers(&self) -> Vec<TransferInfo> {
         self.transfers.list()

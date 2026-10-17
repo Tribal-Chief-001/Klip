@@ -9,6 +9,10 @@ import uniffi.klip_android.KlipEngine
 object KlipRuntime {
     private const val PREFS = "klip_prefs"
     private const val KEY_RELAYS = "use_relays"
+    private const val KEY_RECEIVE_FILES = "receive_files"
+    private const val KEY_MAX_FILE_MB = "max_file_mb"
+    /** Phones have less room than computers, and a received file exists twice for a moment. */
+    const val DEFAULT_MAX_FILE_MB = 2048
 
     @Volatile
     var engine: KlipEngine? = null
@@ -50,6 +54,24 @@ object KlipRuntime {
     fun setUseRelays(ctx: Context, enabled: Boolean) {
         ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putBoolean(KEY_RELAYS, enabled).apply()
+    }
+
+    fun receiveFiles(ctx: Context): Boolean =
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_RECEIVE_FILES, true)
+
+    fun setReceiveFiles(ctx: Context, enabled: Boolean) {
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_RECEIVE_FILES, enabled).apply()
+    }
+
+    fun maxFileMb(ctx: Context): Int =
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getInt(KEY_MAX_FILE_MB, DEFAULT_MAX_FILE_MB)
+
+    fun setMaxFileMb(ctx: Context, mb: Int) {
+        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putInt(KEY_MAX_FILE_MB, mb).apply()
     }
 
     // ------------------------------------------------------------------------------------- pause
@@ -100,7 +122,9 @@ object KlipRuntime {
             ctx.applicationContext.filesDir.absolutePath,
             deviceName(),
             useRelays(ctx),
-            bridge
+            bridge,
+            receiveFiles(ctx),
+            maxFileMb(ctx).toULong() * 1024uL * 1024uL
         ).also { engine = it; applyStoredPause(ctx, it) }
     }
 

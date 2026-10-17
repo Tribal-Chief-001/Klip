@@ -344,6 +344,7 @@ struct Entry {
 #[derive(Default)]
 pub struct TransferRegistry {
     entries: Mutex<Vec<Entry>>,
+    on_change: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 fn is_running(state: TransferState) -> bool {
@@ -353,6 +354,19 @@ fn is_running(state: TransferState) -> bool {
 impl TransferRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Called (outside any lock) whenever a transfer begins or ends, never for progress: a host that
+    /// wants to show progress polls `list` only while something runs.
+    pub fn set_on_change(&self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        *self.on_change.lock().unwrap() = Some(hook);
+    }
+
+    fn changed(&self) {
+        let hook = self.on_change.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
     pub fn begin(
@@ -387,6 +401,8 @@ impl TransferRegistry {
             cancel,
         });
         Self::trim(&mut entries);
+        drop(entries);
+        self.changed();
         CancelToken(token)
     }
 
@@ -419,6 +435,7 @@ impl TransferRegistry {
             e.info.saved_to = saved_to;
             e.info.finished_ms = Some(now_ms());
         });
+        self.changed();
     }
 
     pub fn list(&self) -> Vec<TransferInfo> {
@@ -507,6 +524,8 @@ impl TransferRegistry {
             cancel,
         });
         Self::trim(&mut entries);
+        drop(entries);
+        self.changed();
         Some(CancelToken(token))
     }
 
@@ -1465,6 +1484,35 @@ mod tests {
         assert!(go("C", 5).is_none(), "three in all");
         reg.finish([1; 16], TransferState::Done, None, None);
         assert!(go("C", 6).is_some(), "a finished one frees its place");
+    }
+
+    #[test]
+    fn the_change_hook_fires_when_a_transfer_begins_or_ends_but_not_on_progress() {
+        let reg = TransferRegistry::new();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = count.clone();
+        reg.set_on_change(std::sync::Arc::new(move || {
+            c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        let n = || count.load(std::sync::atomic::Ordering::SeqCst);
+        reg.begin(
+            "A",
+            TransferDirection::Sending,
+            [1; 16],
+            "x",
+            10,
+            TransferState::Waiting,
+        );
+        assert_eq!(n(), 1);
+        reg.set_active([1; 16]);
+        reg.progress([1; 16], 5);
+        assert_eq!(n(), 1, "progress is not a change");
+        reg.finish([1; 16], TransferState::Done, None, None);
+        assert_eq!(n(), 2);
+        assert!(reg.begin_incoming("B", [2; 16], "y", 1, 3, 2).is_some());
+        assert_eq!(n(), 3);
+        assert!(reg.begin_incoming("B", [3; 16], "z", 1, 1, 1).is_none());
+        assert_eq!(n(), 3, "a refused one is not a change");
     }
 
     #[test]

@@ -64,6 +64,45 @@ class PrivacyActivity : Activity() {
         )
         b.add(relay, bottom = 22)
 
+        // Receiving files.
+        val files = card(this, pal)
+        val frow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val ft = column(this)
+        ft.add(tv("Receive files", 16f, pal.text, 1))
+        ft.add(tv("Files from your devices land in Downloads/Klip.", 13.5f, pal.dim), top = 3)
+        frow.addView(ft, LinearLayout.LayoutParams(0, -2, 1f))
+        frow.addView(Switch(this).apply {
+            isChecked = KlipRuntime.receiveFiles(this@PrivacyActivity)
+            thumbTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(pal.signal, pal.faint))
+            trackTintList = ColorStateList(arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()), intArrayOf(withAlpha(pal.signal, 0.35f), pal.line))
+            setOnCheckedChangeListener { _, on ->
+                if (on != KlipRuntime.receiveFiles(this@PrivacyActivity)) {
+                    KlipRuntime.setReceiveFiles(this@PrivacyActivity, on)
+                    KlipSyncService.restart(this@PrivacyActivity)
+                }
+            }
+        })
+        files.addView(frow)
+        val limits = listOf(500, 2048, 4096)
+        val limitLabel = tv("", 14.5f, pal.text)
+        fun showLimit() {
+            limitLabel.text = "Largest file accepted: " + FileText.size(KlipRuntime.maxFileMb(this).toLong() * 1024 * 1024)
+        }
+        showLimit()
+        files.add(limitLabel, top = 12)
+        files.add(textButton(this, pal, "Change the limit") {
+            val now = KlipRuntime.maxFileMb(this)
+            val next = limits.firstOrNull { it > now } ?: limits.first()
+            KlipRuntime.setMaxFileMb(this, next)
+            showLimit()
+            KlipSyncService.restart(this)
+        }, top = 4)
+        files.add(
+            tv("Kept inside Klip right now: ${FileText.size(FileReceiver.keptBytes(this))} (files that could not be moved to Downloads, and half-received files). " +
+                "A file you receive exists twice for a moment, so Klip needs room for twice its size.", 13.5f, pal.dim), top = 12
+        )
+        b.add(files, bottom = 22)
+
         // Restart after Android's "Stop" button.
         val keep = card(this, pal)
         val krow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }

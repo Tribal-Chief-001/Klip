@@ -15,6 +15,7 @@ type Received = (String, String, u64, String, String);
 #[derive(Default)]
 struct Bridge {
     files: Mutex<Vec<Received>>,
+    changes: std::sync::atomic::AtomicUsize,
 }
 
 impl ClipboardBridge for Bridge {
@@ -29,6 +30,10 @@ impl ClipboardBridge for Bridge {
             .lock()
             .unwrap()
             .push((path, name, size, from, rel_dir));
+    }
+    fn transfers_changed(&self) {
+        self.changes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -71,12 +76,19 @@ fn wait_until(secs: u64, mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
+/// (phone, laptop, laptop bridge, laptop data dir, phone bridge)
 fn paired(
     tag: &str,
     accept: bool,
     max: u64,
-) -> (Arc<KlipEngine>, Arc<KlipEngine>, Arc<Bridge>, PathBuf) {
-    let (phone, _pb, _pd) = engine(&format!("{tag}-p"), "Phone", true, 2 << 30);
+) -> (
+    Arc<KlipEngine>,
+    Arc<KlipEngine>,
+    Arc<Bridge>,
+    PathBuf,
+    Arc<Bridge>,
+) {
+    let (phone, pb, _pd) = engine(&format!("{tag}-p"), "Phone", true, 2 << 30);
     let (laptop, lb, ld) = engine(&format!("{tag}-l"), "Laptop", accept, max);
     let ticket = laptop.pair_start(60, true).unwrap();
     assert!(is_valid_pairing_ticket(ticket.ticket.clone()));
@@ -91,7 +103,7 @@ fn paired(
         .iter()
         .any(|p| p.online)
         && laptop.status().peers.iter().any(|p| p.online)));
-    (phone, laptop, lb, ld)
+    (phone, laptop, lb, ld, pb)
 }
 
 fn sample(tag: &str, bytes: usize) -> (PathBuf, std::fs::File) {
@@ -116,7 +128,7 @@ fn finished(t: &TransferView) -> bool {
 
 #[test]
 fn a_file_sent_from_a_descriptor_reaches_the_other_engine_and_the_bridge_is_told() {
-    let (phone, _laptop, bridge, dir) = paired("fd", true, 4 << 30);
+    let (phone, _laptop, bridge, dir, _pb) = paired("fd", true, 4 << 30);
     let (src, file) = sample("fd", 3_000_000);
     let started = phone
         .send_file_fd(file.as_raw_fd(), "Holiday photo.jpg".into())
@@ -143,8 +155,30 @@ fn a_file_sent_from_a_descriptor_reaches_the_other_engine_and_the_bridge_is_told
 }
 
 #[test]
+fn the_app_is_told_when_a_transfer_begins_and_ends() {
+    let (phone, _laptop, laptop_bridge, _d, phone_bridge) = paired("changes", true, 4 << 30);
+    let n = |b: &Arc<Bridge>| b.changes.load(std::sync::atomic::Ordering::SeqCst);
+    let (before_p, before_l) = (n(&phone_bridge), n(&laptop_bridge));
+    let (_src, file) = sample("changes", 200_000);
+    phone
+        .send_file_fd(file.as_raw_fd(), "c.bin".into())
+        .unwrap();
+    assert!(wait_until(20, || phone.transfers().iter().all(finished)
+        && !phone.transfers().is_empty()));
+    // begin + end on the sending side, begin + end on the receiving side
+    assert!(
+        wait_until(10, || n(&phone_bridge) >= before_p + 2),
+        "sender told"
+    );
+    assert!(
+        wait_until(10, || n(&laptop_bridge) >= before_l + 2),
+        "receiver told"
+    );
+}
+
+#[test]
 fn receiving_can_be_switched_off_and_says_why() {
-    let (phone, _laptop, bridge, _d) = paired("off", false, 4 << 30);
+    let (phone, _laptop, bridge, _d, _pb) = paired("off", false, 4 << 30);
     let (_src, file) = sample("off", 1000);
     phone
         .send_file_fd(file.as_raw_fd(), "a.txt".into())
@@ -162,7 +196,7 @@ fn receiving_can_be_switched_off_and_says_why() {
 
 #[test]
 fn the_size_limit_is_enforced() {
-    let (phone, _laptop, _bridge, _d) = paired("limit", true, 1 << 20);
+    let (phone, _laptop, _bridge, _d, _pb) = paired("limit", true, 1 << 20);
     let (_src, file) = sample("limit", 3 << 20);
     phone
         .send_file_fd(file.as_raw_fd(), "big.bin".into())
@@ -178,7 +212,7 @@ fn the_size_limit_is_enforced() {
 
 #[test]
 fn cancel_works_and_an_unknown_id_is_false() {
-    let (phone, _laptop, _bridge, _d) = paired("cancel", true, 4 << 30);
+    let (phone, _laptop, _bridge, _d, _pb) = paired("cancel", true, 4 << 30);
     assert!(!phone.cancel_transfer(vec![9; 16]));
     assert!(
         !phone.cancel_transfer(vec![1, 2, 3]),
@@ -205,7 +239,7 @@ fn cancel_works_and_an_unknown_id_is_false() {
 
 #[test]
 fn a_descriptor_that_is_not_a_regular_file_is_refused_with_a_clear_message() {
-    let (phone, _laptop, _bridge, _d) = paired("pipe", true, 4 << 30);
+    let (phone, _laptop, _bridge, _d, _pb) = paired("pipe", true, 4 << 30);
     let null = std::fs::File::open("/dev/null").unwrap();
     let err = phone
         .send_file_fd(null.as_raw_fd(), "x".into())

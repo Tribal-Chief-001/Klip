@@ -33,6 +33,7 @@ impl ClipboardBridge for MockBridge {
     }
 
     fn file_received(&self, _: String, _: String, _: u64, _: String, _: String) {}
+    fn transfers_changed(&self) {}
 }
 
 impl MockBridge {

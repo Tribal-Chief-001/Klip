@@ -119,6 +119,8 @@ class KlipSyncService : Service() {
         acquireMulticastLock()
         startEngine()
         scope.launch { ClipImages.prune(this@KlipSyncService) }
+        scope.launch { runCatching { FileReceiver.cleanStale(this@KlipSyncService) } }
+        FileReceiver.ensureChannel(this)
         ClipHelperServer.start(this)
         scope.launch { delay(3_000); AutoCopy.startWithRoot(this@KlipSyncService) }
         registerReceiver(screenReceiver, IntentFilter().apply {
