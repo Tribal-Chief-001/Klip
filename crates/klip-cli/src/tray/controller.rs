@@ -58,7 +58,16 @@ async fn fetch(client: &DaemonClient) -> Option<Summary> {
         Ok(IpcResponse::ImageState(i)) => Some(i),
         _ => None, // an older daemon does not know images
     };
-    Some(summarize(Some(&status), images.as_ref()))
+    let mut summary = summarize(Some(&status), images.as_ref());
+    // Files: the line while they move, and whether this daemon and this system can send one from the menu.
+    if let Ok(IpcResponse::Transfers(rows)) = client
+        .request(&IpcRequest::GetTransfers, OLD_DAEMON_REQUEST_CAP)
+        .await
+    {
+        summary.files = super::model::transfer_line(&rows);
+        summary.can_send_file = super::picker_available();
+    }
+    Some(summary)
 }
 
 fn unit_managed() -> bool {
@@ -119,6 +128,16 @@ pub fn sent_problem(delivered: &[String], failed: &[(String, String)]) -> Option
     (!parts.is_empty()).then(|| parts.join(". "))
 }
 
+/// Where received files land: `receive_dir` from `config.json`, else the default Downloads folder.
+fn receive_folder() -> std::path::PathBuf {
+    let paths = klip_daemon::config::user_paths();
+    klip_daemon::DaemonConfig::load(&paths)
+        .ok()
+        .and_then(|c| c.receive_dir)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(klip_daemon::default_receive_dir)
+}
+
 /// Do one menu action. `Err(text)` is shown as a notification.
 async fn perform(client: &DaemonClient, action: Action) -> Result<(), String> {
     let call = |req: IpcRequest| async move {
@@ -158,6 +177,22 @@ async fn perform(client: &DaemonClient, action: Action) -> Result<(), String> {
         Action::OpenTerminal => {
             let exe = super::exe_path().map_err(|e| e.to_string())?;
             super::open_terminal(&exe)
+        }
+        Action::OpenFolder => super::open_folder(&receive_folder()),
+        Action::SendFile => {
+            let paths = tokio::task::spawn_blocking(super::pick_files)
+                .await
+                .map_err(|e| e.to_string())??;
+            let mut problems = Vec::new();
+            for path in paths {
+                let path = path.to_string_lossy().into_owned();
+                match call(IpcRequest::SendFile { path, to: None }).await? {
+                    IpcResponse::TransfersStarted(_) => {}
+                    IpcResponse::Error(e) => problems.push(e),
+                    other => problems.push(format!("unexpected reply: {other:?}")),
+                }
+            }
+            problems.first().map_or(Ok(()), |p| Err(p.clone()))
         }
         Action::Quit => Ok(()),
     }

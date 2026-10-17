@@ -278,6 +278,7 @@ fn with_no_daemon_the_tray_says_stopped_and_start_klip_starts_it() {
         [
             "Klip is stopped",
             "Start Klip",
+            "Open the Klip folder",
             "Open the Klip terminal app",
             "Quit the tray"
         ]

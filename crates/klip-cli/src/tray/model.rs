@@ -50,6 +50,10 @@ pub struct Summary {
     /// The last action that failed, shown as the first line of the menu for a while (set by the
     /// controller; the platforms without desktop notifications rely on it).
     pub problem: Option<String>,
+    /// While files move: "Sending 2 files, 45%" (never a file name). Set by the controller from `GetTransfers`.
+    pub files: Option<String>,
+    /// A file picker exists on this system and the daemon knows files: the menu offers "Send a file...".
+    pub can_send_file: bool,
 }
 
 impl Summary {
@@ -64,6 +68,8 @@ impl Summary {
             auto_images: false,
             images_known: false,
             problem: None,
+            files: None,
+            can_send_file: false,
         }
     }
 
@@ -174,7 +180,36 @@ pub fn summarize(status: Option<&DaemonStatusInfo>, images: Option<&ImageStateIn
         auto_images,
         images_known: images.is_some(),
         problem: None,
+        files: None,
+        can_send_file: false,
     }
+}
+
+/// "Sending 2 files, 45%" / "Receiving 1 file, 10%" while files move; `None` when nothing does. Never a name.
+pub fn transfer_line(rows: &[klip_proto::ipc::TransferInfo]) -> Option<String> {
+    use klip_proto::ipc::{TransferDirection, TransferState};
+    let running: Vec<_> = rows
+        .iter()
+        .filter(|t| matches!(t.state, TransferState::Waiting | TransferState::Active))
+        .collect();
+    if running.is_empty() {
+        return None;
+    }
+    let sending = running
+        .iter()
+        .filter(|t| t.direction == TransferDirection::Sending)
+        .count();
+    let receiving = running.len() - sending;
+    let total: u64 = running.iter().map(|t| t.size).sum();
+    let done: u64 = running.iter().map(|t| t.done).sum();
+    let percent = (done * 100).checked_div(total).unwrap_or(100);
+    let part = |verb: &str, n: usize| format!("{verb} {n} file{}", if n == 1 { "" } else { "s" });
+    let what = match (sending, receiving) {
+        (s, 0) => part("Sending", s),
+        (0, r) => part("Receiving", r),
+        (s, r) => format!("{}, {}", part("Sending", s), part("receiving", r)),
+    };
+    Some(format!("{what}, {percent}%"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -185,6 +220,10 @@ pub enum Action {
     Pause(u64),
     Resume,
     OpenTerminal,
+    /// Open the folder received files land in.
+    OpenFolder,
+    /// Pick files in a dialog and send them (Linux, when a picker is installed).
+    SendFile,
     Quit,
 }
 
@@ -198,6 +237,8 @@ impl Action {
             Self::Pause(secs) => format!("pause:{secs}"),
             Self::Resume => "resume".into(),
             Self::OpenTerminal => "terminal".into(),
+            Self::OpenFolder => "folder".into(),
+            Self::SendFile => "sendfile".into(),
             Self::Quit => "quit".into(),
         }
     }
@@ -211,6 +252,8 @@ impl Action {
             "auto:0" => Some(Self::SetAuto(false)),
             "resume" => Some(Self::Resume),
             "terminal" => Some(Self::OpenTerminal),
+            "folder" => Some(Self::OpenFolder),
+            "sendfile" => Some(Self::SendFile),
             "quit" => Some(Self::Quit),
             _ => id
                 .strip_prefix("pause:")
@@ -259,6 +302,9 @@ pub fn menu_plan(s: &Summary) -> Vec<Entry> {
         menu.push(Entry::Label(format!("\u{26a0} {problem}")));
     }
     menu.push(Entry::Label(s.title.clone()));
+    if let Some(files) = &s.files {
+        menu.push(Entry::Label(files.clone()));
+    }
     menu.push(Entry::Separator);
     if stopped {
         menu.push(item("Start Klip", Action::Start));
@@ -279,6 +325,13 @@ pub fn menu_plan(s: &Summary) -> Vec<Entry> {
                 action: Action::SetAuto(!s.auto_images),
             });
         }
+        if s.can_send_file {
+            menu.push(Entry::Item {
+                label: "Send a file...".into(),
+                enabled: s.any_online && !paused,
+                action: Action::SendFile,
+            });
+        }
         if paused {
             menu.push(item("Resume syncing", Action::Resume));
         } else {
@@ -292,6 +345,7 @@ pub fn menu_plan(s: &Summary) -> Vec<Entry> {
         }
     }
     menu.push(Entry::Separator);
+    menu.push(item("Open the Klip folder", Action::OpenFolder));
     menu.push(item("Open the Klip terminal app", Action::OpenTerminal));
     menu.push(item("Quit the tray", Action::Quit));
     menu
@@ -454,6 +508,7 @@ mod tests {
                 "-",
                 "Start Klip",
                 "-",
+                "Open the Klip folder",
                 "Open the Klip terminal app",
                 "Quit the tray"
             ]
@@ -474,6 +529,7 @@ mod tests {
                 "[ ] Send images automatically",
                 "Pause syncing >",
                 "-",
+                "Open the Klip folder",
                 "Open the Klip terminal app",
                 "Quit the tray"
             ]
@@ -535,6 +591,8 @@ mod tests {
             Action::Pause(315_360_000),
             Action::Resume,
             Action::OpenTerminal,
+            Action::OpenFolder,
+            Action::SendFile,
             Action::Quit,
         ];
         for a in all {
@@ -551,6 +609,94 @@ mod tests {
         ] {
             assert_eq!(Action::from_id(junk), None, "{junk:?}");
         }
+    }
+
+    fn row(
+        outgoing: bool,
+        size: u64,
+        done: u64,
+        state: klip_proto::ipc::TransferState,
+    ) -> klip_proto::ipc::TransferInfo {
+        use klip_proto::ipc::TransferDirection;
+        klip_proto::ipc::TransferInfo {
+            id: [1; 16],
+            peer: "Pixel".into(),
+            direction: if outgoing {
+                TransferDirection::Sending
+            } else {
+                TransferDirection::Receiving
+            },
+            name: "private-name.pdf".into(),
+            size,
+            done,
+            state,
+            error: None,
+            saved_to: None,
+            started_ms: 0,
+            finished_ms: None,
+        }
+    }
+
+    #[test]
+    fn the_file_line_counts_running_transfers_and_never_shows_a_name() {
+        use klip_proto::ipc::TransferState::{Active, Done, Failed, Waiting};
+        assert_eq!(transfer_line(&[]), None);
+        assert_eq!(
+            transfer_line(&[row(true, 100, 100, Done), row(false, 5, 0, Failed)]),
+            None
+        );
+        assert_eq!(
+            transfer_line(&[row(true, 100, 45, Active)]),
+            Some("Sending 1 file, 45%".into())
+        );
+        assert_eq!(
+            transfer_line(&[row(false, 100, 10, Active), row(false, 100, 30, Waiting)]),
+            Some("Receiving 2 files, 20%".into())
+        );
+        assert_eq!(
+            transfer_line(&[row(true, 100, 50, Active), row(false, 100, 10, Active)]),
+            Some("Sending 1 file, receiving 1 file, 30%".into())
+        );
+        assert_eq!(
+            transfer_line(&[row(true, 0, 0, Active)]),
+            Some("Sending 1 file, 100%".into())
+        );
+        assert!(!transfer_line(&[row(true, 100, 45, Active)])
+            .unwrap()
+            .contains("private"));
+    }
+
+    #[test]
+    fn the_menu_offers_the_folder_always_and_sending_a_file_only_where_a_picker_exists_and_a_device_is_online(
+    ) {
+        let st = status(vec![peer("Vivo", true, None)]);
+        let base = summarize(Some(&st), None);
+        let has = |s: &Summary, a: Action| {
+            menu_plan(s)
+                .iter()
+                .any(|e| matches!(e, Entry::Item { action, enabled: true, .. } if *action == a))
+        };
+        assert!(has(&base, Action::OpenFolder));
+        assert!(!has(&base, Action::SendFile), "no picker on this system");
+        let mut with_picker = base.clone();
+        with_picker.can_send_file = true;
+        assert!(has(&with_picker, Action::SendFile));
+        let offline = summarize(Some(&status(vec![peer("Vivo", false, None)])), None);
+        let mut offline_picker = offline;
+        offline_picker.can_send_file = true;
+        assert!(!has(&offline_picker, Action::SendFile), "nobody to send to");
+        assert!(
+            has(&Summary::stopped(), Action::OpenFolder),
+            "the folder opens even when Klip is stopped"
+        );
+    }
+
+    #[test]
+    fn a_file_line_is_shown_under_the_title_while_files_move() {
+        let mut s = Summary::stopped();
+        s.files = Some("Sending 1 file, 45%".into());
+        let plan = menu_plan(&s);
+        assert_eq!(plan[1], Entry::Label("Sending 1 file, 45%".into()));
     }
 
     #[test]

@@ -309,8 +309,151 @@ pub async fn run() -> Result<(), String> {
     }
 }
 
+/// The programme that shows a folder in the system's file manager.
+pub fn open_command(path: &Path) -> (String, Vec<String>) {
+    let program = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    (
+        program.to_string(),
+        vec![path.to_string_lossy().into_owned()],
+    )
+}
+
+/// Open `folder` in the file manager (made first when it does not exist yet: nothing has been received).
+pub fn open_folder(folder: &Path) -> Result<(), String> {
+    fs::create_dir_all(folder).map_err(|e| format!("cannot create {}: {e}", folder.display()))?;
+    let (program, args) = open_command(folder);
+    let mut command = Command::new(&program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = detach(&mut command)
+        .spawn()
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
+    std::thread::spawn(move || {
+        // explorer.exe reports 1 even when it worked: only a failure to start is a problem there.
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// A file dialog installed on this system: `zenity` first, then `kdialog`. `has` says whether a programme exists.
+pub fn picker_command(has: impl Fn(&str) -> bool) -> Option<(String, Vec<String>)> {
+    if has("zenity") {
+        Some((
+            "zenity".into(),
+            [
+                "--file-selection",
+                "--multiple",
+                "--separator=\n",
+                "--title=Send files with Klip",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ))
+    } else if has("kdialog") {
+        Some((
+            "kdialog".into(),
+            [
+                "--getopenfilename",
+                "--multiple",
+                "--separate-output",
+                ".",
+                "--title",
+                "Send files with Klip",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ))
+    } else {
+        None
+    }
+}
+
+/// The absolute paths a picker printed, one per line; a line that is not an absolute path is ignored.
+pub fn parse_picker_output(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .collect()
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+}
+
+/// Is there a file dialog to offer "Send a file..." with? Linux only (macOS and Windows have none yet).
+pub fn picker_available() -> bool {
+    cfg!(target_os = "linux") && picker_command(on_path).is_some()
+}
+
+/// Ask the person for files with the system's dialog. An empty list: they cancelled.
+pub fn pick_files() -> Result<Vec<PathBuf>, String> {
+    let (program, args) =
+        picker_command(on_path).ok_or("no file dialog is installed (zenity or kdialog)")?;
+    let out = Command::new(&program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
+    Ok(parse_picker_output(&String::from_utf8_lossy(&out.stdout)))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_folder_is_opened_with_the_programme_each_system_has() {
+        let (program, args) = open_command(Path::new("/home/me/Downloads/Klip"));
+        let expected = if cfg!(target_os = "windows") {
+            "explorer"
+        } else if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        assert_eq!(program, expected);
+        assert_eq!(args, vec!["/home/me/Downloads/Klip".to_string()]);
+    }
+
+    #[test]
+    fn a_file_picker_is_chosen_from_what_is_installed_and_none_means_no_menu_entry() {
+        let only = |name: &'static str| move |p: &str| p == name;
+        let (program, args) = picker_command(only("zenity")).unwrap();
+        assert_eq!(program, "zenity");
+        assert!(
+            args.iter().any(|a| a == "--file-selection") && args.iter().any(|a| a == "--multiple")
+        );
+        let (program, args) = picker_command(only("kdialog")).unwrap();
+        assert_eq!(program, "kdialog");
+        assert!(args.iter().any(|a| a == "--getopenfilename"));
+        assert!(picker_command(|_| false).is_none());
+        // zenity wins when both are there.
+        assert_eq!(picker_command(|_| true).unwrap().0, "zenity");
+    }
+
+    #[test]
+    fn what_the_picker_prints_becomes_absolute_paths_exactly() {
+        let out = "/home/me/My Photos/a b.jpg\n/tmp/\u{00fc}ber.txt\n\nrelative/ignored.txt\n/tmp/with\ttab.txt\n";
+        assert_eq!(
+            parse_picker_output(out),
+            vec![
+                PathBuf::from("/home/me/My Photos/a b.jpg"),
+                PathBuf::from("/tmp/\u{00fc}ber.txt"),
+                PathBuf::from("/tmp/with\ttab.txt"),
+            ]
+        );
+        assert!(parse_picker_output("").is_empty());
+    }
+
     use super::*;
 
     fn temp(tag: &str) -> PathBuf {

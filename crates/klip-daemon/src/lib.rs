@@ -14,6 +14,7 @@ pub use config::{
 };
 pub use engine::DaemonEngine;
 pub use instance_lock::InstanceLock;
+pub use klip_core::files::default_receive_dir;
 pub use klip_core::{human_size, HistoryBuffer, Shutdown, SyncCoordinator};
 pub use services::{
     generate_launchd_plist_file, generate_systemd_unit_file, generate_windows_service_script,
