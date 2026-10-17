@@ -1,5 +1,5 @@
 //! Desktop notification when an automatic copy could not reach a device (Linux: `notify-send`).
-use klip_core::{offline_label, UndeliveredHook};
+use klip_core::{human_size, offline_label, FileReceivedHook, UndeliveredHook};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,6 +59,30 @@ pub fn say(text: &str) {
     );
 }
 
+/// Never the file's name: it can be private and notifications show on a lock screen.
+fn file_body(from: &str, size: u64) -> String {
+    format!(
+        "Received 1 file from {} ({})",
+        escape_markup(from),
+        human_size(size)
+    )
+}
+
+pub fn file_hook() -> FileReceivedHook {
+    Arc::new(|from: &str, _path: &std::path::Path, size: u64| {
+        run(
+            "notify-send",
+            &[
+                "--app-name=Klip".to_string(),
+                "--expire-time=10000".to_string(),
+                "--".to_string(),
+                "Klip".to_string(),
+                file_body(from, size),
+            ],
+        )
+    })
+}
+
 pub fn hook() -> UndeliveredHook {
     Arc::new(|name: &str, gone: Duration| run("notify-send", &args(name, gone)))
 }
@@ -84,6 +108,14 @@ mod tests {
     fn the_text_says_how_long_once_it_is_over_a_minute() {
         assert!(body("Pixel", Duration::from_secs(14 * 60)).ends_with("Not connected for 14 min."));
         assert!(body("Pixel", Duration::from_secs(3 * 3600)).ends_with("Not connected for 3 h."));
+    }
+
+    #[test]
+    fn the_file_notice_names_the_device_and_size_but_not_the_file() {
+        assert_eq!(
+            file_body("<Pixel>", 3 * 1024 * 1024),
+            "Received 1 file from &lt;Pixel&gt; (3.0 MiB)"
+        );
     }
 
     #[test]

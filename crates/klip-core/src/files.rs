@@ -488,13 +488,18 @@ impl TransferRegistry {
     }
 }
 
-fn human(bytes: u64) -> String {
-    const MIB: f64 = 1024.0 * 1024.0;
+/// "812 B", "3.5 KiB", "12.0 MiB", "1.5 GiB".
+pub fn human_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
     let b = bytes as f64;
-    if b >= 1024.0 * MIB {
-        format!("{:.1} GiB", b / (1024.0 * MIB))
+    if b >= KIB * KIB * KIB {
+        format!("{:.1} GiB", b / (KIB * KIB * KIB))
+    } else if b >= KIB * KIB {
+        format!("{:.1} MiB", b / (KIB * KIB))
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
     } else {
-        format!("{:.1} MiB", b / MIB)
+        format!("{bytes} B")
     }
 }
 
@@ -516,8 +521,8 @@ fn refusal(
             RejectCode::TooLarge,
             format!(
                 "the file is {} but this device accepts at most {}",
-                human(header.size),
-                human(policy.max_bytes)
+                human_size(header.size),
+                human_size(policy.max_bytes)
             ),
         ));
     }
@@ -706,6 +711,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizes_are_written_in_the_unit_a_person_reads() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1023), "1023 B");
+        assert_eq!(human_size(1536), "1.5 KiB");
+        assert_eq!(human_size(12 * 1024 * 1024), "12.0 MiB");
+        assert_eq!(human_size(3 * 1024 * 1024 * 1024 / 2), "1.5 GiB");
+    }
     use std::fs;
     use std::io::Write as _;
     use std::path::PathBuf;

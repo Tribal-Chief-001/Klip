@@ -5,8 +5,8 @@ use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
 use klip_proto::ipc::{
     deserialize_ipc_msg, max_request_bytes, serialize_ipc_msg, ConfigInfo, HelloInfo, IpcRequest,
-    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_SHARE_IMAGE, CAP_UNPAIR_ALL,
-    IPC_PROTOCOL_VERSION,
+    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_FILE_TRANSFER, CAP_SHARE_IMAGE,
+    CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -310,6 +310,7 @@ impl IpcServer {
                         CAP_COPY_TO_CLIPBOARD.to_string(),
                         CAP_CLEAR_HISTORY.to_string(),
                         CAP_SHARE_IMAGE.to_string(),
+                        CAP_FILE_TRANSFER.to_string(),
                     ],
                     config: ConfigInfo {
                         device_name: cfg.device_name.clone(),
@@ -391,6 +392,33 @@ impl IpcServer {
                     Ok(Err(e)) => IpcResponse::Error(e),
                     Err(e) => IpcResponse::Error(e.to_string()),
                 }
+            }
+            IpcRequest::SendFile { path, to } => {
+                let path = std::path::PathBuf::from(path);
+                if !path.is_absolute() {
+                    IpcResponse::Error(format!(
+                        "the file path must be absolute: {}",
+                        path.display()
+                    ))
+                } else {
+                    let answers = sync.send_file(path, to).await;
+                    let (mut started, mut errors) = (Vec::new(), Vec::new());
+                    for a in answers {
+                        match a {
+                            Ok(t) => started.push(t),
+                            Err(e) => errors.push(e),
+                        }
+                    }
+                    if started.is_empty() {
+                        IpcResponse::Error(errors.join("; "))
+                    } else {
+                        IpcResponse::TransfersStarted(started)
+                    }
+                }
+            }
+            IpcRequest::GetTransfers => IpcResponse::Transfers(sync.transfers()),
+            IpcRequest::CancelTransfer { id } => {
+                IpcResponse::TransferCancelled(sync.cancel_transfer(id))
             }
             IpcRequest::StopDaemon => {
                 shutdown.trigger();

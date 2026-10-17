@@ -543,3 +543,62 @@ async fn memory_stays_flat_while_a_gigabyte_moves() {
         "the process grew by {grew_mib} MiB while a 1 GiB file moved"
     );
 }
+
+#[tokio::test]
+async fn the_control_socket_lists_the_capability_and_starts_lists_and_cancels_transfers() {
+    let (a, _b, incoming) = two_paired("ipc", |_| {}).await;
+    let IpcResponse::Hello(hello) = a.ipc(IpcRequest::Hello { client_protocol: 2 }).await else {
+        panic!("Hello")
+    };
+    assert!(hello.capabilities.iter().any(|c| c == "file_transfer"));
+    assert_eq!(
+        a.ipc(IpcRequest::GetTransfers).await,
+        IpcResponse::Transfers(vec![])
+    );
+
+    let relative = a
+        .ipc(IpcRequest::SendFile {
+            path: "x.txt".into(),
+            to: None,
+        })
+        .await;
+    assert!(
+        matches!(&relative, IpcResponse::Error(e) if e.contains("absolute")),
+        "{relative:?}"
+    );
+    let missing = a
+        .ipc(IpcRequest::SendFile {
+            path: a.dir.join("nope").display().to_string(),
+            to: None,
+        })
+        .await;
+    assert!(
+        matches!(&missing, IpcResponse::Error(e) if e.contains("cannot send")),
+        "{missing:?}"
+    );
+
+    let file = make_file(&a.dir.join("out"), "viaipc.bin", 100_000);
+    let IpcResponse::TransfersStarted(started) = a
+        .ipc(IpcRequest::SendFile {
+            path: file.display().to_string(),
+            to: Some("Beta".into()),
+        })
+        .await
+    else {
+        panic!("TransfersStarted")
+    };
+    assert_eq!(started.len(), 1);
+    wait_transfer(&a, 20, "the send", finished).await;
+    let IpcResponse::Transfers(list) = a.ipc(IpcRequest::GetTransfers).await else {
+        panic!()
+    };
+    assert_eq!((list.len(), list[0].state), (1, TransferState::Done));
+    assert_eq!(
+        std::fs::read(incoming.join("viaipc.bin")).unwrap(),
+        std::fs::read(&file).unwrap()
+    );
+    assert_eq!(
+        a.ipc(IpcRequest::CancelTransfer { id: [9; 16] }).await,
+        IpcResponse::TransferCancelled(false)
+    );
+}

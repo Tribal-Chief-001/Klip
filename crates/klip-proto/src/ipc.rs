@@ -18,6 +18,8 @@ pub const CAP_COPY_TO_CLIPBOARD: &str = "copy_to_clipboard";
 pub const CAP_CLEAR_HISTORY: &str = "clear_history";
 /// The daemon holds copied images until they are sent (`GetImageState`, `SendPendingImage`, ...).
 pub const CAP_SHARE_IMAGE: &str = "share_image";
+/// The daemon sends and receives files (`SendFile`, `GetTransfers`, `CancelTransfer`).
+pub const CAP_FILE_TRANSFER: &str = "file_transfer";
 
 /// The settings the running daemon loaded (what a restart would re-read from `config.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +101,17 @@ pub enum IpcRequest {
     /// A small PNG of the waiting image (`id: None`) or of a stored history image.
     GetThumbnail {
         id: Option<[u8; 16]>,
+    },
+    // Added in v0.8.0 (protocol stays 2): file transfer.
+    /// Send the file at an absolute `path` to the device called `to` (all connected devices when `None`).
+    SendFile {
+        path: String,
+        to: Option<String>,
+    },
+    /// Running and recently finished transfers, oldest first.
+    GetTransfers,
+    CancelTransfer {
+        id: [u8; 16],
     },
 }
 
@@ -248,6 +261,11 @@ pub enum IpcResponse {
     ImageState(ImageStateInfo),
     /// PNG bytes, at most 240 px on the longest side.
     Thumbnail(Vec<u8>),
+    /// One entry per device the file was offered to (a refusal is an `Error` instead).
+    TransfersStarted(Vec<TransferInfo>),
+    Transfers(Vec<TransferInfo>),
+    /// `false`: no running transfer has that id.
+    TransferCancelled(bool),
 }
 
 pub fn serialize_ipc_msg<T: Serialize>(val: &T) -> Result<Vec<u8>, String> {
@@ -511,6 +529,57 @@ mod compat {
             assert_eq!(deserialize_ipc_msg::<IpcResponse>(&bytes).unwrap(), r);
         }
         assert_eq!(CAP_SHARE_IMAGE, "share_image");
+    }
+
+    #[test]
+    fn file_transfer_variants_are_appended_after_the_image_ones() {
+        // v0.8.0: requests 20.., responses 18.. - nothing before them may move.
+        let mut send = vec![20, 2, b'/', b'f', 1, 1, b'B'];
+        assert_eq!(
+            req(&IpcRequest::SendFile {
+                path: "/f".into(),
+                to: Some("B".into())
+            }),
+            send
+        );
+        send = vec![20, 2, b'/', b'f', 0];
+        assert_eq!(
+            req(&IpcRequest::SendFile {
+                path: "/f".into(),
+                to: None
+            }),
+            send
+        );
+        assert_eq!(req(&IpcRequest::GetTransfers), [21]);
+        let mut cancel = vec![22];
+        cancel.extend_from_slice(&[5u8; 16]);
+        assert_eq!(req(&IpcRequest::CancelTransfer { id: [5; 16] }), cancel);
+
+        assert_eq!(resp(&IpcResponse::TransfersStarted(vec![])), [18, 0]);
+        assert_eq!(resp(&IpcResponse::Transfers(vec![])), [19, 0]);
+        assert_eq!(resp(&IpcResponse::TransferCancelled(true)), [20, 1]);
+
+        let info = TransferInfo {
+            id: [1; 16],
+            peer: "B".into(),
+            direction: TransferDirection::Receiving,
+            name: "a.txt".into(),
+            size: 10,
+            done: 4,
+            state: TransferState::Failed,
+            error: Some("x".into()),
+            saved_to: None,
+            started_ms: 7,
+            finished_ms: Some(9),
+        };
+        for r in [
+            IpcResponse::TransfersStarted(vec![info.clone()]),
+            IpcResponse::Transfers(vec![info]),
+        ] {
+            let bytes = serialize_ipc_msg(&r).unwrap();
+            assert_eq!(deserialize_ipc_msg::<IpcResponse>(&bytes).unwrap(), r);
+        }
+        assert_eq!(CAP_FILE_TRANSFER, "file_transfer");
     }
 
     #[test]
