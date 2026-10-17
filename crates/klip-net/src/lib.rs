@@ -16,10 +16,11 @@ mod ticket;
 
 pub use error::NetError;
 pub use node::{
-    ClipAck, ClipOutcome, KlipNode, NetConfig, NetEvent, PairDecision, PeerRecord, PeerStatus,
-    RelayChoice,
+    ClipAck, ClipOutcome, FileConnection, FileStreams, KlipNode, NetConfig, NetEvent, PairDecision,
+    PeerRecord, PeerStatus, RelayChoice,
 };
 pub use proto::{MAX_CONTROL_BYTES, PAIR_ALPN, SYNC_ALPN};
 pub use ticket::{PairingTicket, TICKET_PREFIX};
 
+pub use iroh::endpoint::{RecvStream, SendStream};
 pub use iroh::{EndpointAddr, EndpointId};

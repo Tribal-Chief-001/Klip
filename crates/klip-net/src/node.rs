@@ -1,10 +1,12 @@
 use crate::error::NetError;
+use crate::file::FILE_ALPN;
 use crate::proto::{
     sanitize_name, PairReply, PairRequest, MAX_CONTROL_BYTES, PAIR_ALPN, SYNC_ALPN,
 };
 use crate::ticket::{now_unix, PairingTicket};
 use iroh::endpoint::{
-    presets, Connection, ConnectionError, IdleTimeout, Incoming, QuicTransportConfig, Side, VarInt,
+    presets, Connection, ConnectionError, IdleTimeout, Incoming, QuicTransportConfig, RecvStream,
+    SendStream, Side, VarInt,
 };
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, SecretKey, Watcher};
 use klip_proto::clip::ClipPayload;
@@ -12,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use subtle::ConstantTimeEq;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
@@ -29,6 +31,12 @@ const MIN_THROUGHPUT_BYTES_PER_SEC: u64 = 64 * 1024;
 const FAST_FAILURE: Duration = Duration::from_secs(3);
 /// Only a handful of unauthenticated pairing handshakes may run at the same time.
 const MAX_CONCURRENT_PAIR_HANDLERS: usize = 4;
+/// File connections that may be waiting for the application at once (the application limits transfers).
+const MAX_CONCURRENT_FILE_HANDLERS: usize = 8;
+/// A file connection must open its one stream within this long.
+const FILE_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the receiving side waits for the sender to close after the verdict.
+const FILE_CLOSE_WAIT: Duration = Duration::from_secs(5);
 const PAIR_STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 /// Received clips wait here for the application; kept small because each can be tens of MB.
 const EVENT_QUEUE: usize = 8;
@@ -76,6 +84,9 @@ pub struct NetConfig {
     /// Announce this device on the local network (mDNS) and find paired devices there, so sync
     /// works on the same Wi-Fi even without internet. Advertises the device id to the LAN.
     pub lan_discovery: bool,
+    /// Speak the file transfer protocol (an extra ALPN). Always on in Klip itself; off only in tests
+    /// that need a device that predates files.
+    pub file_transfer: bool,
 }
 
 impl Default for NetConfig {
@@ -87,6 +98,7 @@ impl Default for NetConfig {
             idle_timeout: Duration::from_secs(60),
             max_clip_bytes: 32 * 1024 * 1024,
             lan_discovery: true,
+            file_transfer: true,
         }
     }
 }
@@ -144,10 +156,45 @@ pub enum NetEvent {
         device_name: String,
         respond: PairDecision,
     },
+    /// A paired device opened a file stream. Handle it on its own task at once: this queue is shared
+    /// with clips. Dropping `conn` ends the connection.
+    File {
+        from: EndpointId,
+        tx: SendStream,
+        rx: RecvStream,
+        conn: FileConnection,
+    },
     /// A device was added to the trusted set (host or joiner side).
     Paired(PeerRecord),
     PeerConnected(EndpointId),
     PeerDisconnected(EndpointId),
+}
+
+/// The connection a file arrives on, kept open until the transfer is over.
+pub struct FileConnection {
+    conn: Connection,
+    _slot: OwnedSemaphorePermit,
+}
+
+impl FileConnection {
+    /// The verdict has been sent: wait (briefly) for the sender to close, so the last bytes are delivered.
+    pub async fn finished(self) {
+        let _ = timeout(FILE_CLOSE_WAIT, self.conn.closed()).await;
+    }
+}
+
+/// The streams of a file connection this device opened.
+pub struct FileStreams {
+    pub tx: SendStream,
+    pub rx: RecvStream,
+    conn: Connection,
+}
+
+impl FileStreams {
+    /// The transfer is over (verdict read): close the connection.
+    pub fn close(self) {
+        self.conn.close(CODE_DONE.into(), b"done");
+    }
 }
 
 struct PairingWindow {
@@ -169,6 +216,7 @@ struct Inner {
     pairing: Mutex<Option<PairingWindow>>,
     events: mpsc::Sender<NetEvent>,
     pair_handlers: Semaphore,
+    file_handlers: Arc<Semaphore>,
 }
 
 #[derive(Clone)]
@@ -198,6 +246,10 @@ impl KlipNode {
             .max_concurrent_uni_streams(VarInt::from_u32(0))
             .build();
 
+        let mut alpns = vec![SYNC_ALPN.to_vec(), PAIR_ALPN.to_vec()];
+        if cfg.file_transfer {
+            alpns.push(FILE_ALPN.to_vec());
+        }
         let builder = match cfg.relay {
             RelayChoice::N0Default => Endpoint::builder(presets::N0),
             RelayChoice::Disabled => {
@@ -206,7 +258,7 @@ impl KlipNode {
         };
         let endpoint = builder
             .secret_key(secret_from_seed(seed))
-            .alpns(vec![SYNC_ALPN.to_vec(), PAIR_ALPN.to_vec()])
+            .alpns(alpns)
             .transport_config(transport)
             .bind()
             .await
@@ -234,6 +286,7 @@ impl KlipNode {
             pairing: Mutex::new(None),
             events: tx,
             pair_handlers: Semaphore::new(MAX_CONCURRENT_PAIR_HANDLERS),
+            file_handlers: Arc::new(Semaphore::new(MAX_CONCURRENT_FILE_HANDLERS)),
         });
         let node = Self { endpoint, inner };
         node.spawn_accept_loop();
@@ -636,8 +689,74 @@ impl KlipNode {
                     conn.close(CODE_UNPAIRED.into(), b"not paired");
                 }
             }
+            a if a == FILE_ALPN => self.handle_file(conn, remote).await,
             _ => conn.close(CODE_UNPAIRED.into(), b"unsupported protocol"),
         }
+    }
+
+    /// A file connection: paired devices only, one stream, handed to the application.
+    async fn handle_file(&self, conn: Connection, remote: EndpointId) {
+        if !self.is_paired(&remote) {
+            conn.close(CODE_UNPAIRED.into(), b"not paired");
+            return;
+        }
+        let Ok(slot) = Arc::clone(&self.inner.file_handlers).try_acquire_owned() else {
+            conn.close(CODE_DONE.into(), b"busy");
+            return;
+        };
+        let Ok(Ok((tx, rx))) = timeout(FILE_STREAM_TIMEOUT, conn.accept_bi()).await else {
+            conn.close(CODE_DONE.into(), b"no stream");
+            return;
+        };
+        let event = NetEvent::File {
+            from: remote,
+            tx,
+            rx,
+            conn: FileConnection {
+                conn: conn.clone(),
+                _slot: slot,
+            },
+        };
+        if self.inner.events.send(event).await.is_err() {
+            conn.close(CODE_DONE.into(), b"shutting down");
+        }
+    }
+
+    /// Dial a paired device for one file: a new connection (its own ALPN, so clips are never held up)
+    /// and one stream. If the clip connection to that device is up but this one cannot be made, the
+    /// device is an older Klip.
+    pub async fn open_file_stream(&self, id: EndpointId) -> Result<FileStreams, NetError> {
+        if !self.is_paired(&id) {
+            return Err(NetError::UnknownPeer);
+        }
+        let dialled = timeout(
+            CONNECT_TIMEOUT,
+            self.endpoint.connect(EndpointAddr::new(id), FILE_ALPN),
+        )
+        .await;
+        let conn = match dialled {
+            Err(_) => return Err(NetError::Connect("timed out".into())),
+            Ok(Err(e)) => {
+                let clip_connection_up = self
+                    .inner
+                    .conns
+                    .lock()
+                    .unwrap()
+                    .get(&id)
+                    .is_some_and(|c| c.close_reason().is_none());
+                return Err(if clip_connection_up {
+                    NetError::FileUnsupported
+                } else {
+                    NetError::Connect(e.to_string())
+                });
+            }
+            Ok(Ok(conn)) => conn,
+        };
+        let (tx, rx) = conn
+            .open_bi()
+            .await
+            .map_err(|e| NetError::Stream(e.to_string()))?;
+        Ok(FileStreams { tx, rx, conn })
     }
 
     /// Remember the connection and spawn its reader. Called for dialed and accepted connections.

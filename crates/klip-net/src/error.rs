@@ -20,6 +20,8 @@ pub enum NetError {
     PeerRefused(String),
     /// The operation needs a paired peer.
     UnknownPeer,
+    /// The clip connection to the device is up but it does not speak the file protocol (an older Klip).
+    FileUnsupported,
 }
 
 impl fmt::Display for NetError {
@@ -36,6 +38,10 @@ impl fmt::Display for NetError {
             }
             Self::PeerRefused(why) => write!(f, "{why}"),
             Self::UnknownPeer => write!(f, "peer is not paired"),
+            Self::FileUnsupported => write!(
+                f,
+                "the other device does not support file transfer: update Klip on it"
+            ),
         }
     }
 }
