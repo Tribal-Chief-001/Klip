@@ -19,6 +19,10 @@ object FileText {
     /** Never the file's name: notifications can show on a locked screen. */
     fun received(from: String, bytes: Long) = "Received 1 file from $from (${size(bytes)})"
 
+    /** One notice for a whole folder: "Received 12 files from X (40.0 MiB)". */
+    fun receivedBatch(from: String, count: Int, bytes: Long) =
+        if (count == 1) received(from, bytes) else "Received $count files from $from (${size(bytes)})"
+
     /** "Sending 2 files, 45%"; empty when nothing is running. */
     fun progress(rows: List<Row>): String {
         val running = rows.filter { it.running }

@@ -448,12 +448,18 @@ impl PartialFile {
 
     /// Flush it to disk and give it its real (sanitised, unique) name. Returns where it is now.
     pub async fn commit(self, wanted_name: &str) -> io::Result<PathBuf> {
+        self.commit_in(None, wanted_name).await
+    }
+
+    /// `commit`, but into another folder than the receive folder (a file of a folder send).
+    pub async fn commit_in(self, into: Option<&Path>, wanted_name: &str) -> io::Result<PathBuf> {
         let Self {
             file,
             path,
             dir,
             keyed,
         } = self;
+        let dir = into.map_or(dir, Path::to_path_buf);
         let made_permanent = async {
             file.sync_all().await?;
             drop(file);
@@ -592,6 +598,8 @@ pub struct TransferRegistry {
     on_change: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
     /// The daemon is shutting down: cancelled transfers are not the person's decision, so partials are kept.
     stopping: std::sync::atomic::AtomicBool,
+    /// Folder sends being received: which new top folder each one goes to.
+    pub(crate) batches: crate::folders::BatchBook,
 }
 
 fn is_running(state: TransferState) -> bool {
@@ -1016,6 +1024,29 @@ where
     if let Some(node) = node {
         reg.tag_node(id, node);
     }
+    // A file of a folder send goes into that send's new top folder, in the folders it came from.
+    let place = incoming.v2().and_then(|h| h.folder.clone());
+    let mut target_dir: Option<PathBuf> = None;
+    if let Some(place) = &place {
+        let made = reg
+            .batches
+            .dir(&device, place.batch, &place.top, &policy.dir)
+            .and_then(|top| crate::folders::place_in_folder(&top, &place.rel));
+        match made {
+            Ok(dir) => target_dir = Some(dir),
+            Err(e) => {
+                part.discard().await;
+                reg.batches.failed(&device, place.batch);
+                let text = format!("this device cannot save the folder: {e}");
+                reg.finish(id, TransferState::Failed, Some(text.clone()), None);
+                incoming.reject(RejectCode::Other, &text).await;
+                return Err(FileError::Rejected {
+                    code: RejectCode::Other,
+                    text,
+                });
+            }
+        }
+    }
     // What the earlier attempt left must still be hashed here; an unusable one is thrown away.
     let mut prefix = blake3::Hasher::new();
     if offset > header.size {
@@ -1052,7 +1083,7 @@ where
         other => other,
     };
     match outcome {
-        Ok(received) => match part.commit(&name).await {
+        Ok(received) => match part.commit_in(target_dir.as_deref(), &name).await {
             Ok(path) => {
                 received.ok().await;
                 reg.finish(
@@ -1084,9 +1115,12 @@ where
                     _ => false,
                 };
             if keep {
-                part.keep(device).await;
+                part.keep(device.clone()).await;
             } else {
                 part.discard().await;
+            }
+            if let Some(place) = &place {
+                reg.batches.failed(&device, place.batch);
             }
             let state = if matches!(e, FileError::Cancelled) {
                 TransferState::Cancelled
@@ -1171,6 +1205,8 @@ pub async fn send_attempt<R, W>(
     id: [u8; 16],
     version: u8,
     fresh_key: bool,
+    folder: Option<&klip_net::file::FolderPlace>,
+    base: u64,
     tx: &mut W,
     rx: &mut R,
     cancel: &mut CancelToken,
@@ -1185,7 +1221,7 @@ where
     let mut resumed = 0u64;
     let serial = prepared.serial.clone();
     let (name, size, mtime) = (prepared.name.clone(), prepared.size, prepared.mtime_ns);
-    let mut progress = |n| reg.progress(id, n);
+    let mut progress = |n| reg.progress(id, base + n);
     let result = tokio::select! {
         r = async {
             // Take our turn on a file shared with other sends, then start from its beginning.
@@ -1216,7 +1252,7 @@ where
                     name: name.clone(),
                     size,
                     resume_key: key,
-                    folder: None,
+                    folder: folder.cloned(),
                 };
                 klip_net::file::send_file_v2_offset(&v2, &mut prepared.file, tx, rx, &mut progress, &mut resumed).await
             } else {
@@ -1254,8 +1290,19 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let (result, _) =
-        send_attempt(&mut prepared, id, version, false, tx, rx, &mut cancel, reg).await;
+    let (result, _) = send_attempt(
+        &mut prepared,
+        id,
+        version,
+        false,
+        None,
+        0,
+        tx,
+        rx,
+        &mut cancel,
+        reg,
+    )
+    .await;
     finish_send(reg, id, &result);
     result
 }

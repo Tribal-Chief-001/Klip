@@ -7,6 +7,7 @@
 pub mod config;
 pub mod engine;
 pub mod files;
+pub mod folders;
 pub use files::human_size;
 pub use transfers::started_or_error;
 pub mod history;

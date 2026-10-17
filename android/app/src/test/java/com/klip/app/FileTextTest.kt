@@ -18,6 +18,11 @@ class FileTextTest {
         assertEquals("Received 1 file from Laptop (3.0 MiB)", FileText.received("Laptop", 3L * 1024 * 1024))
     }
 
+    @Test fun several_files_from_one_device_become_one_notice() {
+        assertEquals("Received 1 file from Laptop (3.0 MiB)", FileText.receivedBatch("Laptop", 1, 3L * 1024 * 1024))
+        assertEquals("Received 12 files from Laptop (40.0 MiB)", FileText.receivedBatch("Laptop", 12, 40L * 1024 * 1024))
+    }
+
     @Test fun progress_line_counts_files_and_percent() {
         val sending = FileText.Row(outgoing = true, size = 100, done = 45, running = true)
         assertEquals("Sending 1 file, 45%", FileText.progress(listOf(sending)))

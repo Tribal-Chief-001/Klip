@@ -26,6 +26,22 @@ object FileReceiver {
     const val CHANNEL = "klip_files"
     private val nextNotification = AtomicInteger(41000)
 
+    /** Files from one device that arrive close together (a folder) share one notification that counts up. */
+    private class Run(val id: Int, var count: Int, var bytes: Long, var lastMs: Long)
+    private val runs = HashMap<String, Run>()
+    private const val RUN_GAP_MS = 15_000L
+
+    @Synchronized
+    private fun noticeFor(from: String, size: Long): Pair<Int, String> {
+        val now = System.currentTimeMillis()
+        val run = runs[from]?.takeIf { now - it.lastMs < RUN_GAP_MS }
+            ?: Run(nextNotification.getAndIncrement(), 0, 0, now).also { runs[from] = it }
+        run.count++
+        run.bytes += size
+        run.lastMs = now
+        return run.id to FileText.receivedBatch(from, run.count, run.bytes)
+    }
+
     fun onReceived(ctx: Context, stagedPath: String, name: String, size: Long, from: String, relDir: String) {
         val app = ctx.applicationContext
         try {
@@ -35,7 +51,8 @@ object FileReceiver {
             if (copyToDownloads(app, staged, shown, rel)) {
                 staged.delete()
                 pruneEmptyParents(app, staged.parentFile)
-                notify(app, FileText.received(from, size), downloads(app))
+                val (id, text) = noticeFor(from, size)
+                notify(app, text, downloads(app), id)
             } else {
                 notify(app, "Received a file from $from but could not save it to Downloads. It is kept inside Klip.", openKlip(app))
             }
@@ -122,7 +139,7 @@ object FileReceiver {
         )
     }
 
-    private fun notify(ctx: Context, text: String, tap: PendingIntent) {
+    private fun notify(ctx: Context, text: String, tap: PendingIntent, id: Int = nextNotification.getAndIncrement()) {
         ensureChannel(ctx)
         val n = NotificationCompat.Builder(ctx, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_klip)
@@ -133,7 +150,7 @@ object FileReceiver {
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .build()
-        ctx.getSystemService(NotificationManager::class.java).notify(nextNotification.getAndIncrement(), n)
+        ctx.getSystemService(NotificationManager::class.java).notify(id, n)
     }
 
     /**

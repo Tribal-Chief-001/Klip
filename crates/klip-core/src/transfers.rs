@@ -202,17 +202,24 @@ impl SyncCoordinator {
             .await
     }
 
-    async fn send_to_targets(
-        self: &Arc<Self>,
-        source: Source,
-        to: Option<String>,
-    ) -> Vec<Result<TransferInfo, String>> {
+    /// The devices a send goes to (all of them, or the one `to` names: a name or the start of its fingerprint) and
+    /// which of them are connected right now.
+    fn select_targets(
+        &self,
+        to: &Option<String>,
+    ) -> Result<
+        (
+            Vec<klip_net::PeerRecord>,
+            std::collections::HashSet<EndpointId>,
+        ),
+        String,
+    > {
         let peers = self.net.peers();
         if peers.is_empty() {
-            return vec![Err("No linked devices. Run `klip pair` first.".to_string())];
+            return Err("No linked devices. Run `klip pair` first.".to_string());
         }
         let norm = |s: &str| s.replace('-', "").to_uppercase();
-        let targets: Vec<_> = match &to {
+        let targets: Vec<_> = match to {
             None => peers,
             Some(wanted) => {
                 let wanted = wanted.trim();
@@ -225,18 +232,219 @@ impl SyncCoordinator {
                     })
                     .collect();
                 if hits.is_empty() {
-                    return vec![Err(format!("no paired device matches '{wanted}'"))];
+                    return Err(format!("no paired device matches '{wanted}'"));
                 }
                 hits
             }
         };
-        let connected: std::collections::HashSet<EndpointId> = self
+        let connected = self
             .net
             .peer_statuses()
             .into_iter()
             .filter(|s| s.connected)
             .map(|s| s.id)
             .collect();
+        Ok((targets, connected))
+    }
+
+    /// A folder: one row per device, files sent one after another (each opened only when its turn comes), a failing
+    /// file does not stop the others, a cancel stops it between (or inside) files.
+    async fn send_folder(
+        self: &Arc<Self>,
+        path: PathBuf,
+        to: Option<String>,
+    ) -> Vec<Result<TransferInfo, String>> {
+        let (targets, connected) = match self.select_targets(&to) {
+            Ok(selected) => selected,
+            Err(why) => return vec![Err(why)],
+        };
+        let root = path.clone();
+        let walked = match tokio::task::spawn_blocking(move || crate::folders::walk(&root)).await {
+            Ok(Ok(w)) => Arc::new(w),
+            Ok(Err(why)) => return vec![Err(format!("cannot send {}: {why}", path.display()))],
+            Err(e) => return vec![Err(e.to_string())],
+        };
+        let mut answers = Vec::new();
+        for peer in targets {
+            if !connected.contains(&peer.id) {
+                answers.push(Err(format!("{} is not connected right now", peer.name)));
+                continue;
+            }
+            let mut id = [0u8; 16];
+            rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut id);
+            let mut token = self.transfers.begin(
+                &peer.name,
+                TransferDirection::Sending,
+                id,
+                &walked.top,
+                walked.total,
+                TransferState::Waiting,
+            );
+            self.transfers.tag_node(id, node_of(&peer.id));
+            let (me, lock, walked) = (
+                Arc::clone(self),
+                self.send_lock(node_of(&peer.id)),
+                Arc::clone(&walked),
+            );
+            let (peer_id, node_peer) = (peer.id, peer.name.clone());
+            tokio::spawn(async move {
+                let _turn = tokio::select! {
+                    turn = lock.lock() => turn,
+                    _ = token.cancelled() => {
+                        me.transfers.finish(id, TransferState::Cancelled, Some("cancelled".into()), None);
+                        return;
+                    }
+                };
+                me.run_folder(peer_id, &node_peer, id, &walked, &mut token)
+                    .await;
+            });
+            answers.push(
+                self.transfers
+                    .list()
+                    .into_iter()
+                    .rev()
+                    .find(|t| t.id == id)
+                    .ok_or_else(|| "the transfer could not be started".to_string()),
+            );
+        }
+        answers
+    }
+
+    async fn run_folder(
+        &self,
+        peer_id: EndpointId,
+        node_peer: &str,
+        id: [u8; 16],
+        walked: &crate::folders::Walked,
+        token: &mut crate::files::CancelToken,
+    ) {
+        let mut batch = [0u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut batch);
+        let (mut failed, mut first_error, mut base) = (0usize, None::<String>, 0u64);
+        for entry in &walked.entries {
+            if token.is_cancelled() {
+                self.transfers
+                    .finish(id, TransferState::Cancelled, Some("cancelled".into()), None);
+                return;
+            }
+            let place = klip_net::file::FolderPlace {
+                batch,
+                top: walked.top.clone(),
+                rel: entry.rel.clone(),
+            };
+            let outcome = self
+                .send_one_of_folder(peer_id, id, entry, &place, base, token)
+                .await;
+            match outcome {
+                Ok(()) => base += entry.size,
+                Err(FileError::Cancelled) => {
+                    self.transfers.finish(
+                        id,
+                        TransferState::Cancelled,
+                        Some("cancelled".into()),
+                        None,
+                    );
+                    return;
+                }
+                Err(FileError::Protocol(_))
+                | Err(FileError::Rejected {
+                    code: RejectCode::Disabled,
+                    ..
+                }) if failed == 0 && base == 0 => {
+                    // The very first file already says this device cannot take the folder: stop here.
+                    let why = outcome.err().map(|e| e.to_string()).unwrap_or_default();
+                    self.transfers.finish(
+                        id,
+                        TransferState::Failed,
+                        Some(format!("{node_peer}: {why}")),
+                        None,
+                    );
+                    return;
+                }
+                Err(e) => {
+                    failed += 1;
+                    base += entry.size; // keep the bar honest: this file's share is accounted for
+                    self.transfers.progress(id, base);
+                    first_error.get_or_insert_with(|| e.to_string());
+                }
+            }
+        }
+        if failed == 0 {
+            self.transfers.finish(id, TransferState::Done, None, None);
+        } else {
+            let total = walked.entries.len();
+            let why = first_error.unwrap_or_default();
+            self.transfers.finish(
+                id,
+                TransferState::Failed,
+                Some(format!("{failed} of {total} files failed: {why}")),
+                None,
+            );
+        }
+    }
+
+    /// One file of a folder, with the same retry from zero as a single file. Needs a version 2 device.
+    async fn send_one_of_folder(
+        &self,
+        peer_id: EndpointId,
+        row: [u8; 16],
+        entry: &crate::folders::FolderEntry,
+        place: &klip_net::file::FolderPlace,
+        base: u64,
+        token: &mut crate::files::CancelToken,
+    ) -> Result<(), FileError> {
+        let mut prepared = prepare_send(&entry.path)
+            .await
+            .map_err(|e| FileError::Io(format!("cannot read {}: {e}", entry.path.display())))?;
+        let mut fresh_key = false;
+        loop {
+            let mut streams = self
+                .net
+                .open_file_stream(peer_id)
+                .await
+                .map_err(|e| FileError::Io(e.to_string()))?;
+            if streams.version() < 2 {
+                streams.close();
+                return Err(FileError::Protocol(
+                    "the other device cannot receive a folder: update Klip on it".into(),
+                ));
+            }
+            let (result, resumed) = send_attempt(
+                &mut prepared,
+                row,
+                2,
+                fresh_key,
+                Some(place),
+                base,
+                &mut streams.tx,
+                &mut streams.rx,
+                token,
+                &self.transfers,
+            )
+            .await;
+            streams.close();
+            if resumed > 0 && !fresh_key && matches!(result, Err(FileError::Peer(_))) {
+                fresh_key = true;
+                continue;
+            }
+            return result;
+        }
+    }
+
+    async fn send_to_targets(
+        self: &Arc<Self>,
+        source: Source,
+        to: Option<String>,
+    ) -> Vec<Result<TransferInfo, String>> {
+        if let Source::Path(path) = &source {
+            if tokio::fs::metadata(path).await.is_ok_and(|m| m.is_dir()) {
+                return self.send_folder(path.clone(), to).await;
+            }
+        }
+        let (targets, connected) = match self.select_targets(&to) {
+            Ok(selected) => selected,
+            Err(why) => return vec![Err(why)],
+        };
         let mut answers = Vec::new();
         for peer in targets {
             if !connected.contains(&peer.id) {
@@ -315,6 +523,8 @@ impl SyncCoordinator {
                                 id,
                                 streams.version(),
                                 fresh_key,
+                                None,
+                                0,
                                 &mut streams.tx,
                                 &mut streams.rx,
                                 &mut token,

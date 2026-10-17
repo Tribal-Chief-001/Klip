@@ -60,26 +60,53 @@ pub fn say(text: &str) {
 }
 
 /// Never the file's name: it can be private and notifications show on a lock screen.
-fn file_body(from: &str, size: u64) -> String {
+fn file_body(from: &str, count: usize, size: u64) -> String {
+    let files = if count == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{count} files")
+    };
     format!(
-        "Received 1 file from {} ({})",
+        "Received {files} from {} ({})",
         escape_markup(from),
         human_size(size)
     )
 }
 
+/// Files from one device that arrive within this time of each other (a folder) make one notification.
+const FILE_NOTICE_WINDOW: Duration = Duration::from_secs(2);
+
 pub fn file_hook() -> FileReceivedHook {
-    Arc::new(|from: &str, _path: &std::path::Path, size: u64| {
-        run(
-            "notify-send",
-            &[
-                "--app-name=Klip".to_string(),
-                "--expire-time=10000".to_string(),
-                "--".to_string(),
-                "Klip".to_string(),
-                file_body(from, size),
-            ],
-        )
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    let pending: Arc<Mutex<HashMap<String, (usize, u64)>>> = Arc::default();
+    Arc::new(move |from: &str, _path: &std::path::Path, size: u64| {
+        let first = {
+            let mut p = pending.lock().unwrap();
+            let entry = p.entry(from.to_string()).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += size;
+            entry.0 == 1
+        };
+        if first {
+            let (pending, from) = (Arc::clone(&pending), from.to_string());
+            std::thread::spawn(move || {
+                std::thread::sleep(FILE_NOTICE_WINDOW);
+                let (count, bytes) = pending.lock().unwrap().remove(&from).unwrap_or((0, 0));
+                if count > 0 {
+                    run(
+                        "notify-send",
+                        &[
+                            "--app-name=Klip".to_string(),
+                            "--expire-time=10000".to_string(),
+                            "--".to_string(),
+                            "Klip".to_string(),
+                            file_body(&from, count, bytes),
+                        ],
+                    );
+                }
+            });
+        }
     })
 }
 
@@ -113,8 +140,12 @@ mod tests {
     #[test]
     fn the_file_notice_names_the_device_and_size_but_not_the_file() {
         assert_eq!(
-            file_body("<Pixel>", 3 * 1024 * 1024),
+            file_body("<Pixel>", 1, 3 * 1024 * 1024),
             "Received 1 file from &lt;Pixel&gt; (3.0 MiB)"
+        );
+        assert_eq!(
+            file_body("Pixel", 12, 40 * 1024 * 1024),
+            "Received 12 files from Pixel (40.0 MiB)"
         );
     }
 

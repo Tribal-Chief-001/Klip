@@ -75,6 +75,19 @@ fn duplicate_fd(_fd: i32) -> Result<std::fs::File, KlipError> {
     Err(fail("file descriptors are only available on Android"))
 }
 
+/// The folders between the staging folder and a received file (`Trip/Day 1`), or `""` for a single file.
+fn rel_dir_of(incoming: &std::path::Path, file: &std::path::Path) -> String {
+    file.parent()
+        .and_then(|dir| dir.strip_prefix(incoming).ok())
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default()
+}
+
 fn fail<E: std::fmt::Display>(e: E) -> KlipError {
     KlipError::Failed {
         reason: e.to_string(),
@@ -346,12 +359,14 @@ impl KlipEngine {
             ))
             .map_err(fail)?;
         let file_bridge = Arc::clone(&driver.bridge);
+        let staging = std::path::Path::new(&data_dir).join("incoming");
         core.sync.set_file_received_hook(Arc::new(
             move |from: &str, path: &std::path::Path, size: u64| {
-                let (bridge, from, path) = (
+                let (bridge, from, path, staging) = (
                     Arc::clone(&file_bridge),
                     from.to_string(),
                     path.to_path_buf(),
+                    staging.clone(),
                 );
                 // A copy into Downloads can take seconds: never on the engine's two worker threads.
                 tokio::task::spawn_blocking(move || {
@@ -364,7 +379,7 @@ impl KlipEngine {
                         name,
                         size,
                         from,
-                        String::new(),
+                        rel_dir_of(&staging, &path),
                     );
                 });
             },
@@ -611,5 +626,26 @@ mod android_context {
             std::mem::forget(global);
             unsafe { ndk_context::initialize_android_context(vm_ptr, ctx_ptr) };
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rel_dir_of;
+    use std::path::Path;
+
+    #[test]
+    fn the_folder_of_a_received_file_is_relative_to_the_staging_folder() {
+        let staging = Path::new("/data/files/incoming");
+        assert_eq!(rel_dir_of(staging, &staging.join("a.txt")), "");
+        assert_eq!(
+            rel_dir_of(staging, &staging.join("Trip/Day 1/a.txt")),
+            "Trip/Day 1"
+        );
+        assert_eq!(
+            rel_dir_of(staging, Path::new("/elsewhere/a.txt")),
+            "",
+            "outside the folder: no folder"
+        );
     }
 }

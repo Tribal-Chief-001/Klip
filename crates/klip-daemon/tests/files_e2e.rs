@@ -499,8 +499,13 @@ async fn an_offline_device_a_missing_file_and_an_unknown_name_are_reported_not_q
         nobody[0].as_ref().unwrap_err().contains("no paired device"),
         "{nobody:?}"
     );
-    let dir = a.engine.sync.send_file(a.dir.clone(), None).await;
-    assert!(dir[0].is_err(), "a folder cannot be sent: {dir:?}");
+    let empty = a.dir.join("empty-folder");
+    std::fs::create_dir_all(&empty).unwrap();
+    let dir = a.engine.sync.send_file(empty, None).await;
+    assert!(
+        dir[0].as_ref().unwrap_err().contains("no files"),
+        "an empty folder is refused: {dir:?}"
+    );
     b.stop().await;
     assert!(
         wait_until(30, || !a
@@ -1041,4 +1046,159 @@ async fn unpairing_the_sender_on_the_receiving_side_deletes_what_it_left() {
         "{:?}",
         files_in(&incoming)
     );
+}
+
+/// A folder `Trip` with nested files; returns its path and the (relative path, bytes) of every file.
+fn make_folder(root: &Path, files: usize) -> (PathBuf, Vec<(String, Vec<u8>)>) {
+    let top = root.join("Trip");
+    let mut all = Vec::new();
+    for i in 0..files {
+        let rel = match i % 3 {
+            0 => format!("file{i}.txt"),
+            1 => format!("Day {}/img{i}.jpg", i % 5),
+            _ => format!("Day {}/raw/shot{i}.cr2", i % 5),
+        };
+        let bytes: Vec<u8> = (0..(1000 + i * 37))
+            .map(|n| ((n * 7 + i) % 251) as u8)
+            .collect();
+        let path = top.join(&rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        all.push((rel, bytes));
+    }
+    (top, all)
+}
+
+#[tokio::test]
+async fn a_folder_arrives_with_its_structure_in_one_new_folder_and_again_as_a_second_one() {
+    let (a, _b, incoming) = two_paired("folder1", |_| {}).await;
+    let (top, files) = make_folder(&a.dir.join("out"), 30);
+    let total: u64 = files.iter().map(|(_, b)| b.len() as u64).sum();
+    let mut answers = a.engine.sync.send_file(top.clone(), None).await;
+    let row = answers.remove(0).expect("the folder send starts");
+    assert_eq!((row.name.as_str(), row.size), ("Trip", total));
+    let done = wait_transfer(&a, 90, "the folder", |t| t.id == row.id && finished(t)).await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(done.done, total);
+    for (rel, bytes) in &files {
+        assert_eq!(
+            &std::fs::read(incoming.join("Trip").join(rel)).unwrap(),
+            bytes,
+            "{rel}"
+        );
+    }
+    assert!(
+        files_in(&incoming).iter().all(|n| !n.starts_with(".klip-")),
+        "{:?}",
+        files_in(&incoming)
+    );
+
+    let again = a.engine.sync.send_file(top, None).await.remove(0).unwrap();
+    wait_transfer(&a, 90, "the second folder", |t| {
+        t.id == again.id && finished(t)
+    })
+    .await;
+    assert_eq!(files_in(&incoming), ["Trip", "Trip (2)"]);
+    for (rel, bytes) in &files {
+        assert_eq!(
+            &std::fs::read(incoming.join("Trip (2)").join(rel)).unwrap(),
+            bytes
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn one_unreadable_file_fails_only_that_file_and_the_row_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+    let (a, _b, incoming) = two_paired("folder2", |_| {}).await;
+    let (top, files) = make_folder(&a.dir.join("out"), 9);
+    let bad = top.join(&files[4].0);
+    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let row = a.engine.sync.send_file(top, None).await.remove(0).unwrap();
+    let done = wait_transfer(&a, 60, "the folder", |t| t.id == row.id && finished(t)).await;
+    assert_eq!(done.state, TransferState::Failed, "{done:?}");
+    assert!(
+        done.error
+            .as_deref()
+            .unwrap()
+            .starts_with("1 of 9 files failed"),
+        "{done:?}"
+    );
+    for (i, (rel, bytes)) in files.iter().enumerate() {
+        let path = incoming.join("Trip").join(rel);
+        if i == 4 {
+            assert!(!path.exists());
+        } else {
+            assert_eq!(&std::fs::read(&path).unwrap(), bytes, "{rel}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_folder_stops_it_between_files() {
+    let (a, _b, incoming) = two_paired("folder3", |_| {}).await;
+    let (top, _files) = make_folder(&a.dir.join("out"), 6);
+    make_sparse(&top, "zzz-huge.bin", 2 * 1024 * 1024 * 1024); // sorted last: the small ones go first
+    let row = a.engine.sync.send_file(top, None).await.remove(0).unwrap();
+    wait_transfer(&a, 60, "the huge file to move", |t| {
+        t.id == row.id && t.done > 3_000_000 + 20 * 1024 * 1024
+    })
+    .await;
+    assert!(a.engine.sync.cancel_transfer(row.id));
+    let done = wait_transfer(&a, 30, "the cancel", |t| t.id == row.id && finished(t)).await;
+    assert_eq!(done.state, TransferState::Cancelled, "{done:?}");
+    assert!(
+        incoming.join("Trip").join("file0.txt").exists(),
+        "what had arrived stays"
+    );
+    assert!(!incoming.join("Trip").join("zzz-huge.bin").exists());
+}
+
+#[tokio::test]
+async fn a_hostile_folder_place_from_a_raw_stream_stays_inside_the_top_folder() {
+    use klip_net::file::{send_file_v2, FileHeaderV2, FolderPlace};
+    let (a, _b, incoming) = two_paired("folder4", |_| {}).await;
+    let b_id = a.engine.sync.net.peers()[0].id;
+    let mut streams = a.engine.sync.net.open_file_stream(b_id).await.unwrap();
+    let place = FolderPlace {
+        batch: [7; 16],
+        top: "../../Escape".into(),
+        rel: vec!["..".into(), "..".into(), "x/../y".into()],
+    };
+    let header = FileHeaderV2 {
+        version: 2,
+        id: [1; 16],
+        name: "../../evil.txt".into(),
+        size: 100,
+        resume_key: [0; 32],
+        folder: Some(place),
+    };
+    send_file_v2(
+        &header,
+        &[1u8; 100][..],
+        &mut streams.tx,
+        &mut streams.rx,
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    streams.close();
+    let mut found = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            if e.path().is_dir() {
+                walk(&e.path(), out)
+            } else {
+                out.push(e.path())
+            }
+        }
+    }
+    walk(incoming.parent().unwrap(), &mut found);
+    let landed: Vec<_> = found
+        .iter()
+        .filter(|p| p.file_name().is_some_and(|n| n == "evil.txt"))
+        .collect();
+    assert_eq!(landed.len(), 1, "{found:?}");
+    assert!(landed[0].starts_with(&incoming), "{:?}", landed[0]);
 }
