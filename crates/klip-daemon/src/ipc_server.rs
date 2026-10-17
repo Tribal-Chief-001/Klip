@@ -5,8 +5,9 @@ use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
 use klip_proto::ipc::{
     deserialize_ipc_msg, max_request_bytes, serialize_ipc_msg, ConfigInfo, HelloInfo, IpcRequest,
-    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_FILE_TRANSFER, CAP_SHARE_IMAGE,
-    CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
+    IpcResponse, TransferDirection, TransferInfo, TransferState, CAP_CLEAR_HISTORY,
+    CAP_COPY_TO_CLIPBOARD, CAP_FILE_TRANSFER, CAP_SHARE_IMAGE, CAP_UNPAIR_ALL,
+    IPC_PROTOCOL_VERSION,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -401,8 +402,13 @@ impl IpcServer {
                         path.display()
                     ))
                 } else {
+                    let file_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     let answers = sync.send_file(path, to).await;
-                    let (mut started, mut errors) = (Vec::new(), Vec::new());
+                    let mut started = Vec::new();
+                    let mut errors = Vec::new();
                     for a in answers {
                         match a {
                             Ok(t) => started.push(t),
@@ -412,6 +418,23 @@ impl IpcServer {
                     if started.is_empty() {
                         IpcResponse::Error(errors.join("; "))
                     } else {
+                        // A device that could not be reached is told as a transfer that has failed
+                        // already, so the person sees it next to the ones that started.
+                        for (i, error) in errors.into_iter().enumerate() {
+                            started.push(TransferInfo {
+                                id: [0xFF; 16].map(|b| b ^ i as u8),
+                                peer: "device".into(),
+                                direction: TransferDirection::Sending,
+                                name: file_name.clone(),
+                                size: 0,
+                                done: 0,
+                                state: TransferState::Failed,
+                                error: Some(error),
+                                saved_to: None,
+                                started_ms: 0,
+                                finished_ms: Some(0),
+                            });
+                        }
                         IpcResponse::TransfersStarted(started)
                     }
                 }

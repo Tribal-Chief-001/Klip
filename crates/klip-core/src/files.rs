@@ -446,6 +446,70 @@ impl TransferRegistry {
         }
     }
 
+    /// Stop every running transfer (the daemon is shutting down).
+    pub fn cancel_all(&self) {
+        for entry in self.entries.lock().unwrap().iter() {
+            if is_running(entry.info.state) {
+                entry.cancel.send_replace(true);
+            }
+        }
+    }
+
+    pub fn running(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| is_running(e.info.state))
+            .count()
+    }
+
+    /// `begin` for an incoming transfer, but only if the limits still hold: the check and the entry are
+    /// one step, so transfers arriving on different threads cannot all slip under the limit.
+    pub fn begin_incoming(
+        &self,
+        peer: &str,
+        id: [u8; 16],
+        name: &str,
+        size: u64,
+        max_total: usize,
+        max_per_peer: usize,
+    ) -> Option<CancelToken> {
+        let (cancel, token) = watch::channel(false);
+        let mut entries = self.entries.lock().unwrap();
+        let incoming = |e: &&Entry| {
+            e.info.direction == TransferDirection::Receiving && is_running(e.info.state)
+        };
+        if entries.iter().filter(incoming).count() >= max_total
+            || entries
+                .iter()
+                .filter(incoming)
+                .filter(|e| e.info.peer == peer)
+                .count()
+                >= max_per_peer
+        {
+            return None;
+        }
+        entries.push(Entry {
+            info: TransferInfo {
+                id,
+                peer: peer.to_string(),
+                direction: TransferDirection::Receiving,
+                name: name.to_string(),
+                size,
+                done: 0,
+                state: TransferState::Active,
+                error: None,
+                saved_to: None,
+                started_ms: now_ms(),
+                finished_ms: None,
+            },
+            cancel,
+        });
+        Self::trim(&mut entries);
+        Some(CancelToken(token))
+    }
+
     /// Stop every running transfer with a device (it was unpaired).
     pub fn cancel_peer(&self, peer: &str) -> usize {
         let entries = self.entries.lock().unwrap();
@@ -567,7 +631,9 @@ where
     W: AsyncWrite + Unpin,
 {
     let header = incoming.header().clone();
-    let id = header.id;
+    // Our own id: the sender's is only a claim, and two transfers with one id would share a registry entry.
+    let mut id = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut id);
     let name = sanitize_file_name(&header.name);
     let refuse = |code: RejectCode, text: String| {
         reg.begin(
@@ -599,14 +665,22 @@ where
             return Err(FileError::Rejected { code, text });
         }
     };
-    let mut cancel = reg.begin(
+    let Some(mut cancel) = reg.begin_incoming(
         peer,
-        TransferDirection::Receiving,
         id,
         &name,
         header.size,
-        TransferState::Active,
-    );
+        policy.max_incoming,
+        policy.max_incoming_per_peer,
+    ) else {
+        part.discard().await;
+        let (code, text) = refuse(
+            RejectCode::Busy,
+            "this device is already receiving other files; try again in a moment".into(),
+        );
+        incoming.reject(code, &text).await;
+        return Err(FileError::Rejected { code, text });
+    };
     let mut progress = |n| reg.progress(id, n);
     let outcome = tokio::select! {
         r = incoming.accept(part.file(), &mut progress) => r,
@@ -656,6 +730,10 @@ pub struct PreparedFile {
 }
 
 pub async fn prepare_send(path: &Path) -> io::Result<PreparedFile> {
+    // Look before opening: opening a FIFO would block until someone writes to it.
+    if !tokio::fs::metadata(path).await?.is_file() {
+        return Err(io::Error::other("only regular files can be sent"));
+    }
     let file = tokio::fs::File::open(path).await?;
     let meta = file.metadata().await?;
     if !meta.is_file() {
@@ -1217,7 +1295,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(reg.list()[0].done > 0, "the transfer is running");
-        assert!(reg.cancel([30; 16]));
+        assert!(reg.cancel(reg.list()[0].id));
         let got = tokio::time::timeout(Duration::from_secs(5), receiver)
             .await
             .unwrap()
@@ -1291,6 +1369,92 @@ mod tests {
         assert_eq!(reg.cancel_peer("Vivo"), 1);
         assert!(a.is_cancelled() && !b.is_cancelled());
         assert!(!reg.cancel([9; 16]), "an unknown id is not an error");
+    }
+
+    #[tokio::test]
+    async fn a_fifo_is_refused_at_once_instead_of_blocking() {
+        let dir = temp("fifo");
+        let fifo = dir.join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let r = tokio::time::timeout(Duration::from_secs(2), prepare_send(&fifo)).await;
+        assert!(
+            matches!(r, Ok(Err(_))),
+            "{:?}",
+            r.map(|r| r.map(|p| p.name))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_peer_reusing_a_transfer_id_gets_its_own_entry() {
+        let dir = temp("reuse");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        for id in [3u8, 11] {
+            reg.begin(
+                "Vivo",
+                TransferDirection::Receiving,
+                [id; 16],
+                "a",
+                1,
+                TransferState::Active,
+            );
+        }
+        let (sent, _) = exchange(&p, &reg, "Vivo", 3, "c.bin", data(10)).await;
+        assert!(matches!(
+            sent,
+            Err(FileError::Rejected {
+                code: RejectCode::Busy,
+                ..
+            })
+        ));
+        let ids: std::collections::HashSet<_> = reg.list().iter().map(|t| t.id).collect();
+        assert_eq!(
+            ids.len(),
+            3,
+            "the refusal must not share the running transfer's id"
+        );
+        assert!(
+            reg.cancel([3; 16]),
+            "the running one is still running and can be stopped"
+        );
+    }
+
+    #[test]
+    fn the_incoming_limit_is_checked_and_taken_in_one_step() {
+        let reg = TransferRegistry::new();
+        let go = |peer: &str, n: u8| reg.begin_incoming(peer, [n; 16], "f", 1, 3, 2);
+        assert!(go("A", 1).is_some() && go("A", 2).is_some());
+        assert!(go("A", 3).is_none(), "two from one device");
+        assert!(go("B", 4).is_some());
+        assert!(go("C", 5).is_none(), "three in all");
+        reg.finish([1; 16], TransferState::Done, None, None);
+        assert!(go("C", 6).is_some(), "a finished one frees its place");
+    }
+
+    #[test]
+    fn cancel_all_stops_every_running_transfer() {
+        let reg = TransferRegistry::new();
+        let mut a = reg.begin(
+            "A",
+            TransferDirection::Sending,
+            [1; 16],
+            "x",
+            1,
+            TransferState::Waiting,
+        );
+        let mut b = reg.begin(
+            "B",
+            TransferDirection::Receiving,
+            [2; 16],
+            "y",
+            1,
+            TransferState::Active,
+        );
+        assert_eq!(reg.running(), 2);
+        reg.cancel_all();
+        assert!(a.is_cancelled() && b.is_cancelled());
+        let _ = (&mut a, &mut b);
     }
 
     #[tokio::test]

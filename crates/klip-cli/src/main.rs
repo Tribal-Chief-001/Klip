@@ -296,12 +296,22 @@ async fn send_files(
     }
     if no_wait {
         for t in &started {
-            println!(
-                "{} {}  [{}]",
-                "…".cyan().bold(),
-                describe(t),
-                short_id(&t.id)
-            );
+            if is_running(t) {
+                println!(
+                    "{} {}  [{}]",
+                    "…".cyan().bold(),
+                    describe(t),
+                    short_id(&t.id)
+                );
+            } else {
+                eprintln!(
+                    "{} {}: {}",
+                    "✗".red().bold(),
+                    describe(t),
+                    t.error.as_deref().unwrap_or("failed")
+                );
+                problems += 1;
+            }
         }
     } else {
         problems += wait_for(&started).await?;
@@ -330,7 +340,12 @@ async fn wait_for(started: &[TransferInfo]) -> AnyResult<usize> {
             if reported.contains(&s.id) {
                 continue;
             }
-            let Some(t) = all.iter().find(|t| t.id == s.id) else {
+            // A device that could not be reached comes back already failed and is not in the list.
+            let Some(t) = all
+                .iter()
+                .find(|t| t.id == s.id)
+                .or_else(|| (!is_running(s)).then_some(s))
+            else {
                 eprintln!(
                     "{} {}: Klip lost track of this transfer",
                     "✗".red().bold(),

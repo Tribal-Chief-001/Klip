@@ -602,3 +602,105 @@ async fn the_control_socket_lists_the_capability_and_starts_lists_and_cancels_tr
         IpcResponse::TransferCancelled(false)
     );
 }
+
+#[tokio::test]
+async fn cancelling_a_file_that_is_still_waiting_ends_it_at_once() {
+    let (a, _b, _incoming) = two_paired("waitcancel", |_| {}).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
+    let first = send(&a, &huge).await;
+    wait_transfer(&a, 30, "bytes to move", |t| t.done > 20 * 1024 * 1024).await;
+    let small = make_file(&a.dir.join("out"), "small.bin", 1000);
+    let second = send(&a, &small).await;
+    assert_eq!(second.state, TransferState::Waiting);
+    assert!(a.engine.sync.cancel_transfer(second.id));
+    wait_transfer(&a, 3, "the waiting one to be cancelled", |t| {
+        t.id == second.id && t.state == TransferState::Cancelled
+    })
+    .await;
+    assert!(a.engine.sync.cancel_transfer(first.id));
+    wait_transfer(&a, 20, "the first cancel", |t| {
+        t.id == first.id && finished(t)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn too_many_waiting_files_are_refused_not_held_open() {
+    let (a, _b, _incoming) = two_paired("cap", |_| {}).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
+    let first = send(&a, &huge).await;
+    wait_transfer(&a, 30, "bytes to move", |t| t.done > 1024 * 1024).await;
+    let small = make_file(&a.dir.join("out"), "s.bin", 10);
+    let mut refused = 0;
+    for _ in 0..70 {
+        if a.engine.sync.send_file(small.clone(), None).await[0].is_err() {
+            refused += 1;
+        }
+    }
+    assert_eq!(refused, 6, "64 may wait, the other 6 are told why");
+    a.engine.sync.cancel_transfer(first.id);
+    for t in a.engine.sync.transfers() {
+        a.engine.sync.cancel_transfer(t.id);
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_cannot_be_reached_is_listed_next_to_the_ones_that_started() {
+    let (a, b, _incoming) = two_paired("partial", |_| {}).await;
+    let c = start_daemon("Gamma", fresh_dir("partial-c"), false).await;
+    assert!(matches!(
+        pair(&a, &c, true).await,
+        IpcResponse::PairSuccess { .. }
+    ));
+    c.stop().await;
+    assert!(
+        wait_until(30, || {
+            a.engine
+                .sync
+                .net
+                .peer_statuses()
+                .iter()
+                .filter(|s| s.connected)
+                .count()
+                == 1
+        })
+        .await
+    );
+    let file = make_file(&a.dir.join("out"), "p.bin", 1000);
+    let IpcResponse::TransfersStarted(list) = a
+        .ipc(IpcRequest::SendFile {
+            path: file.display().to_string(),
+            to: None,
+        })
+        .await
+    else {
+        panic!("TransfersStarted")
+    };
+    assert_eq!(list.len(), 2, "{list:?}");
+    let failed: Vec<_> = list
+        .iter()
+        .filter(|t| t.state == TransferState::Failed)
+        .collect();
+    assert_eq!(failed.len(), 1);
+    assert!(
+        failed[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Gamma is not connected"),
+        "{failed:?}"
+    );
+    drop(b);
+}
+
+#[tokio::test]
+async fn stopping_the_receiving_daemon_leaves_no_partial_file() {
+    let (a, b, incoming) = two_paired("stoprecv", |_| {}).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
+    send(&a, &huge).await;
+    wait_transfer(&b, 30, "bytes to arrive", |t| t.done > 20 * 1024 * 1024).await;
+    b.engine.core.stop().await;
+    assert!(files_in(&incoming).is_empty(), "{:?}", files_in(&incoming));
+    let mine = wait_transfer(&a, 30, "the sender to give up", finished).await;
+    assert_eq!(mine.state, TransferState::Failed, "{mine:?}");
+}

@@ -5,6 +5,7 @@ use klip_net::{KlipNode, NetConfig, NetEvent, PeerRecord, RelayChoice};
 use klip_platform::driver::ClipboardDriver;
 use klip_proto::hlc::NodeId;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -119,6 +120,14 @@ impl CoreEngine {
     pub async fn stop(&self) {
         self.shutdown.trigger();
         self.sync.cancel_pairing();
+        // Let running transfers remove their partial files before the process can end.
+        self.sync.transfers.cancel_all();
+        for _ in 0..40 {
+            if self.sync.transfers.running() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         self.sync.net.shutdown().await;
         if let Some(pump) = self.pump.lock().await.take() {
             pump.abort();

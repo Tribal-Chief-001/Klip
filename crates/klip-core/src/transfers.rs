@@ -11,8 +11,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Stale `.klip-*.part` files (a transfer that died with the daemon) older than this are removed.
-pub(crate) const PARTIAL_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
+/// Stale `.klip-*.part` files (a transfer that died with the daemon) older than this are removed at
+/// start; nothing of this daemon is running then, so only a clock skew needs the margin.
+/// Files waiting for their turn each hold an open descriptor: more than this are refused.
+const MAX_WAITING_SENDS: usize = 64;
+
+pub(crate) const PARTIAL_MAX_AGE: Duration = Duration::from_secs(3600);
 
 impl SyncCoordinator {
     /// What this device accepts, from its settings.
@@ -133,10 +137,28 @@ impl SyncCoordinator {
                 answers.push(Err(format!("{} is not connected right now", peer.name)));
                 continue;
             }
+            if self
+                .transfers
+                .list()
+                .iter()
+                .filter(|t| {
+                    t.direction == TransferDirection::Sending && t.state == TransferState::Waiting
+                })
+                .count()
+                >= MAX_WAITING_SENDS
+            {
+                answers.push(Err(format!(
+                    "{MAX_WAITING_SENDS} files are already waiting to be sent; let some finish first"
+                )));
+                continue;
+            }
             // One open file per device: a file is read once per receiver, never shared.
             let prepared = match prepare_send(&path).await {
                 Ok(p) => p,
-                Err(e) => return vec![Err(format!("cannot send {}: {e}", path.display()))],
+                Err(e) => {
+                    answers.push(Err(format!("cannot send {}: {e}", path.display())));
+                    break;
+                }
             };
             let mut id = [0u8; 16];
             rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut id);
@@ -151,8 +173,21 @@ impl SyncCoordinator {
             let lock = self.send_lock(node_of(&peer.id));
             let me = Arc::clone(self);
             let (peer_id, node_peer) = (peer.id, peer.name.clone());
+            let mut token = token;
             tokio::spawn(async move {
-                let _turn = lock.lock().await;
+                // A cancel while waiting ends the wait at once and frees the open file.
+                let _turn = tokio::select! {
+                    turn = lock.lock() => turn,
+                    _ = token.cancelled() => {
+                        me.transfers.finish(
+                            id,
+                            TransferState::Cancelled,
+                            Some("cancelled".into()),
+                            None,
+                        );
+                        return;
+                    }
+                };
                 if token.is_cancelled() {
                     me.transfers.finish(
                         id,
