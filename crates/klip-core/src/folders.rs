@@ -362,7 +362,6 @@ mod tests {
             .all(|e| e.path.is_file() && e.path.starts_with(&root)));
     }
 
-    #[cfg(unix)]
     fn ext(rel: &[&str], name: &str, size: u64) -> ExternalEntry {
         ExternalEntry {
             rel: rel.iter().map(|s| s.to_string()).collect(),
