@@ -198,6 +198,7 @@ The phone takes part too: it receives into `Downloads/Klip` (switch and size lim
 
 ```bash
 klip send-file report.pdf photos/*.jpg          # to every linked device that is online
+klip send-file ~/Pictures/Trip                  # a folder: it arrives as one new folder "Trip"
 klip send-file movie.mkv --to "Pixel 8"         # to one device
 klip send-file big.iso --no-wait                # start it and return; see it with `klip transfers`
 klip transfers                                   # running and recent transfers
@@ -206,8 +207,11 @@ klip transfers --cancel 3fa9                     # stop one (the start of its id
 
 - Files arrive in `~/Downloads/Klip` on a computer (set `receive_dir` to change it). A name that is taken gets ` (2)`, ` (3)`: an existing file is never replaced. Odd or dangerous names (`../`, `CON`, trailing dots) are cleaned.
 - Each file goes over its own encrypted stream, so clips keep syncing while a big file moves. The receiver writes a hidden `.klip-….part` file, checks the BLAKE3 hash, and only then gives it its name; a failed or cancelled transfer leaves nothing behind.
-- Both devices must be online together (same rule as clips). **There is no resume in this version:** an interrupted transfer starts again from zero.
+- **A folder** is sent file by file into one new folder on the other device (`Trip`, then `Trip (2)` if you send it again). Links are not followed, only regular files go, at most 1000 files and 16 levels deep; empty folders are not sent. If one file fails the others still go and the transfer ends with "N of M files failed: ...".
+- **Resume.** If a transfer is cut (the connection drops, the other Klip restarts), send the same file again: the receiver keeps the part that arrived (at least 1 MiB, for 24 hours, a few per device) and only the rest travels; the whole file is still checked at the end, and a kept part that no longer matches is thrown away and the file is sent again from the start by itself. Your own Cancel on the receiving device, unpairing, a damaged file or a full disk delete the kept part. Needs Klip 0.9 on both devices; with an older one the file goes whole.
+- Both devices must be online together (same rule as clips).
 - The other device can refuse: `"accept_files": false`, a file over its `max_file_bytes`, not enough free disk space (it keeps 512 MiB free), or too many transfers at once. You are told why.
+- The tray shows "Sending 2 files, 45%" while files move, has **Open the Klip folder** and, on Linux with `zenity` or `kdialog` installed, **Send a file...**.
 - On Linux a desktop notice says "Received 1 file from <device> (<size>)", never the file name.
 
 ### Phone → computer (Android limits)
