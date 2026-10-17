@@ -68,7 +68,9 @@ pub fn from_entries(
     if entries.iter().any(|e| e.rel.len() > MAX_DEPTH) {
         return Err(format!("the folder is deeper than {MAX_DEPTH} levels"));
     }
-    let total = entries.iter().map(|e| e.size).sum();
+    let total = entries
+        .iter()
+        .fold(0u64, |sum, e| sum.saturating_add(e.size));
     let entries = entries
         .into_iter()
         .enumerate()
@@ -391,6 +393,25 @@ mod tests {
         );
         assert_eq!((w.entries[0].index, w.entries[1].index), (0, 1));
         assert!(w.entries.iter().all(|e| e.open.is_some()));
+    }
+
+    #[test]
+    fn sizes_a_provider_makes_up_cannot_overflow_the_total() {
+        let w = from_entries(
+            "T",
+            vec![
+                ext(&[], "a", u64::MAX),
+                ext(&[], "b", u64::MAX),
+                ext(&[], "c", 7),
+            ],
+            no_opener(),
+        )
+        .unwrap();
+        assert_eq!(
+            w.total,
+            u64::MAX,
+            "the sum saturates instead of overflowing (release builds abort on overflow)"
+        );
     }
 
     #[test]

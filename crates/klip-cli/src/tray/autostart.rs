@@ -181,6 +181,16 @@ pub fn vbs_text(exe: &str) -> Result<String, String> {
     ))
 }
 
+/// The script as the Windows Script Host reads it reliably: UTF-16 little endian with a byte order mark (a plain
+/// UTF-8 file would be read in the local code page and break a path with an accented letter).
+pub fn vbs_bytes(text: &str) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xFE];
+    for unit in text.encode_utf16() {
+        out.extend_from_slice(&unit.to_le_bytes());
+    }
+    out
+}
+
 /// The login script lives in a folder of Klip's own: `...\Klip\start-tray.vbs`.
 fn vbs_path_is_klips(path: &str) -> bool {
     let mut parts = path.rsplit(['\\', '/']);
@@ -279,22 +289,16 @@ pub fn install(exe: &str) -> Result<String, String> {
     #[cfg(windows)]
     {
         // The quiet form (a script run by wscript, no console window) when the script host exists, else the plain one.
-        let value = match (
+        // Nothing is written until the existing entry (if any) is known to be Klip's own.
+        let (value, script) = match (
             login_entry_form(script_host_available()),
             login_script_path(),
         ) {
             (LoginForm::Script, Some(vbs)) => {
                 let text = vbs_text(exe)?;
-                let value = run_value_script(&vbs.to_string_lossy())?;
-                if let Some(dir) = vbs.parent() {
-                    fs::create_dir_all(dir)
-                        .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-                }
-                fs::write(&vbs, text)
-                    .map_err(|e| format!("cannot write {}: {e}", vbs.display()))?;
-                value
+                (run_value_script(&vbs.to_string_lossy())?, Some((vbs, text)))
             }
-            _ => run_key_value(exe)?,
+            _ => (run_key_value(exe)?, None),
         };
         if let Some(existing) = current_run_value() {
             if !run_value_is_klips(&existing) {
@@ -302,6 +306,14 @@ pub fn install(exe: &str) -> Result<String, String> {
                     "the Run entry KlipTray already belongs to something else ({existing}); not replacing it"
                 ));
             }
+        }
+        if let Some((vbs, text)) = script {
+            if let Some(dir) = vbs.parent() {
+                fs::create_dir_all(dir)
+                    .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            }
+            fs::write(&vbs, vbs_bytes(&text))
+                .map_err(|e| format!("cannot write {}: {e}", vbs.display()))?;
         }
         let out = reg(&[
             "add", RUN_KEY, "/v", "KlipTray", "/t", "REG_SZ", "/d", &value, "/f",
@@ -431,6 +443,24 @@ mod tests {
         ] {
             assert!(vbs_text(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_login_script_is_utf_16_with_a_byte_order_mark_so_any_path_reads_right() {
+        let bytes = vbs_bytes("Run \"C:\\Users\\Jos\u{e9}\\klip.exe\"\r\n");
+        assert_eq!(
+            &bytes[..2],
+            &[0xFF, 0xFE],
+            "the byte order mark wscript recognises"
+        );
+        let units: Vec<u16> = bytes[2..]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(
+            String::from_utf16(&units).unwrap(),
+            "Run \"C:\\Users\\Jos\u{e9}\\klip.exe\"\r\n"
+        );
     }
 
     #[test]

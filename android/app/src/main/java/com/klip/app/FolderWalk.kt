@@ -4,6 +4,8 @@ package com.klip.app
 object FolderWalk {
     const val MAX_FILES = 1000
     const val MAX_DEPTH = 16
+    /** A tree of empty folders would cost one provider query each: stop at this many. */
+    const val MAX_DIRS = 5000
 
     /** One entry of a folder as the document provider lists it. */
     data class Child(
@@ -34,6 +36,7 @@ object FolderWalk {
                 when {
                     child.isDir -> {
                         if (!seen.add(child.id)) { skipped++; continue }
+                        if (seen.size > MAX_DIRS) { error = "the folder has more than $MAX_DIRS subfolders"; return }
                         if (rel.size + 1 > MAX_DEPTH) { error = "the folder is deeper than $MAX_DEPTH levels"; return }
                         visit(child.id, rel + FileText.safeName(child.name))
                     }

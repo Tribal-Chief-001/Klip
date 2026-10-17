@@ -6,8 +6,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
-import android.system.Os
-import android.system.OsConstants
 import android.util.Log
 import android.widget.Toast
 import java.io.File
@@ -84,48 +82,11 @@ object FileSender {
         toast(app, summary(started, devices, errors.distinct()))
     }
 
-    private fun isRegular(pfd: ParcelFileDescriptor): Boolean =
-        try { OsConstants.S_ISREG(Os.fstat(pfd.fileDescriptor).st_mode) } catch (e: Throwable) { false }
-
     private fun sendOne(app: Context, engine: uniffi.klip_android.KlipEngine, item: Item): List<uniffi.klip_android.TransferView> {
-        if (isRegular(item.pfd)) return engine.sendFileFd(item.pfd.fd, item.name)
+        if (PipeCopy.isRegular(item.pfd)) return engine.sendFileFd(item.pfd.fd, item.name)
         // A pipe from a cloud provider cannot be read twice or measured: copy it into the cache first.
-        val copy = copyToCache(app, item)
-        try {
-            return ParcelFileDescriptor.open(copy, ParcelFileDescriptor.MODE_READ_ONLY).use {
-                engine.sendFileFd(it.fd, item.name)
-            }
-        } finally {
-            // The engine works on its own duplicate: deleting the name now is safe on Linux.
-            copy.delete()
-            copy.parentFile?.delete()
-        }
-    }
-
-    private fun copyToCache(app: Context, item: Item): File {
-        val dir = File(File(app.cacheDir, "outgoing"), UUID.randomUUID().toString()).apply { mkdirs() }
-        val target = File(dir, item.name)
-        val limit = KlipRuntime.maxFileMb(app).toLong() * 1024 * 1024
-        try {
-            ParcelFileDescriptor.AutoCloseInputStream(item.pfd).use { input ->
-                target.outputStream().use { out ->
-                    val buf = ByteArray(256 * 1024)
-                    var total = 0L
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        total += n
-                        if (total > limit) throw IOException("the file is bigger than the limit (${FileText.size(limit)})")
-                        if (app.cacheDir.usableSpace < 64L * 1024 * 1024) throw IOException("not enough free space to copy the file")
-                        out.write(buf, 0, n)
-                    }
-                }
-            }
-        } catch (e: Throwable) {
-            target.delete(); dir.delete()
-            throw e
-        }
-        return target
+        val copy = PipeCopy.copyToCache(app, item.pfd, item.name, KlipRuntime.maxFileMb(app).toLong() * 1024 * 1024)
+        PipeCopy.openAndForget(copy).use { return engine.sendFileFd(it.fd, item.name) }
     }
 
     private fun waitForRoom(engine: uniffi.klip_android.KlipEngine) {

@@ -233,6 +233,12 @@ impl KeptIndex {
     }
 
     pub fn register(&self, path: PathBuf, device: Vec<u8>) {
+        let size = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        // One part that alone is over the cap is simply not kept: it must not push every older part out first.
+        if size(&path) > MAX_KEPT_BYTES {
+            let _ = fs::remove_file(&path);
+            return;
+        }
         let mut items = self.items.lock().unwrap();
         items.retain(|(p, _)| p != &path);
         items.push((path, device.clone()));
@@ -2336,10 +2342,11 @@ mod tests {
             "the oldest part is removed to get under 16 GiB"
         );
         assert!(b.exists() && c.exists());
-        // A single part over the cap is not kept at all.
+        // A single part over the cap is not kept at all, and it does not push the others out on its way.
         let huge = mk(4, 20);
         index.register(huge.clone(), b"D".to_vec());
         assert!(!huge.exists());
+        assert!(b.exists() && c.exists(), "older parts under the cap stay");
     }
 
     #[test]

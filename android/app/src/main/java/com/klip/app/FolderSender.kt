@@ -20,6 +20,32 @@ import uniffi.klip_android.TransferStateView
 object FolderSender {
     private const val TAG = "KlipFolderSender"
 
+    /** Two sends of the same tree must not release each other's persisted grant: count them. */
+    private val grants = HashMap<String, Int>()
+
+    @Synchronized
+    private fun holdGrant(resolver: android.content.ContentResolver, tree: Uri): Boolean {
+        val key = tree.toString()
+        val n = grants[key] ?: 0
+        val ok = n > 0 || runCatching {
+            resolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }.isSuccess
+        if (ok) grants[key] = n + 1
+        return ok
+    }
+
+    @Synchronized
+    private fun dropGrant(resolver: android.content.ContentResolver, tree: Uri) {
+        val key = tree.toString()
+        val n = (grants[key] ?: return) - 1
+        if (n > 0) {
+            grants[key] = n
+        } else {
+            grants.remove(key)
+            runCatching { resolver.releasePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        }
+    }
+
     fun start(ctx: Context, tree: Uri) {
         val app = ctx.applicationContext
         Thread {
@@ -35,9 +61,7 @@ object FolderSender {
 
     private fun run(app: Context, tree: Uri) {
         val resolver = app.contentResolver
-        val persisted = runCatching {
-            resolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }.isSuccess
+        val persisted = holdGrant(resolver, tree)
         try {
             val engine = KlipRuntime.engine
             if (engine == null) {
@@ -56,8 +80,16 @@ object FolderSender {
             val source = object : FolderSource {
                 override fun openFd(index: UInt): Int = try {
                     val doc = DocumentsContract.buildDocumentUriUsingTree(tree, plan.files[index.toInt()].id)
-                    // detachFd: the engine owns the descriptor from here and closes it.
-                    resolver.openFileDescriptor(doc, "r")?.detachFd() ?: -1
+                    val pfd = resolver.openFileDescriptor(doc, "r")
+                    when {
+                        pfd == null -> -1
+                        // detachFd: the engine owns the descriptor from here and closes it.
+                        PipeCopy.isRegular(pfd) -> pfd.detachFd()
+                        // A provider that serves a file as a pipe: copy it to the cache, hand over the copy.
+                        else -> PipeCopy.openAndForget(
+                            PipeCopy.copyToCache(app, pfd, plan.files[index.toInt()].name, KlipRuntime.maxFileMb(app).toLong() * 1024 * 1024)
+                        ).detachFd()
+                    }
                 } catch (e: Throwable) {
                     Log.w(TAG, "cannot open a file of the folder: ${e.message}")
                     -1
@@ -73,9 +105,7 @@ object FolderSender {
                 toast(app, "Klip: ${e.message}")
             }
         } finally {
-            if (persisted) runCatching {
-                resolver.releasePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+            if (persisted) dropGrant(resolver, tree)
         }
     }
 
@@ -83,8 +113,14 @@ object FolderSender {
     private fun waitUntilDone(engine: uniffi.klip_android.KlipEngine) {
         while (true) {
             Thread.sleep(2000)
-            val running = engine.transfers().any {
-                it.outgoing && (it.state == TransferStateView.WAITING || it.state == TransferStateView.ACTIVE)
+            // The engine was stopped or replaced meanwhile: nothing is left to wait for.
+            if (KlipRuntime.engine !== engine) return
+            val running = try {
+                engine.transfers().any {
+                    it.outgoing && (it.state == TransferStateView.WAITING || it.state == TransferStateView.ACTIVE)
+                }
+            } catch (e: Throwable) {
+                false
             }
             if (!running) return
         }

@@ -380,7 +380,7 @@ impl SyncCoordinator {
                 .await;
             match outcome {
                 Ok(()) => {
-                    base += entry.size;
+                    base = base.saturating_add(entry.size);
                     sent += 1;
                 }
                 Err(FolderFail::Stop(why)) => {
@@ -406,7 +406,7 @@ impl SyncCoordinator {
                 }
                 Err(FolderFail::File(e)) => {
                     failed += 1;
-                    base += entry.size; // keep the bar honest: this file's share is accounted for
+                    base = base.saturating_add(entry.size); // keep the bar honest: this file's share is accounted for
                     self.transfers.progress(id, base);
                     first_error.get_or_insert_with(|| e.to_string());
                 }
@@ -441,13 +441,18 @@ impl SyncCoordinator {
             Some(opener) => {
                 let (opener, index) = (Arc::clone(opener), entry.index);
                 let name = entry.name.clone();
-                tokio::task::spawn_blocking(move || {
+                let opened = tokio::task::spawn_blocking(move || {
                     opener(index).and_then(|file| PreparedFile::from_file(file, &name, None))
-                })
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()))
-                .map_err(|e| format!("cannot read {}: {e}", entry.name))
+                });
+                // A provider can block for a long time (a cloud file): a cancel must not wait for it. The thread
+                // is left to finish by itself and whatever it opens is closed when its result is dropped.
+                tokio::select! {
+                    joined = opened => joined
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r.map_err(|e| e.to_string()))
+                        .map_err(|e| format!("cannot read {}: {e}", entry.name)),
+                    _ = token.cancelled() => return Err(FolderFail::File(FileError::Cancelled)),
+                }
             }
             None => prepare_send(&entry.path)
                 .await

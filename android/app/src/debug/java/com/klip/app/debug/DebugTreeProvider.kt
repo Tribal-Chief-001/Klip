@@ -68,8 +68,15 @@ class DebugTreeProvider : DocumentsProvider() {
 
     override fun openDocument(documentId: String, mode: String, signal: CancellationSignal?): ParcelFileDescriptor {
         val d = docs[documentId] ?: throw java.io.FileNotFoundException(documentId)
+        val bytes = ByteArray(d.size.toInt()) { ((it * 17 + d.id.hashCode()) % 251).toByte() }
+        if (d.id == "d") {
+            // d.jpg comes through a pipe, like a cloud provider's file: no size, no seek.
+            val (read, write) = ParcelFileDescriptor.createPipe()
+            Thread { ParcelFileDescriptor.AutoCloseOutputStream(write).use { it.write(bytes) } }.start()
+            return read
+        }
         val f = File(context!!.cacheDir, "debug-tree-${d.id}.bin")
-        if (!f.exists() || f.length() != d.size) f.writeBytes(ByteArray(d.size.toInt()) { ((it * 17 + d.id.hashCode()) % 251).toByte() })
+        if (!f.exists() || f.length() != d.size) f.writeBytes(bytes)
         return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY)
     }
 

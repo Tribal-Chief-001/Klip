@@ -113,7 +113,12 @@ pub struct DaemonConfig {
     pub file_space_factor: u64,
     /// Speak file transfer version 2 (resume, folders). On unless you are chasing a problem: off makes this device
     /// behave like one that only has version 1 (whole files, no folders).
+    #[serde(skip_serializing_if = "is_true")]
     pub file_protocol_v2: bool,
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }
 
 impl Default for DaemonConfig {
@@ -203,6 +208,20 @@ fn default_device_name() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_switch_is_not_written_while_it_is_on_so_an_older_klip_still_reads_the_file() {
+        use super::*;
+        let json = serde_json::to_string(&DaemonConfig::default()).unwrap();
+        assert!(!json.contains("file_protocol_v2"), "{json}");
+        let off = DaemonConfig {
+            file_protocol_v2: false,
+            ..DaemonConfig::default()
+        };
+        assert!(serde_json::to_string(&off)
+            .unwrap()
+            .contains("\"file_protocol_v2\":false"));
+    }
+
     #[test]
     fn the_file_protocol_switch_defaults_on_is_read_from_json_and_unknown_keys_still_fail() {
         use super::*;

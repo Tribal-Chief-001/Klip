@@ -78,6 +78,13 @@ class FolderWalkTest {
         assertTrue(FolderWalk.plan("root", chain(17)).error!!.contains("16"))
     }
 
+    @Test fun a_tree_with_thousands_of_empty_folders_is_refused_before_it_costs_minutes() {
+        val dirs = (0..FolderWalk.MAX_DIRS).map { dir("d$it", "d$it") }
+        val plan = FolderWalk.plan("root", tree("root" to dirs + file("f", "f")))
+        assertNotNull(plan.error)
+        assertTrue(plan.error!!.contains("${FolderWalk.MAX_DIRS}"))
+    }
+
     @Test fun an_empty_tree_and_a_cycle_do_not_hang_or_crash() {
         assertTrue(FolderWalk.plan("root", tree("root" to emptyList())).error!!.contains("no files"))
         val cyc = tree("root" to listOf(dir("a", "a"), file("f", "f")), "a" to listOf(dir("root", "again")))

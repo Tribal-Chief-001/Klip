@@ -170,7 +170,7 @@ impl ClipboardDriver for LinuxClipboardDriver {
         // Try reading image (not right after an over-limit one: reading it costs a lot and a polling session would
         // do it ten times a second)
         let skip = *self.image_skip_until.lock().unwrap();
-        if !image_read_allowed(std::time::Instant::now(), skip) {
+        if !image_read_allowed(std::time::Instant::now(), skip, self.changes.is_none()) {
             return Ok(None);
         }
         if let Ok(img) = cb.get_image() {
@@ -268,8 +268,14 @@ impl ClipboardDriver for LinuxClipboardDriver {
 const OVERSIZE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// May the clipboard be asked for an image now? `skip_until` is set to the end of the backoff by `note_oversize`.
-fn image_read_allowed(now: std::time::Instant, skip_until: Option<std::time::Instant>) -> bool {
-    skip_until.is_none_or(|until| now >= until)
+/// Only a polling session needs the pause: with X11 change events an image is read once per copy, and a new copy
+/// must never be skipped (no further event would come for it).
+fn image_read_allowed(
+    now: std::time::Instant,
+    skip_until: Option<std::time::Instant>,
+    polling: bool,
+) -> bool {
+    !polling || skip_until.is_none_or(|until| now >= until)
 }
 
 #[cfg(test)]
@@ -277,21 +283,20 @@ mod oversize_tests {
     use super::{first_sight_of_oversize, image_read_allowed, OVERSIZE_BACKOFF};
 
     #[test]
-    fn an_oversize_image_is_not_read_again_for_two_seconds() {
+    fn an_oversize_image_is_not_read_again_for_two_seconds_but_only_when_polling() {
         let t0 = std::time::Instant::now();
-        assert!(image_read_allowed(t0, None), "nothing seen yet: read");
+        let ms = std::time::Duration::from_millis;
+        assert!(image_read_allowed(t0, None, true), "nothing seen yet: read");
         let until = Some(t0 + OVERSIZE_BACKOFF);
-        assert!(!image_read_allowed(
-            t0 + std::time::Duration::from_millis(100),
-            until
-        ));
-        assert!(!image_read_allowed(
-            t0 + std::time::Duration::from_millis(1999),
-            until
-        ));
+        assert!(!image_read_allowed(t0 + ms(100), until, true));
+        assert!(!image_read_allowed(t0 + ms(1999), until, true));
         assert!(
-            image_read_allowed(t0 + std::time::Duration::from_secs(2), until),
+            image_read_allowed(t0 + ms(2000), until, true),
             "after the backoff: look again"
+        );
+        assert!(
+            image_read_allowed(t0 + ms(100), until, false),
+            "with change events a new image copied right after an oversize one is still read"
         );
     }
 

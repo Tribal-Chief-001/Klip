@@ -470,8 +470,13 @@ pub fn parse_picker_output(os: Os, text: &str) -> Vec<String> {
 }
 
 /// How a dialog ended: `Ok(true)` the person cancelled, `Ok(false)` they chose (or may have), `Err` it broke.
-pub fn picker_outcome(os: Os, success: bool, stdout: &str, stderr: &str) -> Result<bool, String> {
-    if success {
+pub fn picker_outcome(
+    os: Os,
+    code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> Result<bool, String> {
+    if code == Some(0) {
         return Ok(stdout.trim().is_empty());
     }
     let why = stderr.lines().map(str::trim).find(|l| !l.is_empty());
@@ -479,8 +484,8 @@ pub fn picker_outcome(os: Os, success: bool, stdout: &str, stderr: &str) -> Resu
         // AppleScript reports a closed dialog as error -128 ("User canceled").
         Os::MacOs if stderr.contains("-128") => Ok(true),
         Os::MacOs | Os::Windows => Err(why.unwrap_or("the file dialog failed").to_string()),
-        // zenity and kdialog exit 1 with nothing printed when the dialog is closed.
-        Os::Linux if stdout.trim().is_empty() && why.is_none() => Ok(true),
+        // zenity and kdialog exit 1 with nothing printed when the dialog is closed (GTK may still warn on stderr).
+        Os::Linux if code == Some(1) && stdout.trim().is_empty() => Ok(true),
         Os::Linux => Err(why.unwrap_or("the file dialog failed").to_string()),
     }
 }
@@ -512,7 +517,7 @@ pub fn pick_files() -> Result<Vec<String>, String> {
         .map_err(|e| format!("cannot run {program}: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if picker_outcome(os, out.status.success(), &stdout, &stderr)? {
+    if picker_outcome(os, out.status.code(), &stdout, &stderr)? {
         return Ok(Vec::new());
     }
     Ok(parse_picker_output(os, &stdout))
@@ -602,7 +607,7 @@ mod tests {
         assert_eq!(
             picker_outcome(
                 Os::MacOs,
-                false,
+                Some(1),
                 "",
                 "execution error: User canceled. (-128)"
             ),
@@ -610,24 +615,35 @@ mod tests {
         );
         assert!(picker_outcome(
             Os::MacOs,
-            false,
+            Some(1),
             "",
             "execution error: Not authorized (-1743)"
         )
         .is_err());
-        assert_eq!(picker_outcome(Os::MacOs, true, "/a\n", ""), Ok(false));
-        // Linux dialogs exit 1 with nothing printed when cancelled.
-        assert_eq!(picker_outcome(Os::Linux, false, "", ""), Ok(true));
-        assert_eq!(picker_outcome(Os::Linux, true, "/a", ""), Ok(false));
+        assert_eq!(picker_outcome(Os::MacOs, Some(0), "/a\n", ""), Ok(false));
+        // Linux dialogs exit 1 with nothing printed when cancelled, even when GTK complains on stderr.
+        assert_eq!(picker_outcome(Os::Linux, Some(1), "", ""), Ok(true));
+        assert_eq!(
+            picker_outcome(
+                Os::Linux,
+                Some(1),
+                "",
+                "Gtk-WARNING **: Failed to load module \"appmenu-gtk-module\""
+            ),
+            Ok(true),
+            "a warning on stderr is not an error when the person just closed the dialog"
+        );
+        assert_eq!(picker_outcome(Os::Linux, Some(0), "/a", ""), Ok(false));
+        assert!(picker_outcome(Os::Linux, Some(255), "", "cannot open display").is_err());
         // Windows: a failed PowerShell is an error; success with no output is a cancel.
         assert!(picker_outcome(
             Os::Windows,
-            false,
+            Some(1),
             "",
             "The term 'Add-Type' is not recognized"
         )
         .is_err());
-        assert_eq!(picker_outcome(Os::Windows, true, "", ""), Ok(true));
+        assert_eq!(picker_outcome(Os::Windows, Some(0), "", ""), Ok(true));
     }
 
     #[test]

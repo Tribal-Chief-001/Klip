@@ -136,14 +136,19 @@ impl std::fmt::Display for FileError {
 
 impl std::error::Error for FileError {}
 
+/// The code of a "stream reset by peer: error N" message, read as a whole number (770 is not 77).
+fn reset_code(text: &str) -> Option<u32> {
+    let rest = text.split("reset by peer: error ").nth(1)?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
 fn io_err(e: std::io::Error) -> FileError {
     if e.kind() == std::io::ErrorKind::UnexpectedEof {
         FileError::TooShort
     } else {
         let text = e.to_string();
-        if text.contains(&format!("reset by peer: error {CANCEL_CODE}"))
-            && !text.contains(&format!("error {CANCEL_CODE}0"))
-        {
+        if reset_code(&text) == Some(CANCEL_CODE) {
             FileError::CancelledByPeer
         } else if text.contains("stopped by peer") {
             FileError::Peer("the other device stopped the transfer".into())
@@ -653,6 +658,8 @@ mod tests {
         for cut in [
             "stream reset by peer: error 0",
             "stream reset by peer: error 770",
+            "stream reset by peer: error 771",
+            "stream reset by peer: error 7",
             "connection lost",
         ] {
             let e = super::io_err(std::io::Error::other(cut));

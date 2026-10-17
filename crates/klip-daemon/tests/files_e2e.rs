@@ -1548,3 +1548,31 @@ async fn a_list_over_the_limits_is_refused_before_any_file_is_opened() {
     );
     assert_eq!(touched.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn cancelling_a_folder_ends_it_even_while_a_provider_blocks_opening_a_file() {
+    let (a, _b, _incoming) = two_paired("opener-block", |_| {}).await;
+    let (entries, _files, _paths) = external_folder(&a.dir.join("out"), 4);
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let wait = std::sync::Mutex::new(wait);
+    let opener: klip_core::folders::Opener = Arc::new(move |_| {
+        // A cloud provider that never answers: blocks until the test lets go.
+        let _ = wait.lock().unwrap().recv();
+        Err(std::io::Error::other("released"))
+    });
+    let row = a
+        .engine
+        .sync
+        .send_folder_entries("Album".into(), entries, opener, None)
+        .await
+        .remove(0)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await; // the first open is now stuck
+    assert!(a.engine.sync.cancel_transfer(row.id));
+    let done = wait_transfer(&a, 5, "the cancel to end the row", |t| {
+        t.id == row.id && finished(t)
+    })
+    .await;
+    assert_eq!(done.state, TransferState::Cancelled, "{done:?}");
+    let _ = release.send(()); // let the stuck thread go
+}
