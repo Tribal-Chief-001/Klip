@@ -75,6 +75,53 @@ pub trait ClipboardBridge: Send + Sync {
     /// Return `true` if the image is now on the clipboard. `mime` is `image/png` or `image/webp`;
     /// the engine has already checked the magic bytes and the size in the header.
     fn write_image(&self, data: Vec<u8>, mime: String) -> bool;
+
+    /// A file from a linked device was received into the app-private staging folder (`path`); `name` is
+    /// the name it was saved under, `rel_dir` the folder inside the staging folder (`""` for a single
+    /// file). The app copies it to Downloads. Called on a blocking thread, not on the engine's workers.
+    fn file_received(&self, path: String, name: String, size: u64, from: String, rel_dir: String);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TransferStateView {
+    Waiting,
+    Active,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TransferView {
+    /// 16 bytes; pass back to `cancel_transfer`.
+    pub id: Vec<u8>,
+    pub peer: String,
+    pub outgoing: bool,
+    pub name: String,
+    pub size: u64,
+    pub done: u64,
+    pub state: TransferStateView,
+    pub error: Option<String>,
+}
+
+fn view(t: klip_proto::ipc::TransferInfo) -> TransferView {
+    use klip_proto::ipc::{TransferDirection, TransferState};
+    TransferView {
+        id: t.id.to_vec(),
+        peer: t.peer,
+        outgoing: t.direction == TransferDirection::Sending,
+        name: t.name,
+        size: t.size,
+        done: t.done,
+        state: match t.state {
+            TransferState::Waiting => TransferStateView::Waiting,
+            TransferState::Active => TransferStateView::Active,
+            TransferState::Done => TransferStateView::Done,
+            TransferState::Failed => TransferStateView::Failed,
+            TransferState::Cancelled => TransferStateView::Cancelled,
+        },
+        error: t.error,
+    }
 }
 
 #[derive(uniffi::Record)]
@@ -230,6 +277,8 @@ impl KlipEngine {
         device_name: String,
         use_relays: bool,
         bridge: Arc<dyn ClipboardBridge>,
+        accept_files: bool,
+        max_file_bytes: u64,
     ) -> Result<Arc<Self>, KlipError> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -237,12 +286,23 @@ impl KlipEngine {
             .thread_name("klip-rt")
             .build()
             .map_err(fail)?;
-        let paths = KlipPaths::from_dir(data_dir);
+        let paths = KlipPaths::from_dir(data_dir.clone());
         let mut config = DaemonConfig::load(&paths).map_err(fail)?;
         config.device_name = device_name;
         // Images (stored as files) can be big, text can not (Android's clipboard takes about 0.9 MB):
         // 12 MB keeps a hostile or accidental giant clip from being downloaded over mobile data.
         config.max_clip_bytes = 12_000_000;
+        // Files are staged in app-private storage, then copied to Downloads by the app: the room check
+        // counts the file twice.
+        config.receive_dir = Some(
+            std::path::Path::new(&data_dir)
+                .join("incoming")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        config.accept_files = accept_files;
+        config.max_file_bytes = max_file_bytes.clamp(1, 64 * 1024 * 1024 * 1024);
+        config.file_space_factor = 2;
         config.relay = if use_relays {
             RelayMode::N0
         } else {
@@ -265,6 +325,30 @@ impl KlipEngine {
                 Arc::clone(&driver) as Arc<dyn ClipboardDriver>,
             ))
             .map_err(fail)?;
+        let file_bridge = Arc::clone(&driver.bridge);
+        core.sync.set_file_received_hook(Arc::new(
+            move |from: &str, path: &std::path::Path, size: u64| {
+                let (bridge, from, path) = (
+                    Arc::clone(&file_bridge),
+                    from.to_string(),
+                    path.to_path_buf(),
+                );
+                // A copy into Downloads can take seconds: never on the engine's two worker threads.
+                tokio::task::spawn_blocking(move || {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    bridge.file_received(
+                        path.to_string_lossy().into_owned(),
+                        name,
+                        size,
+                        from,
+                        String::new(),
+                    );
+                });
+            },
+        ));
         Ok(Arc::new(Self { rt, core, driver }))
     }
 
@@ -409,6 +493,39 @@ impl KlipEngine {
         };
         klip_diff::validate_image(format, &data).map_err(fail)?;
         self.send(content_type, data)
+    }
+
+    /// Send the open file `fd` to every connected linked device under `name`. The engine works on a
+    /// duplicate of the descriptor: the caller may close its own as soon as this returns. A descriptor
+    /// that is not a regular file (a pipe) is refused. Returns the transfers that started; an `Err` only
+    /// when none could start.
+    pub fn send_file_fd(&self, fd: i32, name: String) -> Result<Vec<TransferView>, KlipError> {
+        if fd < 0 {
+            return Err(fail("invalid file descriptor"));
+        }
+        // SAFETY: the caller keeps `fd` open for the duration of this call; we only duplicate it.
+        let owned = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
+            .try_clone_to_owned()
+            .map_err(fail)?;
+        let answers = self.rt.block_on(self.core.sync.send_open_file(
+            std::fs::File::from(owned),
+            name.clone(),
+            None,
+        ));
+        klip_core::started_or_error(&name, answers)
+            .map(|list| list.into_iter().map(view).collect())
+            .map_err(fail)
+    }
+
+    pub fn transfers(&self) -> Vec<TransferView> {
+        self.core.sync.transfers().into_iter().map(view).collect()
+    }
+
+    /// `false`: no running transfer has that id.
+    pub fn cancel_transfer(&self, id: Vec<u8>) -> bool {
+        <[u8; 16]>::try_from(id.as_slice())
+            .map(|id| self.core.sync.cancel_transfer(id))
+            .unwrap_or(false)
     }
 
     pub fn pause(&self, seconds: u64) {

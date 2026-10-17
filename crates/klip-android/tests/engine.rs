@@ -31,6 +31,8 @@ impl ClipboardBridge for MockBridge {
         self.images.lock().unwrap().push((data, mime));
         true
     }
+
+    fn file_received(&self, _: String, _: String, _: u64, _: String, _: String) {}
 }
 
 impl MockBridge {
@@ -59,6 +61,8 @@ fn engine(tag: &str, name: &str) -> (Arc<KlipEngine>, Arc<MockBridge>) {
         name.to_string(),
         false, // LAN only
         bridge.clone(),
+        true,
+        4 << 30,
     )
     .expect("engine starts");
     (e, bridge)

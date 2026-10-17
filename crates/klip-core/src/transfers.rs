@@ -18,6 +18,41 @@ const MAX_WAITING_SENDS: usize = 64;
 
 pub(crate) const PARTIAL_MAX_AGE: Duration = Duration::from_secs(3600);
 
+/// The answers of a send as one result: `Err` (the reasons joined) when no device was started, otherwise the
+/// started transfers followed by an already-failed entry for each device that could not be reached, so the
+/// person sees them side by side.
+pub fn started_or_error(
+    file_name: &str,
+    answers: Vec<Result<TransferInfo, String>>,
+) -> Result<Vec<TransferInfo>, String> {
+    let (mut started, mut errors) = (Vec::new(), Vec::new());
+    for answer in answers {
+        match answer {
+            Ok(t) => started.push(t),
+            Err(e) => errors.push(e),
+        }
+    }
+    if started.is_empty() {
+        return Err(errors.join("; "));
+    }
+    for (i, error) in errors.into_iter().enumerate() {
+        started.push(TransferInfo {
+            id: [0xFF; 16].map(|b| b ^ i as u8),
+            peer: "device".into(),
+            direction: TransferDirection::Sending,
+            name: file_name.to_string(),
+            size: 0,
+            done: 0,
+            state: TransferState::Failed,
+            error: Some(error),
+            saved_to: None,
+            started_ms: 0,
+            finished_ms: Some(0),
+        });
+    }
+    Ok(started)
+}
+
 /// What a send reads from: a path (opened once per receiving device) or a file somebody opened.
 enum Source {
     Path(PathBuf),
