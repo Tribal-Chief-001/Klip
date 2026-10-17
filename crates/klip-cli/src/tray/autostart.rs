@@ -137,11 +137,70 @@ pub fn run_key_value(exe: &str) -> Result<String, String> {
     Ok(format!("\"{exe}\" tray start"))
 }
 
+/// Which login entry to write: the quiet one (a script run by `wscript.exe`, which opens no console window) when the
+/// Windows Script Host is there, else the plain `klip tray start` one (which may flash a console window once).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginForm {
+    Script,
+    Plain,
+}
+
+pub fn login_entry_form(has_script_host: bool) -> LoginForm {
+    if has_script_host {
+        LoginForm::Script
+    } else {
+        LoginForm::Plain
+    }
+}
+
+fn safe_for_run_value(text: &str) -> bool {
+    !text.is_empty()
+        && !text
+            .chars()
+            .any(|c| matches!(c, '"' | '%' | '\n' | '\r' | '\0'))
+}
+
+/// `wscript.exe //B //nologo "<script>"`: batch mode, no banner, no console.
+pub fn run_value_script(vbs_path: &str) -> Result<String, String> {
+    if !safe_for_run_value(vbs_path) {
+        return Err(
+            "the path of the login script has characters the Windows Run key cannot hold safely"
+                .into(),
+        );
+    }
+    Ok(format!("wscript.exe //B //nologo \"{vbs_path}\""))
+}
+
+/// The script: start the tray with its window hidden (`Run cmd, 0, False`). The path is quoted twice for VBScript.
+pub fn vbs_text(exe: &str) -> Result<String, String> {
+    if !safe_for_run_value(exe) {
+        return Err("the path to klip has characters the login script cannot hold safely; put klip in a plainer path".into());
+    }
+    Ok(format!(
+        "CreateObject(\"WScript.Shell\").Run \"\"\"{exe}\"\" tray run\", 0, False\r\n"
+    ))
+}
+
+/// The login script lives in a folder of Klip's own: `...\Klip\start-tray.vbs`.
+fn vbs_path_is_klips(path: &str) -> bool {
+    let mut parts = path.rsplit(['\\', '/']);
+    parts
+        .next()
+        .is_some_and(|f| f.eq_ignore_ascii_case("start-tray.vbs"))
+        && parts.next().is_some_and(|d| d.eq_ignore_ascii_case("Klip"))
+}
+
 /// Is this `Run` value Klip's own (`"<path>\\klip.exe" tray start`)? Only then may it be replaced or removed:
 /// another programme could have used the name `KlipTray`.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn run_value_is_klips(value: &str) -> bool {
     let value = value.trim();
+    if let Some(script) = value
+        .strip_prefix("wscript.exe //B //nologo \"")
+        .and_then(|r| r.strip_suffix('"'))
+    {
+        return vbs_path_is_klips(script);
+    }
     let Some(rest) = value.strip_suffix(" tray start") else {
         return false;
     };
@@ -183,6 +242,22 @@ fn reg(args: &[&str]) -> Result<std::process::Output, String> {
         .map_err(|e| format!("cannot run reg.exe: {e}"))
 }
 
+/// Is the Windows Script Host there and the VBScript engine registered? (It is an optional Windows feature.)
+#[cfg(windows)]
+fn script_host_available() -> bool {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    Path::new(&root)
+        .join("System32")
+        .join("wscript.exe")
+        .is_file()
+        && reg(&["query", r"HKCR\VBScript"]).is_ok_and(|o| o.status.success())
+}
+
+#[cfg(windows)]
+fn login_script_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Klip").join("start-tray.vbs"))
+}
+
 /// What the `KlipTray` Run value holds now, if it exists.
 #[cfg(windows)]
 fn current_run_value() -> Option<String> {
@@ -203,7 +278,24 @@ pub fn install(exe: &str) -> Result<String, String> {
     }
     #[cfg(windows)]
     {
-        let value = run_key_value(exe)?;
+        // The quiet form (a script run by wscript, no console window) when the script host exists, else the plain one.
+        let value = match (
+            login_entry_form(script_host_available()),
+            login_script_path(),
+        ) {
+            (LoginForm::Script, Some(vbs)) => {
+                let text = vbs_text(exe)?;
+                let value = run_value_script(&vbs.to_string_lossy())?;
+                if let Some(dir) = vbs.parent() {
+                    fs::create_dir_all(dir)
+                        .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+                }
+                fs::write(&vbs, text)
+                    .map_err(|e| format!("cannot write {}: {e}", vbs.display()))?;
+                value
+            }
+            _ => run_key_value(exe)?,
+        };
         if let Some(existing) = current_run_value() {
             if !run_value_is_klips(&existing) {
                 return Err(format!(
@@ -246,6 +338,9 @@ pub fn uninstall() -> Result<bool, String> {
             ));
         }
         let out = reg(&["delete", RUN_KEY, "/v", "KlipTray", "/f"])?;
+        if let Some(vbs) = login_script_path() {
+            let _ = fs::remove_file(vbs); // the script only ever held Klip's own start line
+        }
         return if out.status.success() {
             Ok(true)
         } else {
@@ -296,6 +391,62 @@ mod tests {
             r#""C:\x\klip.exe.bak" tray start"#,
             r#""C:\x\klipper.exe" tray start"#,
             "",
+        ] {
+            assert!(!run_value_is_klips(foreign), "{foreign}");
+        }
+    }
+
+    #[test]
+    fn the_quiet_login_entry_needs_the_script_host_else_the_plain_one() {
+        assert_eq!(login_entry_form(true), LoginForm::Script);
+        assert_eq!(login_entry_form(false), LoginForm::Plain);
+    }
+
+    #[test]
+    fn the_script_run_value_and_the_script_are_built_safely() {
+        let vbs = r"C:\Users\me\AppData\Local\Klip\start-tray.vbs";
+        assert_eq!(
+            run_value_script(vbs).unwrap(),
+            r#"wscript.exe //B //nologo "C:\Users\me\AppData\Local\Klip\start-tray.vbs""#
+        );
+        for bad in [
+            "",
+            "C:\\a\"b\\start-tray.vbs",
+            "C:\\%x%\\start-tray.vbs",
+            "C:\\a\nb\\start-tray.vbs",
+        ] {
+            assert!(run_value_script(bad).is_err(), "{bad:?}");
+        }
+        let text = vbs_text(r"C:\Program Files\Klip\klip.exe").unwrap();
+        assert_eq!(
+            text,
+            "CreateObject(\"WScript.Shell\").Run \"\"\"C:\\Program Files\\Klip\\klip.exe\"\" tray run\", 0, False\r\n"
+        );
+        for bad in [
+            "",
+            "C:\\a\"b\\klip.exe",
+            "C:\\100%\\klip.exe",
+            "C:\\a\r\nb\\klip.exe",
+            "C:\\a\0b",
+        ] {
+            assert!(vbs_text(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn both_forms_of_the_login_entry_are_recognised_as_klips_and_nothing_else_is() {
+        assert!(
+            run_value_is_klips(r#""C:\Users\me\klip.exe" tray start"#),
+            "the v0.9 form"
+        );
+        assert!(run_value_is_klips(
+            r#"wscript.exe //B //nologo "C:\Users\me\AppData\Local\Klip\start-tray.vbs""#
+        ));
+        for foreign in [
+            r#"wscript.exe //B //nologo "C:\Users\me\evil.vbs""#,
+            r#"wscript.exe //B //nologo "C:\Users\me\Other\start-tray.vbs""#,
+            r#"wscript.exe "C:\Users\me\AppData\Local\Klip\start-tray.vbs""#,
+            r#"cmd /c "C:\Users\me\AppData\Local\Klip\start-tray.vbs""#,
         ] {
             assert!(!run_value_is_klips(foreign), "{foreign}");
         }
