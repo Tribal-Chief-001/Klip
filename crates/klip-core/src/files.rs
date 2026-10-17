@@ -187,6 +187,106 @@ fn ensure_dir(dir: &Path) -> io::Result<()> {
     }
 }
 
+/// A partial smaller than this is not worth keeping for a resume.
+const MIN_KEEP_BYTES: u64 = 1024 * 1024;
+const MAX_KEPT_PER_DEVICE: usize = 8;
+const MAX_KEPT_TOTAL: usize = 32;
+
+/// The key a sender gives a file so a second send of the same file finds the partial the first one left:
+/// BLAKE3 of the name, size, modification time and the first bytes. Never all zeros (that means "no resume").
+pub fn resume_key(name: &str, size: u64, mtime_ns: u128, head: &[u8]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"klip resume v1");
+    h.update(&(name.len() as u64).to_le_bytes());
+    h.update(name.as_bytes());
+    h.update(&size.to_le_bytes());
+    h.update(&mtime_ns.to_le_bytes());
+    h.update(blake3::hash(head).as_bytes());
+    let key = *h.finalize().as_bytes();
+    if key == [0u8; 32] {
+        [1u8; 32]
+    } else {
+        key
+    }
+}
+
+/// Partials that are open right now (a second transfer for the same one must wait or be told Busy).
+static IN_USE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn release(path: &Path) {
+    IN_USE.lock().unwrap().retain(|p| p != path);
+}
+
+/// The partials kept for a later resume, oldest first: at most 8 per device and 32 in all; going over removes the
+/// oldest file.
+pub struct KeptIndex {
+    items: Mutex<Vec<(PathBuf, Vec<u8>)>>,
+}
+
+impl KeptIndex {
+    pub const fn new() -> Self {
+        Self {
+            items: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn register(&self, path: PathBuf, device: Vec<u8>) {
+        let mut items = self.items.lock().unwrap();
+        items.retain(|(p, _)| p != &path);
+        items.push((path, device.clone()));
+        while items.iter().filter(|(_, d)| *d == device).count() > MAX_KEPT_PER_DEVICE {
+            let i = items.iter().position(|(_, d)| *d == device).unwrap();
+            let _ = fs::remove_file(items.remove(i).0);
+        }
+        while items.len() > MAX_KEPT_TOTAL {
+            let _ = fs::remove_file(items.remove(0).0);
+        }
+    }
+
+    pub fn forget(&self, path: &Path) {
+        self.items.lock().unwrap().retain(|(p, _)| p != path);
+    }
+
+    /// Delete every partial kept for this device (it was unpaired: nothing of it stays on this one).
+    pub fn forget_device(&self, device: &[u8]) {
+        self.items.lock().unwrap().retain(|(path, d)| {
+            if d == device {
+                let _ = fs::remove_file(path);
+            }
+            d != device
+        });
+    }
+}
+
+/// `KeptIndex::forget_device` on the index the receiver uses.
+pub fn forget_kept_partials_of(node: NodeId) {
+    KEPT.forget_device(node.fingerprint().as_bytes());
+}
+
+impl Default for KeptIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+static KEPT: KeptIndex = KeptIndex::new();
+
+fn keyed_path(dir: &Path, device: &[u8], key: &[u8; 32]) -> PathBuf {
+    let mut h = blake3::Hasher::new();
+    h.update(device);
+    h.update(key);
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&h.finalize().as_bytes()[..16]);
+    dir.join(partial_name(&id))
+}
+
+/// How many bytes of this file a kept partial already holds (0 when there is none).
+fn kept_len(dir: &Path, device: &[u8], key: &[u8; 32]) -> u64 {
+    fs::metadata(keyed_path(dir, device, key))
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
 fn partial_name(id: &[u8; 16]) -> String {
     let hex: String = id.iter().map(|b| format!("{b:02x}")).collect();
     format!(".klip-{hex}.part")
@@ -198,6 +298,8 @@ pub struct PartialFile {
     file: tokio::fs::File,
     path: PathBuf,
     dir: PathBuf,
+    /// Opened by resume key: it is in the in-use set and may be kept after a failure.
+    keyed: bool,
 }
 
 #[cfg(windows)]
@@ -233,10 +335,107 @@ impl PartialFile {
         let path = dir.join(partial_name(&id));
         let file = private_options().open(&path)?;
         Ok(Self {
+            keyed: false,
             file: tokio::fs::File::from_std(file),
             path,
             dir: dir.to_path_buf(),
         })
+    }
+
+    /// Open (or create) the partial for a device's file with this resume key, and say how many bytes it holds.
+    /// `AlreadyExists`: another transfer is using it right now.
+    pub async fn open_keyed(dir: &Path, device: &[u8], key: &[u8; 32]) -> io::Result<(Self, u64)> {
+        ensure_dir(dir)?;
+        let path = keyed_path(dir, device, key);
+        {
+            let mut used = IN_USE.lock().unwrap();
+            if used.contains(&path) {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "this file is already being received",
+                ));
+            }
+            used.push(path.clone());
+        }
+        let opened = (|| {
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let file = options.open(&path)?;
+            let len = file.metadata()?.len();
+            Ok::<_, io::Error>((file, len))
+        })();
+        match opened {
+            Ok((file, len)) => {
+                KEPT.forget(&path);
+                Ok((
+                    Self {
+                        file: tokio::fs::File::from_std(file),
+                        path,
+                        dir: dir.to_path_buf(),
+                        keyed: true,
+                    },
+                    len,
+                ))
+            }
+            Err(e) => {
+                release(&path);
+                Err(e)
+            }
+        }
+    }
+
+    /// Hash the first `len` bytes already in the file and leave the write position right after them.
+    pub async fn hash_existing(&mut self, len: u64) -> io::Result<blake3::Hasher> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        self.file.seek(io::SeekFrom::Start(0)).await?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut left = len;
+        while left > 0 {
+            let want = left.min(buf.len() as u64) as usize;
+            let n = self.file.read(&mut buf[..want]).await?;
+            if n == 0 {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            hasher.update(&buf[..n]);
+            left -= n as u64;
+        }
+        self.file.seek(io::SeekFrom::Start(len)).await?;
+        Ok(hasher)
+    }
+
+    /// Forget what the file holds and start from its beginning.
+    pub async fn restart(&mut self) -> io::Result<()> {
+        use tokio::io::AsyncSeekExt;
+        self.file.set_len(0).await?;
+        self.file.seek(io::SeekFrom::Start(0)).await?;
+        Ok(())
+    }
+
+    pub fn bytes_on_disk(&self) -> u64 {
+        fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0)
+    }
+
+    /// The transfer broke off: keep what arrived for a later resume (when it is worth it), else delete it.
+    pub async fn keep(self, device: Vec<u8>) {
+        let Self {
+            file, path, keyed, ..
+        } = self;
+        drop(file);
+        let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if keyed && size >= MIN_KEEP_BYTES {
+            KEPT.register(path.clone(), device);
+        } else {
+            let _ = fs::remove_file(&path);
+        }
+        if keyed {
+            release(&path);
+        }
     }
 
     pub fn file(&mut self) -> &mut tokio::fs::File {
@@ -249,7 +448,12 @@ impl PartialFile {
 
     /// Flush it to disk and give it its real (sanitised, unique) name. Returns where it is now.
     pub async fn commit(self, wanted_name: &str) -> io::Result<PathBuf> {
-        let Self { file, path, dir } = self;
+        let Self {
+            file,
+            path,
+            dir,
+            keyed,
+        } = self;
         let made_permanent = async {
             file.sync_all().await?;
             drop(file);
@@ -269,14 +473,22 @@ impl PartialFile {
         if made_permanent.is_err() {
             let _ = fs::remove_file(&path);
         }
+        if keyed {
+            release(&path);
+        }
         made_permanent
     }
 
     /// Throw the partial file away.
     pub async fn discard(self) {
-        let Self { file, path, .. } = self;
+        let Self {
+            file, path, keyed, ..
+        } = self;
         drop(file);
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(&path);
+        if keyed {
+            release(&path);
+        }
     }
 }
 
@@ -378,6 +590,8 @@ struct Entry {
 pub struct TransferRegistry {
     entries: Mutex<Vec<Entry>>,
     on_change: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+    /// The daemon is shutting down: cancelled transfers are not the person's decision, so partials are kept.
+    stopping: std::sync::atomic::AtomicBool,
 }
 
 fn is_running(state: TransferState) -> bool {
@@ -520,11 +734,17 @@ impl TransferRegistry {
 
     /// Stop every running transfer (the daemon is shutting down).
     pub fn cancel_all(&self) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         for entry in self.entries.lock().unwrap().iter() {
             if is_running(entry.info.state) {
                 entry.cancel.send_replace(true);
             }
         }
+    }
+
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn running(&self) -> usize {
@@ -651,6 +871,7 @@ pub fn human_size(bytes: u64) -> String {
 /// Why a file is not accepted, if it is not: checked before a single byte is read.
 fn refusal(
     header: &FileHeader,
+    have: u64,
     peer: &str,
     policy: &FilePolicy,
     reg: &TransferRegistry,
@@ -681,8 +902,10 @@ fn refusal(
     }
     match free_space(&policy.dir) {
         Ok(free) => {
+            // A resumed file only needs room for the bytes still to come.
             let needed = header
                 .size
+                .saturating_sub(have)
                 .saturating_mul(policy.space_factor)
                 .saturating_add(policy.reserve_bytes);
             (free < needed).then(|| {
@@ -743,13 +966,26 @@ where
         reg.finish(id, TransferState::Failed, Some(text.clone()), None);
         (code, text)
     };
-    if let Some((code, text)) = refusal(&header, peer, policy, reg) {
+    // Version 2 with a resume key: the partial of this device's earlier attempt, if it kept one.
+    let key = incoming
+        .v2()
+        .map(|h| h.resume_key)
+        .filter(|k| *k != [0u8; 32]);
+    let device: Vec<u8> = node
+        .map(|n| n.fingerprint().into_bytes())
+        .unwrap_or_else(|| peer.as_bytes().to_vec());
+    let have = key.map_or(0, |k| kept_len(&policy.dir, &device, &k));
+    if let Some((code, text)) = refusal(&header, have.min(header.size), peer, policy, reg) {
         let (code, text) = refuse(code, text);
         incoming.reject(code, &text).await;
         return Err(FileError::Rejected { code, text });
     }
-    let mut part = match PartialFile::create(&policy.dir, id) {
-        Ok(part) => part,
+    let opened = match key {
+        Some(k) => PartialFile::open_keyed(&policy.dir, &device, &k).await,
+        None => PartialFile::create(&policy.dir, id).map(|part| (part, 0)),
+    };
+    let (mut part, mut offset) = match opened {
+        Ok(opened) => opened,
         Err(e) => {
             let code = if e.kind() == io::ErrorKind::AlreadyExists {
                 RejectCode::Busy
@@ -780,9 +1016,30 @@ where
     if let Some(node) = node {
         reg.tag_node(id, node);
     }
+    // What the earlier attempt left must still be hashed here; an unusable one is thrown away.
+    let mut prefix = blake3::Hasher::new();
+    if offset > header.size {
+        offset = 0;
+        let _ = part.restart().await;
+    } else if offset > 0 {
+        match part.hash_existing(offset).await {
+            Ok(hasher) => prefix = hasher,
+            Err(_) => {
+                offset = 0;
+                let _ = part.restart().await;
+            }
+        }
+    }
     let mut progress = |n| reg.progress(id, n);
+    let resumable = incoming.v2().is_some();
     let outcome = tokio::select! {
-        r = incoming.accept(part.file(), &mut progress) => r,
+        r = async {
+            if resumable {
+                incoming.accept_from(offset, prefix, part.file(), &mut progress).await
+            } else {
+                incoming.accept(part.file(), &mut progress).await
+            }
+        } => r,
         _ = cancel.cancelled() => Err(FileError::Cancelled),
     };
     // A cancel that came in after the last byte but before the rename still wins; after this the file is
@@ -818,7 +1075,19 @@ where
             }
         },
         Err(e) => {
-            part.discard().await;
+            // A broken connection (or the daemon stopping) leaves a partial the next send can continue; a damaged
+            // file, a full disk or the person's own cancel does not.
+            let keep = key.is_some()
+                && match &e {
+                    FileError::Timeout | FileError::TooShort | FileError::Io(_) => true,
+                    FileError::Cancelled => reg.is_stopping(),
+                    _ => false,
+                };
+            if keep {
+                part.keep(device).await;
+            } else {
+                part.discard().await;
+            }
             let state = if matches!(e, FileError::Cancelled) {
                 TransferState::Cancelled
             } else {
@@ -835,6 +1104,8 @@ pub struct PreparedFile {
     file: tokio::fs::File,
     pub name: String,
     pub size: u64,
+    /// Modification time (nanoseconds since the epoch, 0 when unknown): part of the resume key.
+    mtime_ns: u128,
     /// Sends of one open file to several devices share its read position: they take turns on this.
     serial: Option<std::sync::Arc<tokio::sync::Mutex<()>>>,
 }
@@ -854,9 +1125,17 @@ impl PreparedFile {
             file: tokio::fs::File::from_std(file),
             name: sanitize_file_name(name),
             size: meta.len(),
+            mtime_ns: mtime_ns(&meta),
             serial,
         })
     }
+}
+
+fn mtime_ns(meta: &fs::Metadata) -> u128 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos())
 }
 
 pub async fn prepare_send(path: &Path) -> io::Result<PreparedFile> {
@@ -877,12 +1156,91 @@ pub async fn prepare_send(path: &Path) -> io::Result<PreparedFile> {
         file,
         name: sanitize_file_name(&raw),
         size: meta.len(),
+        mtime_ns: mtime_ns(&meta),
         serial: None,
     })
 }
 
-/// Send a prepared file over streams that are already open. A file that changed size since it was
-/// measured fails the transfer instead of sending something the receiver would reject anyway.
+/// One try at sending a prepared file over streams that are already open. Version 2 offers a resume key (or a
+/// fresh random one when `fresh_key`), so a receiver that kept a partial of this very file continues from it.
+/// Returns the result and the offset the receiver continued from (0: a full send). The registry row is
+/// not finished here: the caller may try again.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_attempt<R, W>(
+    prepared: &mut PreparedFile,
+    id: [u8; 16],
+    version: u8,
+    fresh_key: bool,
+    tx: &mut W,
+    rx: &mut R,
+    cancel: &mut CancelToken,
+    reg: &TransferRegistry,
+) -> (Result<(), FileError>, u64)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    reg.set_active(id);
+    let mut resumed = 0u64;
+    let serial = prepared.serial.clone();
+    let (name, size, mtime) = (prepared.name.clone(), prepared.size, prepared.mtime_ns);
+    let mut progress = |n| reg.progress(id, n);
+    let result = tokio::select! {
+        r = async {
+            // Take our turn on a file shared with other sends, then start from its beginning.
+            let _turn = match serial {
+                Some(m) => Some(m.lock_owned().await),
+                None => None,
+            };
+            let io = |e: io::Error| FileError::Io(e.to_string());
+            prepared.file.seek(io::SeekFrom::Start(0)).await.map_err(io)?;
+            if version >= 2 {
+                let key = if fresh_key {
+                    let mut k = [0u8; 32];
+                    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut k);
+                    k
+                } else {
+                    let mut head = Vec::with_capacity(64 * 1024);
+                    (&mut prepared.file)
+                        .take(64 * 1024)
+                        .read_to_end(&mut head)
+                        .await
+                        .map_err(io)?;
+                    prepared.file.seek(io::SeekFrom::Start(0)).await.map_err(io)?;
+                    resume_key(&name, size, mtime, &head)
+                };
+                let v2 = klip_net::file::FileHeaderV2 {
+                    version: 2,
+                    id,
+                    name: name.clone(),
+                    size,
+                    resume_key: key,
+                    folder: None,
+                };
+                klip_net::file::send_file_v2_offset(&v2, &mut prepared.file, tx, rx, &mut progress, &mut resumed).await
+            } else {
+                let header = FileHeader { version: 1, id, name: name.clone(), size };
+                send_file(&header, &mut prepared.file, tx, rx, &mut progress).await
+            }
+        } => r,
+        _ = cancel.cancelled() => Err(FileError::Cancelled),
+    };
+    (result, resumed)
+}
+
+/// Record how a send ended in the registry.
+pub fn finish_send(reg: &TransferRegistry, id: [u8; 16], result: &Result<(), FileError>) {
+    match result {
+        Ok(()) => reg.finish(id, TransferState::Done, None, None),
+        Err(FileError::Cancelled) => {
+            reg.finish(id, TransferState::Cancelled, Some("cancelled".into()), None)
+        }
+        Err(e) => reg.finish(id, TransferState::Failed, Some(e.to_string()), None),
+    }
+}
+
+/// Send a prepared file once over open streams and record the result (no retry: see `send_attempt`).
 pub async fn send_prepared<R, W>(
     mut prepared: PreparedFile,
     id: [u8; 16],
@@ -896,48 +1254,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    reg.set_active(id);
-    let header = FileHeader {
-        version: 1,
-        id,
-        name: prepared.name.clone(),
-        size: prepared.size,
-    };
-    let mut progress = |n| reg.progress(id, n);
-    let serial = prepared.serial.clone();
-    let result = tokio::select! {
-        r = async {
-            // Take our turn on a file shared with other sends, then start from its beginning.
-            let _turn = match serial {
-                Some(m) => Some(m.lock_owned().await),
-                None => None,
-            };
-            tokio::io::AsyncSeekExt::seek(&mut prepared.file, std::io::SeekFrom::Start(0))
-                .await
-                .map_err(|e| FileError::Io(e.to_string()))?;
-            if version >= 2 {
-                let v2 = klip_net::file::FileHeaderV2 {
-                    version: 2,
-                    id,
-                    name: header.name.clone(),
-                    size: header.size,
-                    resume_key: [0; 32],
-                    folder: None,
-                };
-                klip_net::file::send_file_v2(&v2, prepared.file, tx, rx, &mut progress).await
-            } else {
-                send_file(&header, prepared.file, tx, rx, &mut progress).await
-            }
-        } => r,
-        _ = cancel.cancelled() => Err(FileError::Cancelled),
-    };
-    match &result {
-        Ok(()) => reg.finish(id, TransferState::Done, None, None),
-        Err(FileError::Cancelled) => {
-            reg.finish(id, TransferState::Cancelled, Some("cancelled".into()), None)
-        }
-        Err(e) => reg.finish(id, TransferState::Failed, Some(e.to_string()), None),
-    }
+    let (result, _) =
+        send_attempt(&mut prepared, id, version, false, tx, rx, &mut cancel, reg).await;
+    finish_send(reg, id, &result);
     result
 }
 
@@ -1586,6 +1905,248 @@ mod tests {
         assert!(go("C", 5).is_none(), "three in all");
         reg.finish([1; 16], TransferState::Done, None, None);
         assert!(go("C", 6).is_some(), "a finished one frees its place");
+    }
+
+    // ---- resume ----------------------------------------------------------------------------------------
+
+    /// A source that fails ("the network dropped") after `left` bytes.
+    struct CutAfter {
+        data: Vec<u8>,
+        pos: usize,
+        left: usize,
+    }
+
+    impl AsyncRead for CutAfter {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if self.left == 0 && self.pos < self.data.len() {
+                return Poll::Ready(Err(io::Error::other("cut")));
+            }
+            let n = buf
+                .remaining()
+                .min(self.data.len() - self.pos)
+                .min(self.left);
+            let start = self.pos;
+            buf.put_slice(&self.data[start..start + n]);
+            self.pos += n;
+            self.left -= n;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    /// A version 2 transfer with resume key `key`; the sender fails after `cut_after` bytes when it is given.
+    /// Returns the sender's result, the offset the receiver asked to continue from, and the receiver's result.
+    async fn exchange_v2(
+        policy: &FilePolicy,
+        reg: &TransferRegistry,
+        peer: &str,
+        key: [u8; 32],
+        bytes: &[u8],
+        cut_after: Option<usize>,
+    ) -> (Result<(), FileError>, u64, Result<PathBuf, FileError>) {
+        let (s_w, s_r) = duplex(64 * 1024);
+        let (r_w, r_r) = duplex(64 * 1024);
+        let header = klip_net::file::FileHeaderV2 {
+            version: 2,
+            id: [1; 16],
+            name: "movie.mkv".into(),
+            size: bytes.len() as u64,
+            resume_key: key,
+            folder: None,
+        };
+        let source = CutAfter {
+            data: bytes.to_vec(),
+            pos: 0,
+            left: cut_after.unwrap_or(usize::MAX),
+        };
+        let sender = async move {
+            let (mut tx, mut rx) = (s_w, r_r);
+            let mut offset = 0;
+            let r = klip_net::file::send_file_v2_offset(
+                &header,
+                source,
+                &mut tx,
+                &mut rx,
+                &mut |_| {},
+                &mut offset,
+            )
+            .await;
+            (r, offset)
+        };
+        let receiver = async {
+            let incoming = IncomingFile::open_v2(s_r, r_w).await?;
+            receive_incoming_from(incoming, peer, None, policy, reg).await
+        };
+        let ((sent, offset), got) = tokio::join!(sender, receiver);
+        (sent, offset, got)
+    }
+
+    fn partials_in(dir: &Path) -> Vec<String> {
+        files_in(dir)
+            .into_iter()
+            .filter(|n| n.starts_with(".klip-") && n.ends_with(".part"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_cut_transfer_keeps_a_partial_and_the_next_one_resumes() {
+        let dir = temp("resume1");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let data = data(3 * MIB);
+        let (sent, _, got) = exchange_v2(&p, &reg, "Pad", [5; 32], &data, Some(2 * MIB)).await;
+        assert!(sent.is_err() && got.is_err(), "{sent:?} {got:?}");
+        let kept = partials_in(&dir);
+        assert_eq!(kept.len(), 1, "{:?}", files_in(&dir));
+        assert_eq!(
+            fs::metadata(dir.join(&kept[0])).unwrap().len(),
+            2 * MIB as u64
+        );
+
+        let (sent, offset, got) = exchange_v2(&p, &reg, "Pad", [5; 32], &data, None).await;
+        sent.unwrap();
+        assert_eq!(
+            offset,
+            2 * MIB as u64,
+            "the receiver asked to continue where it stopped"
+        );
+        let path = got.unwrap();
+        assert_eq!(fs::read(&path).unwrap(), data);
+        assert!(partials_in(&dir).is_empty(), "{:?}", files_in(&dir));
+    }
+
+    #[tokio::test]
+    async fn a_resume_with_a_changed_prefix_ends_bad_and_keeps_nothing() {
+        let dir = temp("resume2");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let a = data(3 * MIB);
+        let (_, _, _) = exchange_v2(&p, &reg, "Pad", [6; 32], &a, Some(2 * MIB)).await;
+        assert_eq!(partials_in(&dir).len(), 1);
+        let mut b = a.clone();
+        b[10] ^= 0xFF; // same key (the sender's idea of "the same file"), different bytes at the start
+        let (sent, offset, got) = exchange_v2(&p, &reg, "Pad", [6; 32], &b, None).await;
+        assert_eq!(offset, 2 * MIB as u64);
+        assert!(matches!(got, Err(FileError::HashMismatch)), "{got:?}");
+        assert!(matches!(sent, Err(FileError::Peer(_))), "{sent:?}");
+        assert!(
+            partials_in(&dir).is_empty(),
+            "a damaged partial is deleted: {:?}",
+            files_in(&dir)
+        );
+        assert!(files_in(&dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_partial_under_one_mib_is_not_kept() {
+        let dir = temp("resume3");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let data = data(3 * MIB);
+        let (_, _, got) = exchange_v2(&p, &reg, "Pad", [7; 32], &data, Some(500 * 1024)).await;
+        assert!(got.is_err());
+        assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
+    }
+
+    #[tokio::test]
+    async fn two_devices_with_the_same_file_do_not_share_a_partial() {
+        let dir = temp("resume4");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let data = data(3 * MIB);
+        let _ = exchange_v2(&p, &reg, "Pad", [8; 32], &data, Some(2 * MIB)).await;
+        let (sent, offset, got) = exchange_v2(&p, &reg, "Tab", [8; 32], &data, None).await;
+        sent.unwrap();
+        assert_eq!(offset, 0, "another device starts from zero");
+        assert_eq!(fs::read(got.unwrap()).unwrap(), data);
+        assert_eq!(partials_in(&dir).len(), 1, "Pad's partial is still there");
+    }
+
+    #[tokio::test]
+    async fn a_partial_that_is_in_use_answers_busy() {
+        let dir = temp("resume5");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let (_held, _) = PartialFile::open_keyed(&dir, b"Pad", &[9; 32])
+            .await
+            .unwrap();
+        let (sent, _, got) = exchange_v2(&p, &reg, "Pad", [9; 32], &data(1000), None).await;
+        assert!(
+            matches!(
+                got,
+                Err(FileError::Rejected {
+                    code: RejectCode::Busy,
+                    ..
+                })
+            ),
+            "{got:?}"
+        );
+        assert!(matches!(sent, Err(FileError::Rejected { .. })), "{sent:?}");
+    }
+
+    #[test]
+    fn kept_partials_are_bounded_per_device_and_in_total() {
+        let dir = temp("resume6");
+        let index = KeptIndex::default();
+        let mk = |i: usize| {
+            let path = dir.join(format!(".klip-{i:032x}.part"));
+            fs::write(&path, b"x").unwrap();
+            path
+        };
+        for i in 0..12 {
+            index.register(mk(i), b"Pad".to_vec());
+        }
+        let left = (0..12)
+            .filter(|i| dir.join(format!(".klip-{i:032x}.part")).exists())
+            .count();
+        assert_eq!(left, 8, "at most 8 per device; the oldest go first");
+        assert!(!dir.join(format!(".klip-{:032x}.part", 0)).exists());
+        assert!(dir.join(format!(".klip-{:032x}.part", 11)).exists());
+        for d in 0..5u8 {
+            for i in 0..8 {
+                index.register(mk(100 + usize::from(d) * 10 + i), vec![d]);
+            }
+        }
+        let total = fs::read_dir(&dir).unwrap().count();
+        assert!(total <= 32, "{total} partials kept");
+    }
+
+    #[test]
+    fn forgetting_a_device_deletes_only_its_kept_partials() {
+        let dir = temp("resume7");
+        let index = KeptIndex::default();
+        let (a, b) = (dir.join(".klip-aaaa"), dir.join(".klip-bbbb"));
+        fs::write(&a, b"x").unwrap();
+        fs::write(&b, b"x").unwrap();
+        index.register(a.clone(), b"Pad".to_vec());
+        index.register(b.clone(), b"Tab".to_vec());
+        index.forget_device(b"Pad");
+        assert!(!a.exists() && b.exists());
+    }
+
+    #[test]
+    fn the_resume_key_changes_with_name_size_mtime_and_head() {
+        let k =
+            |name: &str, size: u64, mtime: u128, head: &[u8]| resume_key(name, size, mtime, head);
+        let base = k("a.bin", 10, 5, b"head");
+        assert_eq!(base, k("a.bin", 10, 5, b"head"));
+        for other in [
+            k("b.bin", 10, 5, b"head"),
+            k("a.bin", 11, 5, b"head"),
+            k("a.bin", 10, 6, b"head"),
+            k("a.bin", 10, 5, b"hear"),
+        ] {
+            assert_ne!(base, other);
+        }
+        assert_ne!(
+            base, [0u8; 32],
+            "the all-zero key means 'no resume' and is never produced"
+        );
     }
 
     #[test]

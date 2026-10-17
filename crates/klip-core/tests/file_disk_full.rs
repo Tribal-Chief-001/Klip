@@ -46,7 +46,7 @@ async fn a_write_error_in_the_middle_removes_the_partial_file_and_tells_the_send
     };
     let (sent, got) = tokio::join!(sender, receiver);
 
-    assert!(matches!(got, Err(FileError::Io(_))), "{got:?}");
+    assert!(matches!(got, Err(FileError::Disk(_))), "{got:?}");
     assert!(matches!(sent, Err(FileError::Peer(_))), "{sent:?}");
     let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
     assert!(left.is_empty(), "nothing is left behind: {left:?}");

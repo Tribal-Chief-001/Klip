@@ -90,6 +90,8 @@ pub enum FileDone {
 #[derive(Debug)]
 pub enum FileError {
     Io(String),
+    /// This device could not write the bytes (full disk, permissions): not worth keeping a partial file for.
+    Disk(String),
     Protocol(String),
     Rejected {
         code: RejectCode,
@@ -110,7 +112,7 @@ pub enum FileError {
 impl std::fmt::Display for FileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "{e}"),
+            Self::Io(e) | Self::Disk(e) => write!(f, "{e}"),
             Self::Protocol(e) => write!(f, "the other device sent something unexpected ({e})"),
             Self::Rejected { text, .. } => write!(f, "{text}"),
             Self::TooShort => write!(f, "the file ended before its announced size"),
@@ -306,10 +308,28 @@ where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
+    send_file_v2_offset(header, source, tx, rx, progress, &mut 0).await
+}
+
+/// `send_file_v2`, and `resumed_from` is set to the offset the receiver asked to continue from (0 for a full send).
+pub async fn send_file_v2_offset<S, W, R>(
+    header: &FileHeaderV2,
+    source: S,
+    tx: &mut W,
+    rx: &mut R,
+    progress: &mut (dyn FnMut(u64) + Send),
+    resumed_from: &mut u64,
+) -> Result<(), FileError>
+where
+    S: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
     write_frame(tx, header).await?;
     match read_reply(rx).await? {
         FileReply::Accept => send_body(header.size, 0, source, tx, rx, progress).await,
         FileReply::AcceptFrom { offset } if offset <= header.size => {
+            *resumed_from = offset;
             send_body(header.size, offset, source, tx, rx, progress).await
         }
         FileReply::AcceptFrom { .. } => {
@@ -521,7 +541,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
             }
             if let Err(e) = sink.write_all(&buf[..n]).await {
                 self.bad("the file could not be saved").await;
-                return Err(FileError::Io(e.to_string()));
+                return Err(FileError::Disk(e.to_string()));
             }
             hasher.update(&buf[..n]);
             got += n as u64;
@@ -549,7 +569,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> IncomingFile<R, W> {
         }
         if let Err(e) = sink.flush().await {
             self.bad("the file could not be saved").await;
-            return Err(FileError::Io(e.to_string()));
+            return Err(FileError::Disk(e.to_string()));
         }
         Ok(Received {
             bytes: got,
@@ -1123,7 +1143,7 @@ mod tests {
             incoming.accept(&mut sink, &mut |_| {}).await.map(|_| ())
         });
         let got = receiver.await.unwrap();
-        assert!(matches!(got, Err(FileError::Io(_))), "{got:?}");
+        assert!(matches!(got, Err(FileError::Disk(_))), "{got:?}");
         match sender.await.unwrap() {
             Err(FileError::Peer(text)) => assert!(text.contains("could not be saved"), "{text}"),
             other => panic!("the sender should learn why: {other:?}"),

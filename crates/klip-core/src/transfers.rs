@@ -1,10 +1,10 @@
 //! The coordinator's side of file transfer: take what paired devices send, send what the person asks.
 use crate::files::{
-    default_receive_dir, prepare_send, receive_incoming_from, send_prepared, FilePolicy,
-    PreparedFile,
+    default_receive_dir, finish_send, prepare_send, receive_incoming_from, send_attempt,
+    FilePolicy, PreparedFile,
 };
 use crate::sync::{node_of, FileReceivedHook, SyncCoordinator};
-use klip_net::file::{IncomingFile, RejectCode};
+use klip_net::file::{FileError, IncomingFile, RejectCode};
 use klip_net::{EndpointId, FileConnection, RecvStream, SendStream};
 use klip_proto::hlc::NodeId;
 use klip_proto::ipc::{TransferDirection, TransferInfo, TransferState};
@@ -12,12 +12,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Stale `.klip-*.part` files (a transfer that died with the daemon) older than this are removed at
-/// start; nothing of this daemon is running then, so only a clock skew needs the margin.
+/// Partial files older than this are removed at start: a transfer that died with the daemon can still be
+/// resumed by sending the same file again for this long.
 /// Files waiting for their turn each hold an open descriptor: more than this are refused.
 const MAX_WAITING_SENDS: usize = 64;
 
-pub(crate) const PARTIAL_MAX_AGE: Duration = Duration::from_secs(3600);
+pub(crate) const PARTIAL_MAX_AGE: Duration = Duration::from_secs(24 * 3600);
 
 /// The answers of a send as one result: `Err` (the reasons joined) when no device was started, otherwise the
 /// started transfers followed by an already-failed entry for each device that could not be reached, so the
@@ -259,7 +259,7 @@ impl SyncCoordinator {
                 continue;
             }
             // One open file per device: a file is read once per receiver, never shared.
-            let prepared = match source.prepare().await {
+            let mut prepared = match source.prepare().await {
                 Ok(p) => p,
                 Err(e) => {
                     answers.push(Err(e));
@@ -304,26 +304,42 @@ impl SyncCoordinator {
                     );
                     return;
                 }
-                match me.net.open_file_stream(peer_id).await {
-                    Ok(mut streams) => {
-                        let _ = send_prepared(
-                            prepared,
+                // A resume that ends "damaged" (the kept partial was not the same bytes any more) is tried once more
+                // from zero with a key nobody has seen.
+                let mut fresh_key = false;
+                loop {
+                    match me.net.open_file_stream(peer_id).await {
+                        Ok(mut streams) => {
+                            let (result, resumed) = send_attempt(
+                                &mut prepared,
+                                id,
+                                streams.version(),
+                                fresh_key,
+                                &mut streams.tx,
+                                &mut streams.rx,
+                                &mut token,
+                                &me.transfers,
+                            )
+                            .await;
+                            streams.close();
+                            if resumed > 0
+                                && !fresh_key
+                                && matches!(result, Err(FileError::Peer(_)))
+                            {
+                                fresh_key = true;
+                                me.transfers.progress(id, 0);
+                                continue;
+                            }
+                            finish_send(&me.transfers, id, &result);
+                        }
+                        Err(e) => me.transfers.finish(
                             id,
-                            streams.version(),
-                            &mut streams.tx,
-                            &mut streams.rx,
-                            token,
-                            &me.transfers,
-                        )
-                        .await;
-                        streams.close();
+                            TransferState::Failed,
+                            Some(format!("{node_peer}: {e}")),
+                            None,
+                        ),
                     }
-                    Err(e) => me.transfers.finish(
-                        id,
-                        TransferState::Failed,
-                        Some(format!("{node_peer}: {e}")),
-                        None,
-                    ),
+                    break;
                 }
             });
             answers.push(

@@ -244,6 +244,14 @@ async fn send(a: &TestDaemon, path: &Path) -> TransferInfo {
     answers.remove(0).expect("the transfer starts")
 }
 
+/// Names in `dir` that are not hidden partial files: what a person would see.
+fn final_files_in(dir: &Path) -> Vec<String> {
+    files_in(dir)
+        .into_iter()
+        .filter(|n| !n.starts_with(".klip-"))
+        .collect()
+}
+
 fn files_in(dir: &Path) -> Vec<String> {
     match std::fs::read_dir(dir) {
         Ok(rd) => {
@@ -343,8 +351,10 @@ async fn cancelling_stops_a_running_transfer_and_leaves_nothing_behind() {
         ),
         "{theirs:?}"
     );
+    // A cut transfer leaves a hidden partial for a later resume, never a file under its real name.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
-        wait_until(10, || files_in(&incoming).is_empty()).await,
+        final_files_in(&incoming).is_empty(),
         "{:?}",
         files_in(&incoming)
     );
@@ -366,8 +376,9 @@ async fn unpairing_in_the_middle_stops_the_transfer() {
         matches!(mine.state, TransferState::Cancelled | TransferState::Failed),
         "{mine:?}"
     );
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
-        wait_until(15, || files_in(&incoming).is_empty()).await,
+        final_files_in(&incoming).is_empty(),
         "{:?}",
         files_in(&incoming)
     );
@@ -698,13 +709,25 @@ async fn a_device_that_cannot_be_reached_is_listed_next_to_the_ones_that_started
 }
 
 #[tokio::test]
-async fn stopping_the_receiving_daemon_leaves_no_partial_file() {
+async fn stopping_the_receiving_daemon_keeps_a_resumable_partial_and_no_final_file() {
     let (a, b, incoming) = two_paired("stoprecv", |_| {}).await;
     let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
     send(&a, &huge).await;
     wait_transfer(&b, 30, "bytes to arrive", |t| t.done > 20 * 1024 * 1024).await;
     b.engine.core.stop().await;
-    assert!(files_in(&incoming).is_empty(), "{:?}", files_in(&incoming));
+    assert!(
+        final_files_in(&incoming).is_empty(),
+        "{:?}",
+        files_in(&incoming)
+    );
+    assert_eq!(
+        files_in(&incoming)
+            .iter()
+            .filter(|n| n.ends_with(".part"))
+            .count(),
+        1,
+        "the daemon stopping is not the person's decision: the partial stays for a resume"
+    );
     let mine = wait_transfer(&a, 30, "the sender to give up", finished).await;
     assert_eq!(mine.state, TransferState::Failed, "{mine:?}");
 }
@@ -807,8 +830,9 @@ async fn a_file_that_shrinks_while_sent_fails_and_leaves_nothing() {
         .unwrap();
     let t = wait_transfer(&a, 30, "the failure", finished).await;
     assert_eq!(t.state, TransferState::Failed, "{t:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
-        wait_until(15, || files_in(&incoming).is_empty()).await,
+        final_files_in(&incoming).is_empty(),
         "{:?}",
         files_in(&incoming)
     );
@@ -875,4 +899,146 @@ async fn a_device_unpaired_after_it_connected_cannot_deliver_its_file() {
     );
     streams.close();
     assert!(files_in(&incoming).is_empty(), "{:?}", files_in(&incoming));
+}
+
+#[tokio::test]
+async fn cutting_a_transfer_then_sending_the_same_file_again_resumes_and_arrives_equal() {
+    let (a, b, incoming) = two_paired("resume", |_| {}).await;
+    let path = make_file(&a.dir.join("out"), "movie.bin", 160 * 1024 * 1024);
+    let first = send(&a, &path).await;
+    let cut = wait_transfer(&a, 60, "bytes to move", |t| {
+        t.id == first.id && t.done > 40 * 1024 * 1024
+    })
+    .await
+    .done;
+    assert!(a.engine.sync.cancel_transfer(first.id));
+    wait_transfer(&a, 20, "the cut", |t| t.id == first.id && finished(t)).await;
+    assert!(
+        wait_until(15, || files_in(&incoming)
+            .iter()
+            .any(|n| n.starts_with(".klip-") && n.ends_with(".part")))
+        .await,
+        "the receiver keeps what arrived: {:?}",
+        files_in(&incoming)
+    );
+
+    let second = send(&a, &path).await;
+    // The first progress seen on the new transfer is the offset the receiver asked to continue from.
+    let mut first_seen = 0;
+    let end = Instant::now() + Duration::from_secs(30);
+    while first_seen == 0 {
+        first_seen = a
+            .engine
+            .sync
+            .transfers()
+            .iter()
+            .find(|t| t.id == second.id)
+            .map_or(0, |t| t.done);
+        assert!(
+            Instant::now() < end,
+            "the second transfer never started moving"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(
+        first_seen >= cut * 9 / 10,
+        "resumed from {first_seen}, the cut was at {cut}"
+    );
+    let done = wait_transfer(&a, 90, "the second send", |t| {
+        t.id == second.id && finished(t)
+    })
+    .await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        std::fs::read(incoming.join("movie.bin")).unwrap(),
+        std::fs::read(&path).unwrap()
+    );
+    assert_eq!(files_in(&incoming), ["movie.bin"], "no partial is left");
+    drop(b);
+}
+
+#[tokio::test]
+async fn a_resume_whose_kept_partial_no_longer_matches_is_retried_from_zero_and_still_arrives_equal(
+) {
+    use std::io::{Seek, SeekFrom, Write};
+    let (a, _b, incoming) = two_paired("resume-bad", |_| {}).await;
+    let path = make_file(&a.dir.join("out"), "movie.bin", 120 * 1024 * 1024);
+    let first = send(&a, &path).await;
+    wait_transfer(&a, 60, "bytes to move", |t| {
+        t.id == first.id && t.done > 30 * 1024 * 1024
+    })
+    .await;
+    assert!(a.engine.sync.cancel_transfer(first.id));
+    wait_transfer(&a, 20, "the cut", |t| t.id == first.id && finished(t)).await;
+    assert!(
+        wait_until(15, || files_in(&incoming)
+            .iter()
+            .any(|n| n.ends_with(".part")))
+        .await
+    );
+
+    // Change a byte inside the part the receiver already holds, and put the modification time back: to the
+    // sender it is still "the same file", but the kept bytes are now wrong.
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let mut f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    f.seek(SeekFrom::Start(5 * 1024 * 1024)).unwrap();
+    f.write_all(&[0xAB]).unwrap();
+    f.set_modified(before).unwrap();
+    drop(f);
+
+    let second = send(&a, &path).await;
+    let done = wait_transfer(&a, 120, "the second send", |t| {
+        t.id == second.id && finished(t)
+    })
+    .await;
+    assert_eq!(done.state, TransferState::Done, "{done:?}");
+    assert_eq!(
+        std::fs::read(incoming.join("movie.bin")).unwrap(),
+        std::fs::read(&path).unwrap(),
+        "the file that arrived is the changed one, complete"
+    );
+    assert_eq!(files_in(&incoming), ["movie.bin"]);
+}
+
+#[tokio::test]
+async fn cancelling_on_the_receiving_side_deletes_the_partial() {
+    let (a, b, incoming) = two_paired("recvcancel", |_| {}).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
+    send(&a, &huge).await;
+    let theirs = wait_transfer(&b, 30, "bytes to arrive", |t| t.done > 20 * 1024 * 1024).await;
+    assert!(b.engine.sync.cancel_transfer(theirs.id));
+    assert!(
+        wait_until(15, || files_in(&incoming).is_empty()).await,
+        "the receiver's own cancel is the person's decision: nothing is kept ({:?})",
+        files_in(&incoming)
+    );
+    wait_transfer(&a, 20, "the sender to give up", finished).await;
+}
+
+#[tokio::test]
+async fn unpairing_the_sender_on_the_receiving_side_deletes_what_it_left() {
+    let (a, b, incoming) = two_paired("unpair-kept", |_| {}).await;
+    let huge = make_sparse(&a.dir.join("out"), "huge.bin", 2 * 1024 * 1024 * 1024);
+    let started = send(&a, &huge).await;
+    wait_transfer(&a, 30, "bytes to move", |t| {
+        t.id == started.id && t.done > 20 * 1024 * 1024
+    })
+    .await;
+    assert!(a.engine.sync.cancel_transfer(started.id));
+    assert!(
+        wait_until(15, || files_in(&incoming)
+            .iter()
+            .any(|n| n.ends_with(".part")))
+        .await
+    );
+    b.engine
+        .sync
+        .unpair(&a.engine.node_id().fingerprint())
+        .await
+        .unwrap();
+    assert!(
+        wait_until(10, || files_in(&incoming).is_empty()).await,
+        "{:?}",
+        files_in(&incoming)
+    );
 }

@@ -848,6 +848,7 @@ impl SyncCoordinator {
                 self.alerted.lock().unwrap().remove(&node);
                 // Files still moving to or from that device stop with it.
                 self.transfers.cancel_peer(node, &one.name);
+                crate::files::forget_kept_partials_of(node);
                 Ok(one.name.clone())
             }
             many => Err(format!(

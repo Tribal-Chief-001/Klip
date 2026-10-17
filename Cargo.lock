@@ -2721,6 +2721,7 @@ dependencies = [
 name = "klip-core"
 version = "0.8.1"
 dependencies = [
+ "blake3",
  "directories",
  "hostname",
  "klip-crypto",
