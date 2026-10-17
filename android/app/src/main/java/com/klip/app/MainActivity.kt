@@ -47,6 +47,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQ_SCAN = 7
+        const val REQ_FOLDER = 8
     }
 
     private val scope = MainScope()
@@ -142,6 +143,17 @@ class MainActivity : Activity() {
             top = 8, bottom = 22
         )
 
+        // Folders: pick one with the system's picker and send it to the linked devices.
+        b.add(secondaryButton(this, pal, "Send a folder") {
+            @Suppress("DEPRECATION")
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                ),
+                REQ_FOLDER
+            )
+        }, bottom = 22)
+
         // Devices.
         b.add(sectionLabel(this, pal, "Devices"), bottom = 10)
         devices = column(this)
@@ -201,6 +213,10 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_FOLDER) {
+            if (resultCode == RESULT_OK) data?.data?.let { FolderSender.start(this, it) }
+            return
+        }
         if (requestCode != REQ_SCAN) return
         when (resultCode) {
             RESULT_OK -> data?.getStringExtra(QrScannerActivity.EXTRA_SCANNED_TICKET)?.let { pairing.join(it) }
