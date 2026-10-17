@@ -9,7 +9,7 @@
 │  Keep history   24 hours, then clips are forgotten       │
 │  Largest clip   32.0 MiB                                 │
 │  LAN discovery  on                                       │
-│klip 0.8.1 · daemon 0.8.1                                 │
+│klip 0.9.0 · daemon 0.9.0                                 │
 │                                                          │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
