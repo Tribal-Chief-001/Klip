@@ -1,0 +1,6 @@
+Output the current clipboard content to standard output
+
+Usage: klip paste
+
+Options:
+  -h, --help  Print help

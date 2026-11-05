@@ -79,6 +79,11 @@ impl ClipboardDriver for MemoryClipboardDriver {
         }
     }
 
+    fn read_current_clip(&self) -> Result<Option<CapturedClip>, PlatformError> {
+        let guard = self.clip.lock().unwrap();
+        Ok(guard.clone())
+    }
+
     fn write_clip(&self, content_type: &ClipContentType, data: &[u8]) -> Result<(), PlatformError> {
         if self.fail_writes.load(Ordering::SeqCst) {
             return Err(PlatformError::ClipboardBusy);

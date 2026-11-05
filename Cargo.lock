@@ -2746,6 +2746,7 @@ dependencies = [
  "rand 0.8.8",
  "serde",
  "serde_json",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2795,6 +2796,8 @@ name = "klip-platform"
 version = "0.10.0"
 dependencies = [
  "arboard",
+ "blake3",
+ "clipboard-win",
  "image",
  "klip-diff",
  "klip-proto",

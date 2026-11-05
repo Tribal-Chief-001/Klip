@@ -79,9 +79,19 @@ Then, once:
 ## Quick reference
 
 ```bash
+# 🐧 Linux 1-line install:
+curl -fsSL https://raw.githubusercontent.com/Tribal-Chief-001/Klip/main/scripts/install.sh | bash
+
+# 🪟 Windows PowerShell 1-line install:
+irm https://raw.githubusercontent.com/Tribal-Chief-001/Klip/main/scripts/install.ps1 | iex
+```
+
+```bash
 klip start                      # start the background service
 klip status                     # who is linked, is it connected
 klip pair                       # link a new device (QR code)
+klip copy "text"                # copy text to clipboard & broadcast (or: cat file | klip copy)
+klip paste                      # print active clipboard content directly to stdout
 klip send "text"                # send text now
 klip send-file FILE_OR_FOLDER   # send files (--to NAME for one device)
 klip pause 600 / klip resume    # stop syncing for a while

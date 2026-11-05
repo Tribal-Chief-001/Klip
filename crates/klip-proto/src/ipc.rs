@@ -22,6 +22,8 @@ pub const CAP_SHARE_IMAGE: &str = "share_image";
 pub const CAP_FILE_TRANSFER: &str = "file_transfer";
 /// `SendFile` also takes a folder, and the daemon resumes and sends in version 2 (v0.9.0).
 pub const CAP_FILE_FOLDERS: &str = "file_folders";
+/// The daemon supports CLI clipboard piping (`klip copy`, `klip paste`).
+pub const CAP_CLI_PIPING: &str = "cli_piping";
 
 /// The settings the running daemon loaded (what a restart would re-read from `config.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +117,13 @@ pub enum IpcRequest {
     CancelTransfer {
         id: [u8; 16],
     },
+    // Added in v0.10.0: CLI shell piping.
+    /// Copy text to the local clipboard and broadcast it to all peers.
+    CopyClip {
+        text: String,
+    },
+    /// Read the active clipboard contents.
+    PasteClip,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +277,11 @@ pub enum IpcResponse {
     Transfers(Vec<TransferInfo>),
     /// `false`: no running transfer has that id.
     TransferCancelled(bool),
+    /// Active raw clipboard content.
+    ClipboardContent {
+        content_type: String,
+        data: Vec<u8>,
+    },
 }
 
 pub fn serialize_ipc_msg<T: Serialize>(val: &T) -> Result<Vec<u8>, String> {
@@ -581,8 +595,10 @@ mod compat {
             let bytes = serialize_ipc_msg(&r).unwrap();
             assert_eq!(deserialize_ipc_msg::<IpcResponse>(&bytes).unwrap(), r);
         }
+        assert_eq!(req(&IpcRequest::PasteClip), [24]);
         assert_eq!(CAP_FILE_TRANSFER, "file_transfer");
         assert_eq!(CAP_FILE_FOLDERS, "file_folders");
+        assert_eq!(CAP_CLI_PIPING, "cli_piping");
     }
 
     #[test]

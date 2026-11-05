@@ -136,16 +136,111 @@ impl KeyStore {
     }
 }
 
-/// Restrict a file or directory to the owner (no-op on non-Unix targets).
+/// Restrict a file or directory to the owner (POSIX mode on Unix, owner-only SID DACL on Windows).
 pub fn restrict_to_owner(path: &Path, mode: u32) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let _ = mode;
+        let _ = restrict_to_owner_windows(path);
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (path, mode);
+    }
+}
+
+#[cfg(windows)]
+fn restrict_to_owner_windows(path: &Path) -> std::io::Result<()> {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, SetFileSecurityW, TokenUser, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let sid = (|| {
+            let mut needed = 0u32;
+            GetTokenInformation(token, TokenUser, null_mut(), 0, &mut needed);
+            if needed == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
+            if GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr() as *mut c_void,
+                needed,
+                &mut needed,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let mut text: *mut u16 = null_mut();
+            if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut len = 0;
+            while *text.add(len) != 0 {
+                len += 1;
+            }
+            let sid_str = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+            LocalFree(text as *mut c_void);
+            Ok(sid_str)
+        })();
+        CloseHandle(token);
+        let sid = sid?;
+
+        // D:P(A;;GA;;;<SID>): Protected DACL (inheritance blocked), Generic All for current user SID only
+        let sddl: Vec<u16> = format!("D:P(A;;GA;;;{sid})")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut descriptor: *mut c_void = null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            null_mut(),
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let res = SetFileSecurityW(
+            wide_path.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        );
+        LocalFree(descriptor);
+
+        if res == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 
@@ -169,13 +264,16 @@ pub fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
         restrict_to_owner(&tmp, 0o600);
         f.write_all(data).map_err(|e| e.to_string())?;
         f.sync_all().map_err(|e| e.to_string())?;
-        fs::rename(&tmp, path).map_err(|e| e.to_string())
+        fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        restrict_to_owner(path, 0o600);
+        Ok(())
     })();
     if written.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     written
 }
+
 
 fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);

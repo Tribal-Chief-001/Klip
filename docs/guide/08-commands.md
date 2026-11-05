@@ -17,6 +17,8 @@ On Windows use PowerShell; everything is the same. Run `klip --help` or `klip <c
 | `klip history [-l N]` | recent clips (secrets masked; forgotten after 24 hours by default) |
 | `klip history clear` | forget all clips kept on this computer |
 | `klip send "<text>"` | send text now, with the result per device (`klip send -` reads standard input) |
+| `klip copy [text]` (alias `c`) | copy text into clipboard and broadcast to peers (or pipe from stdin: `cat f \| klip copy`) |
+| `klip paste` (alias `p`) | output active clipboard content directly to stdout without extra formatting |
 | `klip share` | send the image you copied last (held 10 minutes), with the result per device |
 | `klip send-file FILE... [--to NAME] [--no-wait]` | send files or folders; exit code 1 if any did not arrive |
 | `klip transfers [--cancel ID]` | running and recent file transfers; stop one |
@@ -28,6 +30,8 @@ On Windows use PowerShell; everything is the same. Run `klip --help` or `klip <c
 
 ```bash
 klip start && klip status            # start and check
+cat notes.txt | klip copy            # pipe file into clipboard & broadcast
+klip paste | jq .                    # parse clipboard content with jq
 klip send-file ~/Pictures/Trip       # a folder
 klip pause 1800                      # half an hour of privacy
 klip unpair --all -y                 # reset: forget everybody

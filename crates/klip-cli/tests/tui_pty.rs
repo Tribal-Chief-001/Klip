@@ -203,7 +203,7 @@ fn term_dumb_means_help_and_exit_2_like_without_a_terminal() {
     let d = Isolated::create("dumb", LAN_ONLY);
     let mut env = d.env_pairs();
     env.push(("TERM".to_string(), "dumb".to_string()));
-    let mut p = Pty::spawn(&[], &env, (100, 30));
+    let mut p = Pty::spawn(&[], &env, (100, 50));
     assert_eq!(p.wait_exit(10), Some(2), "{}", p.screen());
     assert!(p.screen().contains("Usage: klip"), "{}", p.screen());
     assert!(!p.alt_screen());

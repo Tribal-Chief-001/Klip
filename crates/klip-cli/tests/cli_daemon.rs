@@ -117,3 +117,37 @@ fn many_clients_at_once_all_get_an_answer() {
         assert!(text(&out).contains("STATE"), "{}", text(&out));
     }
 }
+
+#[test]
+fn copy_and_paste_roundtrip_via_cli() {
+    let d = Isolated::start("cprt", LAN_ONLY);
+    let copy_out = d.run(&["copy", "hello-world-piping"], None);
+    assert!(copy_out.status.success(), "{}", text(&copy_out));
+
+    let paste_out = d.run(&["paste"], None);
+    assert!(paste_out.status.success(), "{}", text(&paste_out));
+    assert_eq!(String::from_utf8_lossy(&paste_out.stdout), "hello-world-piping");
+}
+
+#[test]
+fn copy_via_stdin_pipe_and_paste() {
+    let d = Isolated::start("cpstdin", LAN_ONLY);
+    let copy_out = d.run(&["copy", "-"], Some(b"streamed-piping-content"));
+    assert!(copy_out.status.success(), "{}", text(&copy_out));
+
+    let paste_out = d.run(&["paste"], None);
+    assert!(paste_out.status.success(), "{}", text(&paste_out));
+    assert_eq!(String::from_utf8_lossy(&paste_out.stdout), "streamed-piping-content");
+}
+
+#[test]
+fn copy_alias_c_and_paste_alias_p() {
+    let d = Isolated::start("cpalias", LAN_ONLY);
+    let copy_out = d.run(&["c", "alias-text-123"], None);
+    assert!(copy_out.status.success(), "{}", text(&copy_out));
+
+    let paste_out = d.run(&["p"], None);
+    assert!(paste_out.status.success(), "{}", text(&paste_out));
+    assert_eq!(String::from_utf8_lossy(&paste_out.stdout), "alias-text-123");
+}
+

@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
+PackageIdentifier: TribalChief.Klip
+PackageVersion: 0.10.0
+PackageName: Klip
+Publisher: TribalChief
+PublisherUrl: https://github.com/Tribal-Chief-001
+PublisherSupportUrl: https://github.com/Tribal-Chief-001/Klip/issues
+Author: TribalChief
+ShortDescription: Peer-to-peer, end-to-end encrypted clipboard synchronization across your own devices.
+Description: |
+  Klip synchronizes your clipboard across Linux, Windows, macOS, and Android without third-party servers.
+  Features include end-to-end encryption via QUIC/Iroh, zero cloud lock-in, CLI clipboard piping (klip copy / klip paste),
+  and password manager privacy exclusion.
+PackageUrl: https://github.com/Tribal-Chief-001/Klip
+License: MIT or Apache-2.0
+LicenseUrl: https://github.com/Tribal-Chief-001/Klip/blob/main/LICENSE-MIT
+Copyright: Copyright (c) 2026 TribalChief
+Tags:
+  - clipboard
+  - sync
+  - p2p
+  - privacy
+  - encrypted
+  - cross-platform
+Installers:
+  - Architecture: x64
+    InstallerType: inno
+    InstallerUrl: https://github.com/Tribal-Chief-001/Klip/releases/latest/download/Klip-Setup-0.10.0.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000 # To be replaced on release publish
+    Scope: user
+ManifestType: singleton
+ManifestVersion: 1.6.0

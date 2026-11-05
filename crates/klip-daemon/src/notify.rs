@@ -20,6 +20,7 @@ fn body(name: &str, gone: Duration) -> String {
 }
 
 /// `--` comes first so a device name starting with `-` can never be read as an option.
+#[allow(dead_code)]
 fn args(name: &str, gone: Duration) -> Vec<String> {
     vec![
         "--app-name=Klip".into(),
@@ -45,18 +46,62 @@ fn run(program: &str, args: &[String]) {
     }
 }
 
+/// Send a native desktop notification across Linux, macOS, and Windows.
+pub fn send_native_notification(title: &str, body_text: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        run(
+            "notify-send",
+            &[
+                "--app-name=Klip".to_string(),
+                "--expire-time=10000".to_string(),
+                "--".to_string(),
+                title.to_string(),
+                escape_markup(body_text),
+            ],
+        );
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let escaped_body = body_text.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            escaped_body, escaped_title
+        );
+        run("osascript", &["-e".to_string(), script]);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let script = format!(
+            "$t=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+             $n=$t.GetElementsByTagName('text'); \
+             $n.Item(0).AppendChild($t.CreateTextNode('{}')) > $null; \
+             $n.Item(1).AppendChild($t.CreateTextNode('{}')) > $null; \
+             $toast=[Windows.UI.Notifications.ToastNotification]::new($t); \
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Klip').Show($toast);",
+            title.replace('\'', "''"),
+            body_text.replace('\'', "''")
+        );
+        run(
+            "powershell",
+            &[
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                script,
+            ],
+        );
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (title, body_text);
+    }
+}
+
 /// A desktop notification with a short message of our own (the tray's failures), never clip content.
 pub fn say(text: &str) {
-    run(
-        "notify-send",
-        &[
-            "--app-name=Klip".to_string(),
-            "--expire-time=10000".to_string(),
-            "--".to_string(),
-            "Klip".to_string(),
-            escape_markup(text),
-        ],
-    );
+    send_native_notification("Klip", text);
 }
 
 /// Never the file's name: it can be private and notifications show on a lock screen.
@@ -94,16 +139,7 @@ pub fn file_hook() -> FileReceivedHook {
                 std::thread::sleep(FILE_NOTICE_WINDOW);
                 let (count, bytes) = pending.lock().unwrap().remove(&from).unwrap_or((0, 0));
                 if count > 0 {
-                    run(
-                        "notify-send",
-                        &[
-                            "--app-name=Klip".to_string(),
-                            "--expire-time=10000".to_string(),
-                            "--".to_string(),
-                            "Klip".to_string(),
-                            file_body(&from, count, bytes),
-                        ],
-                    );
+                    send_native_notification("Klip", &file_body(&from, count, bytes));
                 }
             });
         }
@@ -111,8 +147,11 @@ pub fn file_hook() -> FileReceivedHook {
 }
 
 pub fn hook() -> UndeliveredHook {
-    Arc::new(|name: &str, gone: Duration| run("notify-send", &args(name, gone)))
+    Arc::new(|name: &str, gone: Duration| {
+        send_native_notification("Klip", &body(name, gone));
+    })
 }
+
 
 #[cfg(test)]
 mod tests {

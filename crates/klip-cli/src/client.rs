@@ -57,7 +57,7 @@ fn timeout_for(req: &IpcRequest) -> Duration {
     match req {
         IpcRequest::PairJoin { .. } => PAIR_JOIN_TIMEOUT,
         IpcRequest::SendPendingImage => SHARE_IMAGE_TIMEOUT,
-        IpcRequest::SendClip { text } => {
+        IpcRequest::SendClip { text } | IpcRequest::CopyClip { text } => {
             DEFAULT_TIMEOUT + Duration::from_secs((text.len() / (256 * 1024)) as u64)
         }
         _ => DEFAULT_TIMEOUT,

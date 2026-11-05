@@ -1,0 +1,9 @@
+Copy text into the clipboard and sync to linked devices (reads argument or standard input)
+
+Usage: klip copy [TEXT]
+
+Arguments:
+  [TEXT]  Text to copy, or omit / pass `-` to read from standard input
+
+Options:
+  -h, --help  Print help

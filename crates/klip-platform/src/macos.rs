@@ -63,6 +63,10 @@ impl ClipboardDriver for MacOSClipboardDriver {
         }
 
         if let Ok(img) = cb.get_image() {
+            // Quick check before expensive PNG deflate compression to eliminate 100ms polling thrash
+            if self.echo_shield.should_suppress_raw_image(img.width, img.height, &img.bytes) {
+                return Ok(None);
+            }
             if let Ok(png_bytes) =
                 klip_diff::rgba_to_png(img.width as u32, img.height as u32, &img.bytes)
             {
@@ -71,6 +75,44 @@ impl ClipboardDriver for MacOSClipboardDriver {
                     if self.echo_shield.should_suppress(&fp) {
                         return Ok(None);
                     }
+                    self.echo_shield.record_read_raw_image(img.width, img.height, &img.bytes);
+                    return Ok(Some(CapturedClip {
+                        content_type: ClipContentType::ImagePng,
+                        data: png_bytes,
+                        fingerprint: fp,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn read_current_clip(&self) -> Result<Option<CapturedClip>, PlatformError> {
+        let mut guard = self.clipboard.lock().unwrap();
+        let cb = match guard.as_mut() {
+            Some(cb) => cb,
+            None => return Ok(None),
+        };
+
+        if let Ok(text) = cb.get_text() {
+            if !text.is_empty() {
+                let bytes = text.into_bytes();
+                let fp = compute_fingerprint(&bytes, &self.local_node);
+                return Ok(Some(CapturedClip {
+                    content_type: ClipContentType::PlainTextUtf8,
+                    data: bytes,
+                    fingerprint: fp,
+                }));
+            }
+        }
+
+        if let Ok(img) = cb.get_image() {
+            if let Ok(png_bytes) =
+                klip_diff::rgba_to_png(img.width as u32, img.height as u32, &img.bytes)
+            {
+                if !png_bytes.is_empty() {
+                    let fp = compute_fingerprint(&png_bytes, &self.local_node);
                     return Ok(Some(CapturedClip {
                         content_type: ClipContentType::ImagePng,
                         data: png_bytes,
@@ -84,6 +126,15 @@ impl ClipboardDriver for MacOSClipboardDriver {
     }
 
     fn write_clip(&self, content_type: &ClipContentType, data: &[u8]) -> Result<(), PlatformError> {
+        self.write_clip_flagged(content_type, data, false)
+    }
+
+    fn write_clip_flagged(
+        &self,
+        content_type: &ClipContentType,
+        data: &[u8],
+        sensitive: bool,
+    ) -> Result<(), PlatformError> {
         let mut guard = self.clipboard.lock().unwrap();
         let cb = match guard.as_mut() {
             Some(cb) => cb,
@@ -100,22 +151,39 @@ impl ClipboardDriver for MacOSClipboardDriver {
         match content_type {
             ClipContentType::PlainTextUtf8 | ClipContentType::HtmlContent => {
                 let text = String::from_utf8_lossy(data);
-                cb.set_text(text)
+                use arboard::SetExtApple;
+                let mut op = cb.set();
+                if sensitive {
+                    op = op.exclude_from_history();
+                }
+                op.text(text)
                     .map_err(|e| PlatformError::BackendUnavailable(e.to_string()))?;
             }
             ClipContentType::ImagePng | ClipContentType::ImageWebP => {
                 if let Ok((width, height, rgba)) = klip_diff::png_to_rgba(data) {
+                    self.echo_shield
+                        .record_injected_raw_image(width as usize, height as usize, &rgba);
                     let img = arboard::ImageData {
                         width: width as usize,
                         height: height as usize,
                         bytes: std::borrow::Cow::Owned(rgba),
                     };
-                    let _ = cb.set_image(img);
+                    use arboard::SetExtApple;
+                    let mut op = cb.set();
+                    if sensitive {
+                        op = op.exclude_from_history();
+                    }
+                    let _ = op.image(img);
                 }
             }
             ClipContentType::CustomMime(_) => {
                 let text = String::from_utf8_lossy(data);
-                cb.set_text(text)
+                use arboard::SetExtApple;
+                let mut op = cb.set();
+                if sensitive {
+                    op = op.exclude_from_history();
+                }
+                op.text(text)
                     .map_err(|e| PlatformError::BackendUnavailable(e.to_string()))?;
             }
         }
@@ -126,3 +194,4 @@ impl ClipboardDriver for MacOSClipboardDriver {
         &self.echo_shield
     }
 }
+

@@ -56,13 +56,23 @@ impl fmt::Display for PlatformError {
 
 impl std::error::Error for PlatformError {}
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RawImageSignature {
+    pub width: usize,
+    pub height: usize,
+    pub hash: [u8; 32],
+}
+
 /// Echo Shield: Caches the fingerprint of the last clip injected by Klip
 /// and the last clip read from the host clipboard to prevent:
 /// 1. Polling storms (reading identical unmodified clipboard content every 100ms)
 /// 2. Local clipboard echo feedback loops (re-broadcasting clips injected by Klip).
+/// 3. Raw image deflate/compression thrash on 100ms polling ticks.
 pub struct EchoShield {
     last_injected_fingerprint: Mutex<Option<[u8; 32]>>,
     last_read_fingerprint: Mutex<Option<[u8; 32]>>,
+    last_injected_raw_image: Mutex<Option<RawImageSignature>>,
+    last_read_raw_image: Mutex<Option<RawImageSignature>>,
 }
 
 impl EchoShield {
@@ -70,6 +80,8 @@ impl EchoShield {
         Self {
             last_injected_fingerprint: Mutex::new(None),
             last_read_fingerprint: Mutex::new(None),
+            last_injected_raw_image: Mutex::new(None),
+            last_read_raw_image: Mutex::new(None),
         }
     }
 
@@ -77,6 +89,49 @@ impl EchoShield {
     pub fn init_baseline(&self, fingerprint: [u8; 32]) {
         let mut read = self.last_read_fingerprint.lock().unwrap();
         *read = Some(fingerprint);
+    }
+
+    /// Fast check if raw image dimensions and content match the previously read or injected image.
+    /// Prevents raw image PNG deflate/compression thrash on 100ms poll ticks.
+    pub fn should_suppress_raw_image(&self, width: usize, height: usize, raw_bytes: &[u8]) -> bool {
+        let hash = *blake3::hash(raw_bytes).as_bytes();
+        let sig = RawImageSignature { width, height, hash };
+
+        let mut read_guard = self.last_read_raw_image.lock().unwrap();
+        let inj_guard = self.last_injected_raw_image.lock().unwrap();
+
+        // 1. If identical to last read image, suppress poll storm
+        if let Some(last_read) = *read_guard {
+            if last_read == sig {
+                return true;
+            }
+        }
+
+        // 2. If identical to last injected image, suppress echo
+        if let Some(last_inj) = *inj_guard {
+            if last_inj == sig {
+                *read_guard = Some(sig);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Record a raw image that was read and verified.
+    pub fn record_read_raw_image(&self, width: usize, height: usize, raw_bytes: &[u8]) {
+        let hash = *blake3::hash(raw_bytes).as_bytes();
+        let sig = RawImageSignature { width, height, hash };
+        *self.last_read_raw_image.lock().unwrap() = Some(sig);
+        *self.last_injected_raw_image.lock().unwrap() = None;
+    }
+
+    /// Record a raw image that is being injected into the OS clipboard.
+    pub fn record_injected_raw_image(&self, width: usize, height: usize, raw_bytes: &[u8]) {
+        let hash = *blake3::hash(raw_bytes).as_bytes();
+        let sig = RawImageSignature { width, height, hash };
+        *self.last_injected_raw_image.lock().unwrap() = Some(sig);
+        *self.last_read_raw_image.lock().unwrap() = Some(sig);
     }
 
     /// Record a fingerprint that is about to be written to host clipboard.
@@ -112,6 +167,8 @@ impl EchoShield {
         // 3. New local user copy: update last read and clear injection cache
         *read_guard = Some(*fingerprint);
         *inj_guard = None;
+        *self.last_read_raw_image.lock().unwrap() = None;
+        *self.last_injected_raw_image.lock().unwrap() = None;
         false
     }
 }
@@ -126,10 +183,15 @@ impl Default for EchoShield {
 pub trait ClipboardDriver: Send + Sync {
     fn environment(&self) -> PlatformEnvironment;
     fn read_clip(&self) -> Result<Option<CapturedClip>, PlatformError>;
+    /// Read the active clipboard contents right now without poll suppression filtering.
+    /// Default implementation delegates to `read_clip()`.
+    fn read_current_clip(&self) -> Result<Option<CapturedClip>, PlatformError> {
+        self.read_clip()
+    }
     fn write_clip(&self, content_type: &ClipContentType, data: &[u8]) -> Result<(), PlatformError>;
     /// Like [`Self::write_clip`] but tells the driver the content was flagged as a secret, so it
     /// can ask the OS to keep it out of keyboard suggestions/history where the platform allows
-    /// (Android `EXTRA_IS_SENSITIVE`, Windows history formats). Default: ignore the flag.
+    /// (Android `EXTRA_IS_SENSITIVE`, Windows history formats, Linux `x-kde-passwordManagerHint`).
     fn write_clip_flagged(
         &self,
         content_type: &ClipContentType,
@@ -148,6 +210,7 @@ pub trait ClipboardDriver: Send + Sync {
         None
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -183,4 +246,27 @@ mod tests {
         assert!(!shield.should_suppress(&clip_a));
         assert!(shield.should_suppress(&clip_a));
     }
+
+    #[test]
+    fn test_echo_shield_raw_image_suppression() {
+        let shield = EchoShield::new();
+        let raw_pixels_a = vec![255u8; 100 * 100 * 4];
+        let raw_pixels_b = vec![128u8; 100 * 100 * 4];
+
+        // 1. First sight of raw image: not suppressed
+        assert!(!shield.should_suppress_raw_image(100, 100, &raw_pixels_a));
+        shield.record_read_raw_image(100, 100, &raw_pixels_a);
+
+        // 2. Subsequent 100ms polling ticks: ALL suppressed without needing PNG encoding!
+        for _ in 0..100 {
+            assert!(shield.should_suppress_raw_image(100, 100, &raw_pixels_a));
+        }
+
+        // 3. Injected image from peer: suppressed without PNG encoding!
+        shield.record_injected_raw_image(100, 100, &raw_pixels_b);
+        for _ in 0..100 {
+            assert!(shield.should_suppress_raw_image(100, 100, &raw_pixels_b));
+        }
+    }
 }
+

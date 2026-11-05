@@ -5,8 +5,8 @@ use klip_net::PairingTicket;
 use klip_proto::clip::ClipContentType;
 use klip_proto::ipc::{
     deserialize_ipc_msg, max_request_bytes, serialize_ipc_msg, ConfigInfo, HelloInfo, IpcRequest,
-    IpcResponse, CAP_CLEAR_HISTORY, CAP_COPY_TO_CLIPBOARD, CAP_FILE_FOLDERS, CAP_FILE_TRANSFER,
-    CAP_SHARE_IMAGE, CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
+    IpcResponse, CAP_CLEAR_HISTORY, CAP_CLI_PIPING, CAP_COPY_TO_CLIPBOARD, CAP_FILE_FOLDERS,
+    CAP_FILE_TRANSFER, CAP_SHARE_IMAGE, CAP_UNPAIR_ALL, IPC_PROTOCOL_VERSION,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -300,6 +300,95 @@ impl IpcServer {
                     }
                 }
             }
+            IpcRequest::CopyClip { text } => {
+                let bytes = text.into_bytes();
+                let len = bytes.len();
+                if len > sync.config.max_clip_bytes {
+                    return IpcResponse::Error(format!(
+                        "text is {len} bytes; the limit is {} bytes",
+                        sync.config.max_clip_bytes
+                    ));
+                }
+                let driver = Arc::clone(&sync.driver);
+                let write_data = bytes.clone();
+                let write_res = tokio::task::spawn_blocking(move || {
+                    driver.write_clip(&ClipContentType::PlainTextUtf8, &write_data)
+                })
+                .await;
+                if let Err(e) = write_res {
+                    return IpcResponse::Error(format!("failed to write clipboard: {e}"));
+                } else if let Ok(Err(e)) = write_res {
+                    return IpcResponse::Error(format!("failed to write clipboard: {e}"));
+                }
+
+                match sync
+                    .broadcast_local_clip(ClipContentType::PlainTextUtf8, bytes)
+                    .await
+                {
+                    None => IpcResponse::Sent {
+                        bytes: len,
+                        delivered: Vec::new(),
+                        failed: Vec::new(),
+                    },
+                    Some(reports) => {
+                        let mut delivered = Vec::new();
+                        let mut failed = Vec::new();
+                        for r in reports {
+                            match r.result {
+                                Ok(()) => delivered.push(r.peer_name),
+                                Err(e) => failed.push((r.peer_name, e)),
+                            }
+                        }
+                        IpcResponse::Sent {
+                            bytes: len,
+                            delivered,
+                            failed,
+                        }
+                    }
+                }
+            }
+            IpcRequest::PasteClip => {
+                let driver = Arc::clone(&sync.driver);
+                let read_res = tokio::task::spawn_blocking(move || driver.read_current_clip()).await;
+                match read_res {
+                    Ok(Ok(Some(clip))) => {
+                        let content_type = match clip.content_type {
+                            ClipContentType::PlainTextUtf8 => "text/plain".to_string(),
+                            ClipContentType::ImagePng => "image/png".to_string(),
+                            ClipContentType::ImageWebP => "image/webp".to_string(),
+                            ClipContentType::HtmlContent => "text/html".to_string(),
+                            ClipContentType::CustomMime(m) => m,
+                        };
+                        IpcResponse::ClipboardContent {
+                            content_type,
+                            data: clip.data,
+                        }
+                    }
+                    Ok(Ok(None)) => {
+                        if let Some(recent) = sync.history.get_recent(1).first() {
+                            let ct = klip_core::sniff_content_type(&recent.full_content);
+                            let content_type = match ct {
+                                ClipContentType::PlainTextUtf8 => "text/plain".to_string(),
+                                ClipContentType::ImagePng => "image/png".to_string(),
+                                ClipContentType::ImageWebP => "image/webp".to_string(),
+                                ClipContentType::HtmlContent => "text/html".to_string(),
+                                ClipContentType::CustomMime(m) => m,
+                            };
+                            IpcResponse::ClipboardContent {
+                                content_type,
+                                data: recent.full_content.clone(),
+                            }
+                        } else {
+                            IpcResponse::ClipboardContent {
+                                content_type: "text/plain".to_string(),
+                                data: Vec::new(),
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => IpcResponse::Error(format!("clipboard read error: {e}")),
+                    Err(e) => IpcResponse::Error(format!("task join error: {e}")),
+                }
+            }
             IpcRequest::Hello { client_protocol: _ } => {
                 let cfg = &sync.config;
                 IpcResponse::Hello(HelloInfo {
@@ -312,6 +401,7 @@ impl IpcServer {
                         CAP_SHARE_IMAGE.to_string(),
                         CAP_FILE_TRANSFER.to_string(),
                         CAP_FILE_FOLDERS.to_string(),
+                        CAP_CLI_PIPING.to_string(),
                     ],
                     config: ConfigInfo {
                         device_name: cfg.device_name.clone(),

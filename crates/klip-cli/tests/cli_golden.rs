@@ -55,6 +55,8 @@ fn help_of_every_subcommand() {
         ("help_resume.txt", vec!["resume", "--help"]),
         ("help_history.txt", vec!["history", "--help"]),
         ("help_send.txt", vec!["send", "--help"]),
+        ("help_copy.txt", vec!["copy", "--help"]),
+        ("help_paste.txt", vec!["paste", "--help"]),
         (
             "help_install_service.txt",
             vec!["install-service", "--help"],
@@ -81,6 +83,8 @@ fn commands_that_need_the_daemon_say_so_when_it_is_not_running() {
         ("down_stop.txt", vec!["stop"]),
         ("down_history.txt", vec!["history"]),
         ("down_send.txt", vec!["send", "hello"]),
+        ("down_copy.txt", vec!["copy", "hello"]),
+        ("down_paste.txt", vec!["paste"]),
         ("down_pause.txt", vec!["pause"]),
         ("down_resume.txt", vec!["resume"]),
         ("down_unpair.txt", vec!["unpair", "someone"]),

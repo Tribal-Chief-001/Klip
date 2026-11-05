@@ -76,6 +76,16 @@ enum Commands {
         /// `cat main.rs | klip send -`)
         text: String,
     },
+    /// Copy text into the clipboard and sync to linked devices (reads argument or standard input)
+    #[command(alias = "c")]
+    Copy {
+        /// Text to copy, or omit / pass `-` to read from standard input
+        #[arg(value_name = "TEXT")]
+        text: Option<String>,
+    },
+    /// Output the current clipboard content to standard output
+    #[command(alias = "p")]
+    Paste,
     /// Send files or folders to your linked devices (they arrive in the other device's Klip folder)
     SendFile {
         /// The files or folders to send (a folder arrives as one new folder; links are not followed)
@@ -643,6 +653,78 @@ async fn run(cli: Cli) -> AnyResult<()> {
                     delivered,
                     failed,
                 } => print_sent(bytes, &delivered, &failed)?,
+                IpcResponse::Error(e) => return Err(e.into()),
+                other => return Err(format!("unexpected reply: {other:?}").into()),
+            }
+        }
+        Commands::Copy { text } => {
+            let text = match text {
+                Some(t) if t != "-" => t,
+                _ => {
+                    use std::io::Read;
+                    if std::io::stdin().is_terminal() {
+                        eprintln!("Reading the text from the terminal; finish with Ctrl-D.");
+                    }
+                    let mut buf = String::new();
+                    std::io::stdin()
+                        .read_to_string(&mut buf)
+                        .map_err(|e| format!("cannot read standard input as text: {e}"))?;
+                    buf
+                }
+            };
+            let client = DaemonClient::for_current_user();
+            let cap = request_cap(&client).await;
+            let reply = client
+                .request(&IpcRequest::CopyClip { text }, cap)
+                .await
+                .map_err(|e| e.to_string())?;
+            match reply {
+                IpcResponse::Sent {
+                    bytes,
+                    delivered,
+                    failed,
+                } => {
+                    if std::io::stdout().is_terminal() {
+                        if delivered.is_empty() && failed.is_empty() {
+                            println!("{} Copied {bytes} B to clipboard.", "✓".green().bold());
+                        } else {
+                            for name in &delivered {
+                                println!(
+                                    "{} Copied and sent {bytes} B to {}",
+                                    "✓".green().bold(),
+                                    name.bold()
+                                );
+                            }
+                            for (name, why) in &failed {
+                                eprintln!(
+                                    "{} {} did not receive it: {}",
+                                    "✗".red().bold(),
+                                    name.bold(),
+                                    why
+                                );
+                            }
+                        }
+                    }
+                }
+                IpcResponse::Error(e) => return Err(e.into()),
+                other => return Err(format!("unexpected reply: {other:?}").into()),
+            }
+        }
+        Commands::Paste => {
+            use std::io::Write;
+            let client = DaemonClient::for_current_user();
+            let cap = request_cap(&client).await;
+            let reply = client
+                .request(&IpcRequest::PasteClip, cap)
+                .await
+                .map_err(|e| e.to_string())?;
+            match reply {
+                IpcResponse::ClipboardContent { data, .. } => {
+                    std::io::stdout()
+                        .write_all(&data)
+                        .map_err(|e| format!("failed to write to stdout: {e}"))?;
+                    let _ = std::io::stdout().flush();
+                }
                 IpcResponse::Error(e) => return Err(e.into()),
                 other => return Err(format!("unexpected reply: {other:?}").into()),
             }

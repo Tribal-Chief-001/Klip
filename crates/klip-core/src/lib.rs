@@ -16,7 +16,7 @@ mod transfers;
 
 pub use config::{DaemonConfig, KlipPaths, RelayMode};
 pub use engine::{CoreEngine, Shutdown};
-pub use history::HistoryBuffer;
+pub use history::{sniff_content_type, HistoryBuffer};
 pub use sync::{
     node_of, offline_label, DeliveryReport, FileReceivedHook, SyncCoordinator, UndeliveredHook,
 };

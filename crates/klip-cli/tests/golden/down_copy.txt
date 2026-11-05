@@ -1,0 +1,1 @@
+[1m[31merror:[39m[0m Klip daemon is not running. Launch it with `klip start`.

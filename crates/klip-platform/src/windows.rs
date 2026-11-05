@@ -85,6 +85,10 @@ impl ClipboardDriver for WindowsClipboardDriver {
 
         let img_res = self.with_retry(|cb| cb.get_image());
         if let Ok(img) = img_res {
+            // Quick check before expensive PNG deflate compression to eliminate 100ms polling thrash
+            if self.echo_shield.should_suppress_raw_image(img.width, img.height, &img.bytes) {
+                return Ok(None);
+            }
             if let Ok(png_bytes) =
                 klip_diff::rgba_to_png(img.width as u32, img.height as u32, &img.bytes)
             {
@@ -93,6 +97,40 @@ impl ClipboardDriver for WindowsClipboardDriver {
                     if self.echo_shield.should_suppress(&fp) {
                         return Ok(None);
                     }
+                    self.echo_shield.record_read_raw_image(img.width, img.height, &img.bytes);
+                    return Ok(Some(CapturedClip {
+                        content_type: ClipContentType::ImagePng,
+                        data: png_bytes,
+                        fingerprint: fp,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn read_current_clip(&self) -> Result<Option<CapturedClip>, PlatformError> {
+        let text_res = self.with_retry(|cb| cb.get_text());
+        if let Ok(text) = text_res {
+            if !text.is_empty() {
+                let bytes = text.into_bytes();
+                let fp = compute_fingerprint(&bytes, &self.local_node);
+                return Ok(Some(CapturedClip {
+                    content_type: ClipContentType::PlainTextUtf8,
+                    data: bytes,
+                    fingerprint: fp,
+                }));
+            }
+        }
+
+        let img_res = self.with_retry(|cb| cb.get_image());
+        if let Ok(img) = img_res {
+            if let Ok(png_bytes) =
+                klip_diff::rgba_to_png(img.width as u32, img.height as u32, &img.bytes)
+            {
+                if !png_bytes.is_empty() {
+                    let fp = compute_fingerprint(&png_bytes, &self.local_node);
                     return Ok(Some(CapturedClip {
                         content_type: ClipContentType::ImagePng,
                         data: png_bytes,
@@ -106,32 +144,83 @@ impl ClipboardDriver for WindowsClipboardDriver {
     }
 
     fn write_clip(&self, content_type: &ClipContentType, data: &[u8]) -> Result<(), PlatformError> {
+        self.write_clip_flagged(content_type, data, false)
+    }
+
+    fn write_clip_flagged(
+        &self,
+        content_type: &ClipContentType,
+        data: &[u8],
+        sensitive: bool,
+    ) -> Result<(), PlatformError> {
         let fp = compute_fingerprint(data, &self.local_node);
         self.echo_shield.record_injection(fp);
 
         match content_type {
             ClipContentType::PlainTextUtf8 => {
                 let text = String::from_utf8_lossy(data).to_string();
-                self.with_retry(|cb| cb.set_text(text.clone()))?;
+                self.with_retry(|cb| {
+                    use arboard::SetExtWindows;
+                    let mut op = cb.set();
+                    if sensitive {
+                        op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                    }
+                    op.text(text.clone())
+                })?;
+                if sensitive {
+                    set_windows_privacy_formats();
+                }
             }
             ClipContentType::HtmlContent => {
                 let raw_html = String::from_utf8_lossy(data);
                 let text = klip_diff::utf8_to_cf_html(&raw_html);
-                self.with_retry(|cb| cb.set_text(text.clone()))?;
+                self.with_retry(|cb| {
+                    use arboard::SetExtWindows;
+                    let mut op = cb.set();
+                    if sensitive {
+                        op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                    }
+                    op.text(text.clone())
+                })?;
+                if sensitive {
+                    set_windows_privacy_formats();
+                }
             }
             ClipContentType::ImagePng | ClipContentType::ImageWebP => {
                 if let Ok((width, height, rgba)) = klip_diff::png_to_rgba(data) {
+                    self.echo_shield
+                        .record_injected_raw_image(width as usize, height as usize, &rgba);
                     let img = ImageData {
                         width: width as usize,
                         height: height as usize,
                         bytes: Cow::Owned(rgba),
                     };
-                    self.with_retry(|cb| cb.set_image(img.clone()))?;
+                    self.with_retry(|cb| {
+                        use arboard::SetExtWindows;
+                        let mut op = cb.set();
+                        if sensitive {
+                            op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                        }
+                        op.image(img.clone())
+                    })?;
+                    if sensitive {
+                        set_windows_privacy_formats();
+                    }
                 }
             }
             ClipContentType::CustomMime(_) => {
                 let text = String::from_utf8_lossy(data).to_string();
-                self.with_retry(|cb| cb.set_text(text.clone()))?;
+                self.with_retry(|cb| {
+                    use arboard::SetExtWindows;
+                    let mut op = cb.set();
+                    if sensitive {
+                        op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                    }
+                    op.text(text.clone())
+                })?;
+                if sensitive {
+                    set_windows_privacy_formats();
+                }
             }
         }
 
@@ -142,3 +231,19 @@ impl ClipboardDriver for WindowsClipboardDriver {
         &self.echo_shield
     }
 }
+
+fn set_windows_privacy_formats() {
+    let formats = [
+        "Clipboard Viewer Ignore",
+        "ExcludeClipboardContentFromMonitorProcessing",
+    ];
+    if clipboard_win::raw::open().is_ok() {
+        for name in formats {
+            if let Some(fmt_id) = clipboard_win::register_format(name) {
+                let _ = clipboard_win::raw::set_without_clear(fmt_id.get(), &[0u8; 4]);
+            }
+        }
+        let _ = clipboard_win::raw::close();
+    }
+}
+
