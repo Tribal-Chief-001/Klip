@@ -54,20 +54,17 @@ find_or_build_binary() {
         info "Attempting to download latest prebuilt release from GitHub..."
         ARCH="$(uname -m)"
         case "${ARCH}" in
-            x86_64)  TARGET="x86_64-unknown-linux-musl" ;;
-            aarch64) TARGET="aarch64-unknown-linux-musl" ;;
-            *)       error "Unsupported architecture: ${ARCH}"; exit 1 ;;
+            x86_64)  TARGET="linux-x86_64" ;;
+            *)       error "Unsupported architecture: ${ARCH}. Prebuilt releases are currently available for x86_64."; exit 1 ;;
         esac
 
-        RELEASE_URL="https://github.com/Tribal-Chief-001/Klip/releases/latest/download/klip-${TARGET}.tar.gz"
-        TMP_DIR="$(mktemp -d)"
-        trap 'rm -rf "${TMP_DIR}"' EXIT
+        RELEASE_URL="https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-${TARGET}"
 
-        if curl -fsSL "${RELEASE_URL}" -o "${TMP_DIR}/klip.tar.gz" 2>/dev/null; then
-            tar -xzf "${TMP_DIR}/klip.tar.gz" -C "${TMP_DIR}"
-            cp -f "${TMP_DIR}/klip" "${KLIP_BIN}"
+        if curl -fsSL "${RELEASE_URL}" -o "${KLIP_BIN}" 2>/dev/null; then
+            chmod +x "${KLIP_BIN}"
+            success "Downloaded prebuilt klip binary to ${KLIP_BIN}"
         else
-            warn "No release tarball at ${RELEASE_URL}. Falling back to cargo install..."
+            warn "Could not download prebuilt binary from ${RELEASE_URL}. Falling back to cargo install..."
             if command -v cargo >/dev/null 2>&1; then
                 cargo install --git https://github.com/Tribal-Chief-001/Klip klip-cli --bin klip --root "${HOME}/.local"
             else

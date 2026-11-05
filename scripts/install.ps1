@@ -36,7 +36,7 @@ if ($SourcePath -ne "" -and (Test-Path $SourcePath)) {
     Write-Host "[INFO] Copying provided binary from $SourcePath..." -ForegroundColor Cyan
     Copy-Item -Path $SourcePath -Destination $KlipExe -Force
     $BinaryFound = $true
-} else {
+} elseif ($MyInvocation.MyCommand.Path) {
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     $RepoRoot = Split-Path -Parent $ScriptDir
     $ReleaseCandidate = Join-Path $RepoRoot "target\release\klip.exe"
@@ -66,25 +66,32 @@ if ($SourcePath -ne "" -and (Test-Path $SourcePath)) {
 }
 
 if (-not $BinaryFound) {
-    Write-Host "[INFO] Downloading latest Klip release from GitHub..." -ForegroundColor Cyan
-    $ReleaseUrl = "https://github.com/Tribal-Chief-001/Klip/releases/latest/download/klip-x86_64-pc-windows-msvc.zip"
-    $TempZip = Join-Path $env:TEMP "klip-install.zip"
-    $TempExtract = Join-Path $env:TEMP "klip-install"
+    Write-Host "[INFO] Downloading latest Klip release binary from GitHub..." -ForegroundColor Cyan
+    $DownloadUrl = "https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-windows-x86_64.exe"
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-        Invoke-WebRequest -Uri $ReleaseUrl -OutFile $TempZip -UseBasicParsing
-        Expand-Archive -Path $TempZip -DestinationPath $TempExtract -Force
-        $DownloadedExe = Join-Path $TempExtract "klip.exe"
-        if (Test-Path $DownloadedExe) {
-            Copy-Item -Path $DownloadedExe -Destination $KlipExe -Force
+        $ReleasesApi = "https://api.github.com/repos/Tribal-Chief-001/Klip/releases"
+        $Releases = Invoke-RestMethod -Uri $ReleasesApi -UseBasicParsing -Headers @{ "User-Agent" = "Klip-Installer" } -ErrorAction SilentlyContinue
+        if ($Releases -and $Releases.Count -gt 0) {
+            $LatestRelease = $Releases[0]
+            $Asset = $LatestRelease.assets | Where-Object { $_.name -like "*windows*.exe" } | Select-Object -First 1
+            if ($Asset -and $Asset.browser_download_url) {
+                $DownloadUrl = $Asset.browser_download_url
+            }
+        }
+    } catch {
+        # Fallback to direct release download URL
+    }
+
+    Write-Host "[INFO] Downloading binary from $DownloadUrl..." -ForegroundColor Cyan
+    try {
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $KlipExe -UseBasicParsing
+        if (Test-Path $KlipExe) {
             $BinaryFound = $true
         }
     } catch {
-        Write-Warning "Could not download GitHub release: $_"
-    } finally {
-        if (Test-Path $TempZip) { Remove-Item $TempZip -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $TempExtract) { Remove-Item $TempExtract -Recurse -Force -ErrorAction SilentlyContinue }
+        Write-Warning "Could not download GitHub release binary: $_"
     }
 }
 
@@ -124,7 +131,11 @@ Start-Process -FilePath $KlipExe -ArgumentList "start" -WindowStyle Hidden
 Start-Sleep -Seconds 2
 
 Write-Host "[INFO] Querying status..." -ForegroundColor Cyan
-& $KlipExe status
+try {
+    & $KlipExe status
+} catch {
+    Write-Warning "Daemon is initializing in the background. You can check status anytime with: klip status"
+}
 
 Write-Host ""
 Write-Host "[✓] Klip installed and configured successfully!" -ForegroundColor Green
