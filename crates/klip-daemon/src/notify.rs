@@ -12,7 +12,6 @@ fn escape_markup(s: &str) -> String {
 
 /// Only the device name and a duration: never clip content (notifications can show on a lock screen).
 fn body(name: &str, gone: Duration) -> String {
-    let name = escape_markup(name);
     match offline_label(gone) {
         Some(label) => format!("{name} did not get your last copy. Not connected for {label}."),
         None => format!("{name} did not get your last copy. It is not connected right now."),
@@ -27,7 +26,7 @@ fn args(name: &str, gone: Duration) -> Vec<String> {
         "--expire-time=10000".into(),
         "--".into(),
         "Klip".into(),
-        body(name, gone),
+        escape_markup(&body(name, gone)),
     ]
 }
 
@@ -86,6 +85,10 @@ pub fn send_native_notification(title: &str, body_text: &str) {
         run(
             "powershell",
             &[
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-WindowStyle".to_string(),
+                "Hidden".to_string(),
                 "-NoProfile".to_string(),
                 "-NonInteractive".to_string(),
                 "-Command".to_string(),
@@ -111,11 +114,7 @@ fn file_body(from: &str, count: usize, size: u64) -> String {
     } else {
         format!("{count} files")
     };
-    format!(
-        "Received {files} from {} ({})",
-        escape_markup(from),
-        human_size(size)
-    )
+    format!("Received {files} from {from} ({})", human_size(size))
 }
 
 /// Files from one device that arrive within this time of each other (a folder) make one notification.
@@ -178,8 +177,10 @@ mod tests {
 
     #[test]
     fn the_file_notice_names_the_device_and_size_but_not_the_file() {
+        let text = file_body("<Pixel>", 1, 3 * 1024 * 1024);
+        assert_eq!(text, "Received 1 file from <Pixel> (3.0 MiB)");
         assert_eq!(
-            file_body("<Pixel>", 1, 3 * 1024 * 1024),
+            escape_markup(&text),
             "Received 1 file from &lt;Pixel&gt; (3.0 MiB)"
         );
         assert_eq!(

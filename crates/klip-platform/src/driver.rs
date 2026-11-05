@@ -89,6 +89,8 @@ impl EchoShield {
     pub fn init_baseline(&self, fingerprint: [u8; 32]) {
         let mut read = self.last_read_fingerprint.lock().unwrap();
         *read = Some(fingerprint);
+        *self.last_read_raw_image.lock().unwrap() = None;
+        *self.last_injected_raw_image.lock().unwrap() = None;
     }
 
     /// Fast check if raw image dimensions and content match the previously read or injected image.
@@ -140,6 +142,8 @@ impl EchoShield {
         *inj = Some(fingerprint);
         let mut read = self.last_read_fingerprint.lock().unwrap();
         *read = Some(fingerprint);
+        *self.last_read_raw_image.lock().unwrap() = None;
+        *self.last_injected_raw_image.lock().unwrap() = None;
     }
 
     /// Check if a captured clip should be suppressed.
@@ -267,6 +271,10 @@ mod tests {
         for _ in 0..100 {
             assert!(shield.should_suppress_raw_image(100, 100, &raw_pixels_b));
         }
+
+        // 4. Injected non-image clip resets raw image suppression so re-copying image_a is not suppressed
+        shield.record_injection([7u8; 32]);
+        assert!(!shield.should_suppress_raw_image(100, 100, &raw_pixels_a));
     }
 }
 

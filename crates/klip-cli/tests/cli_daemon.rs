@@ -151,3 +151,11 @@ fn copy_alias_c_and_paste_alias_p() {
     assert_eq!(String::from_utf8_lossy(&paste_out.stdout), "alias-text-123");
 }
 
+#[test]
+fn paste_on_empty_clipboard_outputs_empty_string() {
+    let d = Isolated::start("cpempty", LAN_ONLY);
+    let paste_out = d.run(&["paste"], None);
+    assert!(paste_out.status.success(), "{}", text(&paste_out));
+    assert!(paste_out.stdout.is_empty(), "expected 0 bytes stdout");
+}
+

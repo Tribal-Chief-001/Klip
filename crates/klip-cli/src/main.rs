@@ -663,7 +663,9 @@ async fn run(cli: Cli) -> AnyResult<()> {
                 _ => {
                     use std::io::Read;
                     if std::io::stdin().is_terminal() {
-                        eprintln!("Reading the text from the terminal; finish with Ctrl-D.");
+                        eprintln!(
+                            "Reading the text from the terminal; finish with Ctrl-D (Ctrl-Z on Windows)."
+                        );
                     }
                     let mut buf = String::new();
                     std::io::stdin()
@@ -695,15 +697,15 @@ async fn run(cli: Cli) -> AnyResult<()> {
                                     name.bold()
                                 );
                             }
-                            for (name, why) in &failed {
-                                eprintln!(
-                                    "{} {} did not receive it: {}",
-                                    "✗".red().bold(),
-                                    name.bold(),
-                                    why
-                                );
-                            }
                         }
+                    }
+                    for (name, why) in &failed {
+                        eprintln!(
+                            "{} {} did not receive it: {}",
+                            "✗".red().bold(),
+                            name.bold(),
+                            why
+                        );
                     }
                 }
                 IpcResponse::Error(e) => return Err(e.into()),
@@ -720,9 +722,11 @@ async fn run(cli: Cli) -> AnyResult<()> {
                 .map_err(|e| e.to_string())?;
             match reply {
                 IpcResponse::ClipboardContent { data, .. } => {
-                    std::io::stdout()
-                        .write_all(&data)
-                        .map_err(|e| format!("failed to write to stdout: {e}"))?;
+                    if let Err(e) = std::io::stdout().write_all(&data) {
+                        if e.kind() != std::io::ErrorKind::BrokenPipe {
+                            return Err(format!("failed to write to stdout: {e}").into());
+                        }
+                    }
                     let _ = std::io::stdout().flush();
                 }
                 IpcResponse::Error(e) => return Err(e.into()),

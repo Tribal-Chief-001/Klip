@@ -63,6 +63,9 @@ impl ClipboardDriver for MacOSClipboardDriver {
         }
 
         if let Ok(img) = cb.get_image() {
+            if klip_diff::too_many_pixels(img.width as u32, img.height as u32) {
+                return Ok(None);
+            }
             // Quick check before expensive PNG deflate compression to eliminate 100ms polling thrash
             if self.echo_shield.should_suppress_raw_image(img.width, img.height, &img.bytes) {
                 return Ok(None);

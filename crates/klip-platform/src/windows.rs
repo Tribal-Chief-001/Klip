@@ -85,6 +85,9 @@ impl ClipboardDriver for WindowsClipboardDriver {
 
         let img_res = self.with_retry(|cb| cb.get_image());
         if let Ok(img) = img_res {
+            if klip_diff::too_many_pixels(img.width as u32, img.height as u32) {
+                return Ok(None);
+            }
             // Quick check before expensive PNG deflate compression to eliminate 100ms polling thrash
             if self.echo_shield.should_suppress_raw_image(img.width, img.height, &img.bytes) {
                 return Ok(None);
@@ -237,7 +240,13 @@ fn set_windows_privacy_formats() {
         "Clipboard Viewer Ignore",
         "ExcludeClipboardContentFromMonitorProcessing",
     ];
-    if clipboard_win::raw::open().is_ok() {
+    let owner = unsafe { windows_sys::Win32::System::DataExchange::GetClipboardOwner() };
+    let opened = if !owner.is_null() {
+        clipboard_win::raw::open_for(owner).or_else(|_| clipboard_win::raw::open())
+    } else {
+        clipboard_win::raw::open()
+    };
+    if opened.is_ok() {
         for name in formats {
             if let Some(fmt_id) = clipboard_win::register_format(name) {
                 let _ = clipboard_win::raw::set_without_clear(fmt_id.get(), &[0u8; 4]);

@@ -2802,6 +2802,7 @@ dependencies = [
  "klip-diff",
  "klip-proto",
  "tokio",
+ "windows-sys 0.60.2",
  "x11rb",
 ]
 

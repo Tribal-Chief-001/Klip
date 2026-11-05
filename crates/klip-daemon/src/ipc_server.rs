@@ -364,27 +364,10 @@ impl IpcServer {
                             data: clip.data,
                         }
                     }
-                    Ok(Ok(None)) => {
-                        if let Some(recent) = sync.history.get_recent(1).first() {
-                            let ct = klip_core::sniff_content_type(&recent.full_content);
-                            let content_type = match ct {
-                                ClipContentType::PlainTextUtf8 => "text/plain".to_string(),
-                                ClipContentType::ImagePng => "image/png".to_string(),
-                                ClipContentType::ImageWebP => "image/webp".to_string(),
-                                ClipContentType::HtmlContent => "text/html".to_string(),
-                                ClipContentType::CustomMime(m) => m,
-                            };
-                            IpcResponse::ClipboardContent {
-                                content_type,
-                                data: recent.full_content.clone(),
-                            }
-                        } else {
-                            IpcResponse::ClipboardContent {
-                                content_type: "text/plain".to_string(),
-                                data: Vec::new(),
-                            }
-                        }
-                    }
+                    Ok(Ok(None)) => IpcResponse::ClipboardContent {
+                        content_type: "text/plain".to_string(),
+                        data: Vec::new(),
+                    },
                     Ok(Err(e)) => IpcResponse::Error(format!("clipboard read error: {e}")),
                     Err(e) => IpcResponse::Error(format!("task join error: {e}")),
                 }
