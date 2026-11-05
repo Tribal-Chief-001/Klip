@@ -11,7 +11,3 @@
   - **NEVER** regress, weaken, or skip test suites, compilation rigor, or feature completeness.
   - Ephemeral cleanup is strictly restricted to regenerable build targets and temporary scratch caches.
 
-## 2. Language & Authoring Invariants
-- **Dialogue vs. Work Deliverables**:
-  - Conversational chat with the user is conducted in natural Hinglish as preferred by the user.
-  - **All formal work deliverables**—including source code, architectural documentation, git commits, PR descriptions, test cases, code comments, artifacts, and rule/configuration files—**MUST be authored strictly in standard, professional English**.
