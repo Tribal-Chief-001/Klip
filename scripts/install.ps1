@@ -118,17 +118,29 @@ if ($PathEntries -notcontains $InstallDir) {
 
 # 4. Configure Auto-start via Windows Registry
 if (-not $SkipAutoStart) {
-    Write-Host "[INFO] Registering Klip in Windows startup registry..." -ForegroundColor Cyan
-    $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    $RunValue = "`"$KlipExe`" start"
-    Set-ItemProperty -Path $RunKey -Name "Klip" -Value $RunValue
-    Write-Host "[✓] Registered startup key: Klip -> $RunValue" -ForegroundColor Green
+    Write-Host "[INFO] Registering Klip tray for automatic startup on login..." -ForegroundColor Cyan
+    try {
+        & $KlipExe tray install
+        Write-Host "[✓] Configured Klip tray to start automatically on login" -ForegroundColor Green
+    } catch {
+        $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+        $RunValue = "`"$KlipExe`" tray start"
+        Set-ItemProperty -Path $RunKey -Name "KlipTray" -Value $RunValue
+        Write-Host "[✓] Registered startup key: KlipTray -> $RunValue" -ForegroundColor Green
+    }
 }
 
-# 5. Launch Background Daemon & Verify
+# 5. Launch Background Daemon & System Tray
 Write-Host "[INFO] Starting Klip background daemon..." -ForegroundColor Cyan
 Start-Process -FilePath $KlipExe -ArgumentList "start" -WindowStyle Hidden
 Start-Sleep -Seconds 2
+
+Write-Host "[INFO] Launching Klip system tray icon..." -ForegroundColor Cyan
+try {
+    & $KlipExe tray start
+} catch {
+    Write-Warning "Could not start tray automatically: $_"
+}
 
 Write-Host "[INFO] Querying status..." -ForegroundColor Cyan
 try {

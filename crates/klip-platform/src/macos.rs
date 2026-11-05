@@ -67,7 +67,10 @@ impl ClipboardDriver for MacOSClipboardDriver {
                 return Ok(None);
             }
             // Quick check before expensive PNG deflate compression to eliminate 100ms polling thrash
-            if self.echo_shield.should_suppress_raw_image(img.width, img.height, &img.bytes) {
+            if self
+                .echo_shield
+                .should_suppress_raw_image(img.width, img.height, &img.bytes)
+            {
                 return Ok(None);
             }
             if let Ok(png_bytes) =
@@ -78,7 +81,8 @@ impl ClipboardDriver for MacOSClipboardDriver {
                     if self.echo_shield.should_suppress(&fp) {
                         return Ok(None);
                     }
-                    self.echo_shield.record_read_raw_image(img.width, img.height, &img.bytes);
+                    self.echo_shield
+                        .record_read_raw_image(img.width, img.height, &img.bytes);
                     return Ok(Some(CapturedClip {
                         content_type: ClipContentType::ImagePng,
                         data: png_bytes,
@@ -164,8 +168,11 @@ impl ClipboardDriver for MacOSClipboardDriver {
             }
             ClipContentType::ImagePng | ClipContentType::ImageWebP => {
                 if let Ok((width, height, rgba)) = klip_diff::png_to_rgba(data) {
-                    self.echo_shield
-                        .record_injected_raw_image(width as usize, height as usize, &rgba);
+                    self.echo_shield.record_injected_raw_image(
+                        width as usize,
+                        height as usize,
+                        &rgba,
+                    );
                     let img = arboard::ImageData {
                         width: width as usize,
                         height: height as usize,
@@ -197,4 +204,3 @@ impl ClipboardDriver for MacOSClipboardDriver {
         &self.echo_shield
     }
 }
-

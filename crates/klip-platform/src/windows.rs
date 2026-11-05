@@ -89,7 +89,10 @@ impl ClipboardDriver for WindowsClipboardDriver {
                 return Ok(None);
             }
             // Quick check before expensive PNG deflate compression to eliminate 100ms polling thrash
-            if self.echo_shield.should_suppress_raw_image(img.width, img.height, &img.bytes) {
+            if self
+                .echo_shield
+                .should_suppress_raw_image(img.width, img.height, &img.bytes)
+            {
                 return Ok(None);
             }
             if let Ok(png_bytes) =
@@ -100,7 +103,8 @@ impl ClipboardDriver for WindowsClipboardDriver {
                     if self.echo_shield.should_suppress(&fp) {
                         return Ok(None);
                     }
-                    self.echo_shield.record_read_raw_image(img.width, img.height, &img.bytes);
+                    self.echo_shield
+                        .record_read_raw_image(img.width, img.height, &img.bytes);
                     return Ok(Some(CapturedClip {
                         content_type: ClipContentType::ImagePng,
                         data: png_bytes,
@@ -166,7 +170,10 @@ impl ClipboardDriver for WindowsClipboardDriver {
                     use arboard::SetExtWindows;
                     let mut op = cb.set();
                     if sensitive {
-                        op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                        op = op
+                            .exclude_from_monitoring()
+                            .exclude_from_cloud()
+                            .exclude_from_history();
                     }
                     op.text(text.clone())
                 })?;
@@ -181,7 +188,10 @@ impl ClipboardDriver for WindowsClipboardDriver {
                     use arboard::SetExtWindows;
                     let mut op = cb.set();
                     if sensitive {
-                        op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                        op = op
+                            .exclude_from_monitoring()
+                            .exclude_from_cloud()
+                            .exclude_from_history();
                     }
                     op.text(text.clone())
                 })?;
@@ -191,8 +201,11 @@ impl ClipboardDriver for WindowsClipboardDriver {
             }
             ClipContentType::ImagePng | ClipContentType::ImageWebP => {
                 if let Ok((width, height, rgba)) = klip_diff::png_to_rgba(data) {
-                    self.echo_shield
-                        .record_injected_raw_image(width as usize, height as usize, &rgba);
+                    self.echo_shield.record_injected_raw_image(
+                        width as usize,
+                        height as usize,
+                        &rgba,
+                    );
                     let img = ImageData {
                         width: width as usize,
                         height: height as usize,
@@ -202,7 +215,10 @@ impl ClipboardDriver for WindowsClipboardDriver {
                         use arboard::SetExtWindows;
                         let mut op = cb.set();
                         if sensitive {
-                            op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                            op = op
+                                .exclude_from_monitoring()
+                                .exclude_from_cloud()
+                                .exclude_from_history();
                         }
                         op.image(img.clone())
                     })?;
@@ -217,7 +233,10 @@ impl ClipboardDriver for WindowsClipboardDriver {
                     use arboard::SetExtWindows;
                     let mut op = cb.set();
                     if sensitive {
-                        op = op.exclude_from_monitoring().exclude_from_cloud().exclude_from_history();
+                        op = op
+                            .exclude_from_monitoring()
+                            .exclude_from_cloud()
+                            .exclude_from_history();
                     }
                     op.text(text.clone())
                 })?;
@@ -255,4 +274,3 @@ fn set_windows_privacy_formats() {
         let _ = clipboard_win::raw::close();
     }
 }
-

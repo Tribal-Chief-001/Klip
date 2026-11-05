@@ -151,7 +151,6 @@ pub fn hook() -> UndeliveredHook {
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

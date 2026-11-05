@@ -97,7 +97,11 @@ impl EchoShield {
     /// Prevents raw image PNG deflate/compression thrash on 100ms poll ticks.
     pub fn should_suppress_raw_image(&self, width: usize, height: usize, raw_bytes: &[u8]) -> bool {
         let hash = *blake3::hash(raw_bytes).as_bytes();
-        let sig = RawImageSignature { width, height, hash };
+        let sig = RawImageSignature {
+            width,
+            height,
+            hash,
+        };
 
         let mut read_guard = self.last_read_raw_image.lock().unwrap();
         let inj_guard = self.last_injected_raw_image.lock().unwrap();
@@ -123,7 +127,11 @@ impl EchoShield {
     /// Record a raw image that was read and verified.
     pub fn record_read_raw_image(&self, width: usize, height: usize, raw_bytes: &[u8]) {
         let hash = *blake3::hash(raw_bytes).as_bytes();
-        let sig = RawImageSignature { width, height, hash };
+        let sig = RawImageSignature {
+            width,
+            height,
+            hash,
+        };
         *self.last_read_raw_image.lock().unwrap() = Some(sig);
         *self.last_injected_raw_image.lock().unwrap() = None;
     }
@@ -131,7 +139,11 @@ impl EchoShield {
     /// Record a raw image that is being injected into the OS clipboard.
     pub fn record_injected_raw_image(&self, width: usize, height: usize, raw_bytes: &[u8]) {
         let hash = *blake3::hash(raw_bytes).as_bytes();
-        let sig = RawImageSignature { width, height, hash };
+        let sig = RawImageSignature {
+            width,
+            height,
+            hash,
+        };
         *self.last_injected_raw_image.lock().unwrap() = Some(sig);
         *self.last_read_raw_image.lock().unwrap() = Some(sig);
     }
@@ -215,7 +227,6 @@ pub trait ClipboardDriver: Send + Sync {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,4 +288,3 @@ mod tests {
         assert!(!shield.should_suppress_raw_image(100, 100, &raw_pixels_a));
     }
 }
-

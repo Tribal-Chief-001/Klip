@@ -274,7 +274,6 @@ pub fn write_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
     written
 }
 
-
 fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {

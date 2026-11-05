@@ -349,7 +349,8 @@ impl IpcServer {
             }
             IpcRequest::PasteClip => {
                 let driver = Arc::clone(&sync.driver);
-                let read_res = tokio::task::spawn_blocking(move || driver.read_current_clip()).await;
+                let read_res =
+                    tokio::task::spawn_blocking(move || driver.read_current_clip()).await;
                 match read_res {
                     Ok(Ok(Some(clip))) => {
                         let content_type = match clip.content_type {

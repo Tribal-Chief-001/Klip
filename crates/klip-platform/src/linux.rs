@@ -192,7 +192,10 @@ impl ClipboardDriver for LinuxClipboardDriver {
                 return Ok(None);
             }
             // Quick check before expensive PNG deflate compression to eliminate 100ms polling thrash
-            if self.echo_shield.should_suppress_raw_image(img.width, img.height, &img.bytes) {
+            if self
+                .echo_shield
+                .should_suppress_raw_image(img.width, img.height, &img.bytes)
+            {
                 return Ok(None);
             }
             if let Ok(png_bytes) =
@@ -203,7 +206,8 @@ impl ClipboardDriver for LinuxClipboardDriver {
                     if self.echo_shield.should_suppress(&fp) {
                         return Ok(None);
                     }
-                    self.echo_shield.record_read_raw_image(img.width, img.height, &img.bytes);
+                    self.echo_shield
+                        .record_read_raw_image(img.width, img.height, &img.bytes);
                     return Ok(Some(CapturedClip {
                         content_type: ClipContentType::ImagePng,
                         data: png_bytes,

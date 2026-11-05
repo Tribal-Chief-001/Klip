@@ -126,7 +126,10 @@ fn copy_and_paste_roundtrip_via_cli() {
 
     let paste_out = d.run(&["paste"], None);
     assert!(paste_out.status.success(), "{}", text(&paste_out));
-    assert_eq!(String::from_utf8_lossy(&paste_out.stdout), "hello-world-piping");
+    assert_eq!(
+        String::from_utf8_lossy(&paste_out.stdout),
+        "hello-world-piping"
+    );
 }
 
 #[test]
@@ -137,7 +140,10 @@ fn copy_via_stdin_pipe_and_paste() {
 
     let paste_out = d.run(&["paste"], None);
     assert!(paste_out.status.success(), "{}", text(&paste_out));
-    assert_eq!(String::from_utf8_lossy(&paste_out.stdout), "streamed-piping-content");
+    assert_eq!(
+        String::from_utf8_lossy(&paste_out.stdout),
+        "streamed-piping-content"
+    );
 }
 
 #[test]
@@ -158,4 +164,3 @@ fn paste_on_empty_clipboard_outputs_empty_string() {
     assert!(paste_out.status.success(), "{}", text(&paste_out));
     assert!(paste_out.stdout.is_empty(), "expected 0 bytes stdout");
 }
-
