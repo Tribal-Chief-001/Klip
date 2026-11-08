@@ -11,11 +11,14 @@ class WatchdogTest {
         assertEquals("KlipWatchdog", Watchdog.TAG)
         assertEquals(7001, Watchdog.jobId())
         assertEquals(15 * 60 * 1000L, Watchdog.PERIOD_MS)
+        assertEquals(5 * 60 * 1000L, Watchdog.ALARM_DEBOUNCE_MS)
     }
 
     @Test
     fun watchdog_period_is_within_android_allowed_minimum() {
         // JobScheduler enforces a 15-minute minimum periodic interval
         assertTrue(Watchdog.PERIOD_MS >= 15 * 60 * 1000L)
+        // AlarmManager debounce must be strictly shorter than period to allow timely heartbeats
+        assertTrue(Watchdog.ALARM_DEBOUNCE_MS < Watchdog.PERIOD_MS)
     }
 }

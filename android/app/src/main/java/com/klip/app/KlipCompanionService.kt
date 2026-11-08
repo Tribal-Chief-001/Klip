@@ -1,7 +1,9 @@
 package com.klip.app
 
 import android.companion.CompanionDeviceService
+import android.os.Build
 import android.util.Log
+import androidx.annotation.RequiresApi
 
 /**
  * Companion device service for Android's CompanionDeviceManager framework.
@@ -10,6 +12,7 @@ import android.util.Log
  * grants standard exemptions from battery restrictions and allows the CompanionDeviceManager to
  * bind to this service and wake up the application when nearby paired devices appear.
  */
+@RequiresApi(Build.VERSION_CODES.S)
 class KlipCompanionService : CompanionDeviceService() {
 
     companion object {

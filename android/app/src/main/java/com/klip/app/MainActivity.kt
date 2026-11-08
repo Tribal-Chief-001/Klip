@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -81,6 +82,13 @@ class MainActivity : Activity() {
         KlipSyncService.start(this)
 
         if (intent?.getBooleanExtra(EXTRA_ANCHOR_ONLY, false) == true) {
+            if (Build.VERSION.SDK_INT >= 34) {
+                overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
+                overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
+            } else {
+                @Suppress("DEPRECATION")
+                overridePendingTransition(0, 0)
+            }
             moveTaskToBack(true)
         } else if (intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true) {
             android.widget.Toast.makeText(

@@ -27,7 +27,10 @@ class WatchdogReceiver : BroadcastReceiver() {
             Log.d(Watchdog.TAG, "Watchdog heartbeat pulse: KlipSyncService is healthy")
         }
 
+        // Also ensure framework notification listener binding is alive if enabled
+        KlipNotificationListenerService.requestRebindIfEnabled(context)
+
         // Re-arm next watchdog alarm cycle
-        Watchdog.scheduleAlarm(context)
+        Watchdog.scheduleAlarm(context, force = true)
     }
 }

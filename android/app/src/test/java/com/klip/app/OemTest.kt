@@ -56,4 +56,12 @@ class OemTest {
         assertFalse(stock.needsExtraSteps)
         assertTrue(stock.steps.first().contains("Unrestricted"))
     }
+
+    @Test
+    fun vivo_guidance_screens_target_proprietary_frameworks() {
+        // Confirm Vivo profile has specific guidance for com.vivo.abe and com.vivo.permissionmanager
+        val vivo = Oem.VIVO
+        assertTrue(vivo.steps.any { it.contains("Background power consumption", ignoreCase = true) })
+        assertTrue(vivo.steps.any { it.contains("Smart Control", ignoreCase = true) })
+    }
 }

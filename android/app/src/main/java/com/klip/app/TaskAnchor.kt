@@ -41,10 +41,11 @@ object TaskAnchor {
         return try {
             val intent = Intent(context, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra(MainActivity.EXTRA_FROM_BOOT, true)
                 if (anchorOnly) {
+                    addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
                     putExtra(MainActivity.EXTRA_ANCHOR_ONLY, true)
                 }
+                putExtra(MainActivity.EXTRA_FROM_BOOT, true)
             }
             context.startActivity(intent)
             Log.i(TAG, "Task anchor activity successfully launched (anchorOnly=$anchorOnly)")

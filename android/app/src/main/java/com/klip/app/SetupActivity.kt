@@ -205,7 +205,14 @@ class SetupActivity : Activity() {
                     "2. Vivo Background power consumption management: Smart Control terminates Klip after 20-30 min of screen-off. You must set Klip to “Don't restrict background power usage”.",
                     13f, pal.warn), top = 12)
                 add(secondaryButton(this@SetupActivity, pal, "Open Vivo Background Power screen") {
-                    oem.openPowerManagementSettings(this@SetupActivity)
+                    if (!oem.openPowerManagementSettings(this@SetupActivity)) {
+                        Toast.makeText(
+                            this@SetupActivity,
+                            "Could not open Vivo screen directly. Open Settings → Battery → Background power consumption management → Klip.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        oem.openSettings(this@SetupActivity)
+                    }
                 }, top = 10)
             } else if (oem.needsExtraSteps) {
                 add(tv("On ${oem.title} phones this Android switch is separate from the maker's own battery manager " +

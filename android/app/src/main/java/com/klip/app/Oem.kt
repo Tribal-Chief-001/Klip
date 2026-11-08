@@ -34,7 +34,13 @@ class Oem(
     fun openAutostartSettings(a: Activity): Boolean {
         for ((pkg, cls) in autostartScreens) {
             try {
-                a.startActivity(Intent().setComponent(ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                val intent = Intent().setComponent(ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                intent.putExtra("package", a.packageName)
+                intent.putExtra("packageName", a.packageName)
+                intent.putExtra("packagename", a.packageName)
+                intent.putExtra("pkg_name", a.packageName)
+                intent.putExtra("extra_pkgname", a.packageName)
+                a.startActivity(intent)
                 return true
             } catch (_: Throwable) { /* try next */ }
         }
@@ -45,13 +51,25 @@ class Oem(
     fun openPowerManagementSettings(a: Activity): Boolean {
         for ((pkg, cls) in powerScreens) {
             try {
-                a.startActivity(Intent().setComponent(ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                val intent = Intent().setComponent(ComponentName(pkg, cls)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                intent.putExtra("package", a.packageName)
+                intent.putExtra("packageName", a.packageName)
+                intent.putExtra("packagename", a.packageName)
+                intent.putExtra("pkg_name", a.packageName)
+                intent.putExtra("extra_pkgname", a.packageName)
+                a.startActivity(intent)
                 return true
             } catch (_: Throwable) { /* try next */ }
         }
         for (action in powerActions) {
             try {
-                a.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                val intent = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                intent.putExtra("package", a.packageName)
+                intent.putExtra("packageName", a.packageName)
+                intent.putExtra("packagename", a.packageName)
+                intent.putExtra("pkg_name", a.packageName)
+                intent.putExtra("extra_pkgname", a.packageName)
+                a.startActivity(intent)
                 return true
             } catch (_: Throwable) { /* try next */ }
         }
@@ -117,9 +135,7 @@ class Oem(
                 "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"
             ),
             powerActions = listOf(
-                "com.vivo.abe.uni.action.EXTERNAL_ACCESS",
-                "android.intent.action.POWER_USAGE_SUMMARY",
-                Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS
+                "com.vivo.abe.uni.action.EXTERNAL_ACCESS"
             )
         )
 

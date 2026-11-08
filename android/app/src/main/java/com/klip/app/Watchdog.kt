@@ -29,6 +29,8 @@ object Watchdog {
     private const val PREFS = "klip_ui"
     private const val KEY = "watchdog_enabled"
     const val PERIOD_MS = 15 * 60 * 1000L // 15 minutes (shortest periodic JobScheduler interval)
+    const val ALARM_DEBOUNCE_MS = 5 * 60 * 1000L // 5-minute debounce to prevent excessive AlarmManager churn
+    @Volatile private var lastAlarmScheduledAt = 0L
 
     fun enabled(c: Context): Boolean =
         c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, true)
@@ -42,7 +44,7 @@ object Watchdog {
     fun schedule(c: Context) {
         if (!enabled(c)) return
         scheduleJob(c)
-        scheduleAlarm(c)
+        scheduleAlarm(c, force = true)
     }
 
     private fun scheduleJob(c: Context) {
@@ -61,24 +63,34 @@ object Watchdog {
         }
     }
 
-    /** Schedules the next AlarmManager while-idle heartbeat trigger. */
-    fun scheduleAlarm(c: Context, delayMs: Long = PERIOD_MS) {
+    /**
+     * Schedules the next AlarmManager while-idle heartbeat trigger.
+     * Throttled via ALARM_DEBOUNCE_MS unless force=true to avoid system alarm manager churn.
+     */
+    fun scheduleAlarm(c: Context, delayMs: Long = PERIOD_MS, force: Boolean = false) {
         if (!enabled(c)) return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && (now - lastAlarmScheduledAt < ALARM_DEBOUNCE_MS)) {
+            // Heartbeat already scheduled at least 10 minutes out; skip redundant IPC
+            return
+        }
         val am = c.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val intent = Intent(c, WatchdogReceiver::class.java)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         val pi = PendingIntent.getBroadcast(c, ALARM_REQ_CODE, intent, flags)
 
-        val triggerAt = SystemClock.elapsedRealtime() + delayMs
+        val triggerAt = now + delayMs
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 if (am.canScheduleExactAlarms()) {
                     am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+                    lastAlarmScheduledAt = now
                     Log.d(TAG, "Exact while-idle alarm scheduled in ${delayMs / 1000}s")
                     return
                 }
             }
             am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
+            lastAlarmScheduledAt = now
             Log.d(TAG, "Inexact while-idle alarm scheduled in ${delayMs / 1000}s")
         } catch (e: Throwable) {
             Log.w(TAG, "Failed to schedule AlarmManager watchdog: ${e.message}")
@@ -87,10 +99,12 @@ object Watchdog {
 
     /** Called periodically by active services to extend the dead-man's heartbeat. */
     fun pokeHeartbeat(c: Context) {
-        scheduleAlarm(c, PERIOD_MS)
+        scheduleAlarm(c, PERIOD_MS, force = false)
     }
 
     fun cancel(c: Context) {
+        lastAlarmScheduledAt = 0L
+
         // Cancel JobScheduler
         try {
             c.getSystemService(JobScheduler::class.java)?.cancel(JOB_ID)
@@ -122,7 +136,7 @@ class WatchdogJobService : JobService() {
                 KlipSyncService.start(this)
             }
             // Keep the AlarmManager watchdog armed as well
-            Watchdog.scheduleAlarm(this)
+            Watchdog.scheduleAlarm(this, force = true)
         }
         return false
     }

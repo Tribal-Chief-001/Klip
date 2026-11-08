@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -82,7 +83,9 @@ class KlipSyncService : Service() {
                 .setAction(ACTION_BURST_DISCOVERY)
                 .putExtra("duration_ms", durationMs)
             runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (running) {
+                    ctx.startService(intent)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     ctx.startForegroundService(intent)
                 } else {
                     ctx.startService(intent)
@@ -103,11 +106,12 @@ class KlipSyncService : Service() {
     private var lastShown = ""
     private var note: String? = null
     private var noteUntil = 0L
+    @Volatile private var burstUntil = 0L
     private lateinit var power: PowerManager
     private lateinit var transfers: FileTransferNotifier
 
     private val multicastBurstReleaseRunnable = Runnable {
-        if (!power.isInteractive) {
+        if (!power.isInteractive && SystemClock.elapsedRealtime() >= burstUntil) {
             releaseMulticastLock()
         }
     }
@@ -132,10 +136,17 @@ class KlipSyncService : Service() {
                     main.post(ticker)
                 }
                 Intent.ACTION_SCREEN_OFF -> {
-                    Log.d(TAG, "Screen OFF: releasing MulticastLock to eliminate standby WLAN_IRQ wakeups")
                     main.removeCallbacks(ticker)
-                    main.removeCallbacks(multicastBurstReleaseRunnable)
-                    releaseMulticastLock()
+                    val remaining = burstUntil - SystemClock.elapsedRealtime()
+                    if (remaining > 0) {
+                        Log.d(TAG, "Screen OFF: discovery burst active, retaining MulticastLock for ${remaining}ms")
+                        main.removeCallbacks(multicastBurstReleaseRunnable)
+                        main.postDelayed(multicastBurstReleaseRunnable, remaining)
+                    } else {
+                        Log.d(TAG, "Screen OFF: releasing MulticastLock to eliminate standby WLAN_IRQ wakeups")
+                        main.removeCallbacks(multicastBurstReleaseRunnable)
+                        releaseMulticastLock()
+                    }
                 }
             }
         }
@@ -187,6 +198,7 @@ class KlipSyncService : Service() {
             ACTION_BURST_DISCOVERY -> {
                 val duration = intent.getLongExtra("duration_ms", 30_000L)
                 requestMulticastBurst(duration)
+                refreshNotification()
             }
             ACTION_TEST_BG_WRITE -> scheduleBackgroundWriteTest()
             ACTION_REPOST -> refreshNotification(force = true)
@@ -271,6 +283,8 @@ class KlipSyncService : Service() {
     }
 
     private fun requestMulticastBurst(durationMs: Long = 30_000L) {
+        val now = SystemClock.elapsedRealtime()
+        burstUntil = maxOf(burstUntil, now + durationMs)
         acquireMulticastLock()
         main.removeCallbacks(multicastBurstReleaseRunnable)
         if (!power.isInteractive) {
@@ -385,6 +399,7 @@ class KlipSyncService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         running = false
+        burstUntil = 0L
         main.removeCallbacks(ticker)
         main.removeCallbacks(multicastBurstReleaseRunnable)
         runCatching { unregisterReceiver(screenReceiver) }
