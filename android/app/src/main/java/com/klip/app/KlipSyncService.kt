@@ -51,6 +51,7 @@ class KlipSyncService : Service() {
         const val CHANNEL_CLIP = "klip_clip"
         const val NOTIFICATION_ID = 40401
         const val NOTIFICATION_CLIP_ID = 40402
+        const val ACTION_BURST_DISCOVERY = "com.klip.app.ACTION_BURST_DISCOVERY"
 
         /** True while this process has the service running (a fresh process after a stop starts as false). */
         @Volatile var running = false
@@ -74,6 +75,20 @@ class KlipSyncService : Service() {
                 Log.e(TAG, "Cannot start service: ${e.message}", e)
             }
         }
+
+        /** Temporarily acquire MulticastLock for active discovery/pairing even if screen is off. */
+        fun burstDiscovery(ctx: Context, durationMs: Long = 30_000L) {
+            val intent = Intent(ctx, KlipSyncService::class.java)
+                .setAction(ACTION_BURST_DISCOVERY)
+                .putExtra("duration_ms", durationMs)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    ctx.startForegroundService(intent)
+                } else {
+                    ctx.startService(intent)
+                }
+            }
+        }
     }
 
     private val scope = CoroutineScope(
@@ -91,18 +106,38 @@ class KlipSyncService : Service() {
     private lateinit var power: PowerManager
     private lateinit var transfers: FileTransferNotifier
 
+    private val multicastBurstReleaseRunnable = Runnable {
+        if (!power.isInteractive) {
+            releaseMulticastLock()
+        }
+    }
+
     /** While the screen is on, re-check the status every few seconds; while it is off, do nothing at all. */
     private val ticker = object : Runnable {
         override fun run() {
             refreshNotification()
+            Watchdog.pokeHeartbeat(this@KlipSyncService)
             scope.launch { AutoCopy.startWithRoot(this@KlipSyncService) }
             if (power.isInteractive) main.postDelayed(this, 8_000)
         }
     }
+
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            main.removeCallbacks(ticker)
-            if (i.action == Intent.ACTION_SCREEN_ON) main.post(ticker)
+            when (i.action) {
+                Intent.ACTION_SCREEN_ON -> {
+                    Log.d(TAG, "Screen ON: acquiring MulticastLock & starting ticker")
+                    main.removeCallbacks(ticker)
+                    acquireMulticastLock()
+                    main.post(ticker)
+                }
+                Intent.ACTION_SCREEN_OFF -> {
+                    Log.d(TAG, "Screen OFF: releasing MulticastLock to eliminate standby WLAN_IRQ wakeups")
+                    main.removeCallbacks(ticker)
+                    main.removeCallbacks(multicastBurstReleaseRunnable)
+                    releaseMulticastLock()
+                }
+            }
         }
     }
 
@@ -119,7 +154,11 @@ class KlipSyncService : Service() {
         // Never put clip content in a notification: it can show on a locked screen.
         writer = ClipboardWriter(this) { _ -> refreshNotification() }
         clipboard.addPrimaryClipChangedListener(clipListener)
-        acquireMulticastLock()
+        if (power.isInteractive) {
+            acquireMulticastLock()
+        } else {
+            Log.d(TAG, "Screen OFF on service start: postponing MulticastLock to preserve battery")
+        }
         startEngine()
         scope.launch { ClipImages.prune(this@KlipSyncService) }
         scope.launch {
@@ -139,10 +178,15 @@ class KlipSyncService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Watchdog.pokeHeartbeat(this)
         when (intent?.action) {
             ACTION_STOP -> {
                 stopSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_BURST_DISCOVERY -> {
+                val duration = intent.getLongExtra("duration_ms", 30_000L)
+                requestMulticastBurst(duration)
             }
             ACTION_TEST_BG_WRITE -> scheduleBackgroundWriteTest()
             ACTION_REPOST -> refreshNotification(force = true)
@@ -192,15 +236,45 @@ class KlipSyncService : Service() {
         }, 10_000)
     }
 
+    @Synchronized
     private fun acquireMulticastLock() {
         try {
-            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            multicastLock = wifi.createMulticastLock("klip-mdns").apply {
-                setReferenceCounted(false)
-                acquire()
+            if (multicastLock == null) {
+                val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                multicastLock = wifi?.createMulticastLock("klip-mdns")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            multicastLock?.let { lock ->
+                if (!lock.isHeld) {
+                    lock.acquire()
+                    Log.d(TAG, "MulticastLock acquired (screen ON / active discovery)")
+                }
             }
         } catch (e: Throwable) {
             Log.w(TAG, "No multicast lock (LAN discovery may not work): ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun releaseMulticastLock() {
+        try {
+            multicastLock?.let { lock ->
+                if (lock.isHeld) {
+                    lock.release()
+                    Log.d(TAG, "MulticastLock released (hardware APF filtering restored)")
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to release MulticastLock: ${e.message}")
+        }
+    }
+
+    private fun requestMulticastBurst(durationMs: Long = 30_000L) {
+        acquireMulticastLock()
+        main.removeCallbacks(multicastBurstReleaseRunnable)
+        if (!power.isInteractive) {
+            main.postDelayed(multicastBurstReleaseRunnable, durationMs)
         }
     }
 
@@ -312,9 +386,10 @@ class KlipSyncService : Service() {
         super.onDestroy()
         running = false
         main.removeCallbacks(ticker)
+        main.removeCallbacks(multicastBurstReleaseRunnable)
         runCatching { unregisterReceiver(screenReceiver) }
         runCatching { clipboard.removePrimaryClipChangedListener(clipListener) }
-        runCatching { multicastLock?.takeIf { it.isHeld }?.release() }
+        releaseMulticastLock()
         KlipRuntime.transfersChanged = null
         runCatching { transfers.stop() }
         scope.cancel()

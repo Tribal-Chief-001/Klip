@@ -13,12 +13,18 @@ object Setup {
 
     private const val PREFS = "klip_ui"
 
-    fun notificationsGranted(c: Context) =
+    fun notificationsGranted(c: Context): Boolean =
         Build.VERSION.SDK_INT < 33 ||
             c.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
-    fun batteryUnrestricted(c: Context) =
+    fun batteryUnrestricted(c: Context): Boolean =
         (c.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(c.packageName)
+
+    fun notificationListenerGranted(c: Context): Boolean =
+        KlipNotificationListenerService.isEnabled(c)
+
+    fun recentTaskAnchored(c: Context): Boolean =
+        TaskAnchor.hasRecentTask(c)
 
     /**
      * Android cannot tell an app everything: phone makers (Vivo, Xiaomi, ...) keep their own switches that

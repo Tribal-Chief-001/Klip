@@ -45,9 +45,11 @@ import uniffi.klip_android.StatusInfo
 /** Home: is Klip connected, one big "send" button, your devices, what moved recently. */
 class MainActivity : Activity() {
 
-    private companion object {
+    companion object {
         const val REQ_SCAN = 7
         const val REQ_FOLDER = 8
+        const val EXTRA_FROM_BOOT = "com.klip.app.EXTRA_FROM_BOOT"
+        const val EXTRA_ANCHOR_ONLY = "com.klip.app.EXTRA_ANCHOR_ONLY"
     }
 
     private val scope = MainScope()
@@ -77,6 +79,16 @@ class MainActivity : Activity() {
         }, onLinked = { scope.launch { refresh() } })
         build()
         KlipSyncService.start(this)
+
+        if (intent?.getBooleanExtra(EXTRA_ANCHOR_ONLY, false) == true) {
+            moveTaskToBack(true)
+        } else if (intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true) {
+            android.widget.Toast.makeText(
+                this,
+                "Klip is running. Lock it in Recent Apps (pull down card → Padlock) to prevent background closing.",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     // ------------------------------------------------------------------------------------ layout

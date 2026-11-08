@@ -98,7 +98,16 @@ class SetupActivity : Activity() {
 
         if (Build.VERSION.SDK_INT >= 33) b.add(notificationsCard(), bottom = 12)
         b.add(batteryCard(), bottom = 12)
-        b.add(autostartCard(), bottom = 26)
+        b.add(autostartCard(), bottom = 12)
+        if (Oem.detect().needsExtraSteps) {
+            b.add(recentAppsLockCard(), bottom = 26)
+        }
+
+        b.add(sectionLabel(this, pal, "OEM Defenses & Keep-Alive"), bottom = 10)
+        b.add(notificationListenerCard(), bottom = 12)
+        if (!Oem.detect().needsExtraSteps) {
+            b.add(recentAppsLockCard(), bottom = 12)
+        }
 
         b.add(sectionLabel(this, pal, "Optional"), bottom = 10)
         b.add(tileCard(), bottom = 12)
@@ -182,6 +191,7 @@ class SetupActivity : Activity() {
 
     private fun batteryCard(): View {
         val ok = Setup.batteryUnrestricted(this)
+        val oem = Oem.detect()
         return item("battery", "Unrestricted battery use", "Stops Android from pausing Klip when the screen is off.",
             stateOf("battery", ok)) {
             block("What it does",
@@ -189,15 +199,22 @@ class SetupActivity : Activity() {
             block("What it can and can't see",
                 "It gives Klip no extra data access. It does cost a little battery: Klip keeps one network connection open. " +
                     "I have not measured how much on real phones yet.")
-            val oem = Oem.detect()
-            if (oem.needsExtraSteps) {
+            if (oem.id == "vivo") {
+                add(tv("Vivo uses TWO distinct battery controls:\n" +
+                    "1. Stock Android battery optimization (below).\n" +
+                    "2. Vivo Background power consumption management: Smart Control terminates Klip after 20-30 min of screen-off. You must set Klip to “Don't restrict background power usage”.",
+                    13f, pal.warn), top = 12)
+                add(secondaryButton(this@SetupActivity, pal, "Open Vivo Background Power screen") {
+                    oem.openPowerManagementSettings(this@SetupActivity)
+                }, top = 10)
+            } else if (oem.needsExtraSteps) {
                 add(tv("On ${oem.title} phones this Android switch is separate from the maker's own battery manager " +
                     "(see the next card), and Android can't see what you set there. If you already allowed Klip there, " +
                     "mark this as done below.", 13f, pal.warn), top = 12)
             }
             manualControls("battery", ok)
             if (!ok) {
-                add(primaryButton(this@SetupActivity, pal, "Allow") {
+                add(primaryButton(this@SetupActivity, pal, "Allow standard battery optimization") {
                     try {
                         startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
                     } catch (_: Throwable) {
@@ -224,11 +241,63 @@ class SetupActivity : Activity() {
             add(sectionLabel(this@SetupActivity, pal, "Steps"), top = 16, bottom = 8)
             steps(oem.steps)
             add(tv("Menu names differ between versions. If you can't find one, search for it in Settings.", 12.5f, pal.dim), top = 10)
-            add(secondaryButton(this@SetupActivity, pal, "Open the settings screen") { oem.openSettings(this@SetupActivity) }, top = 14)
+            add(secondaryButton(this@SetupActivity, pal, "Open Autostart screen") {
+                if (!oem.openAutostartSettings(this@SetupActivity)) {
+                    oem.openSettings(this@SetupActivity)
+                }
+            }, top = 14)
+            add(secondaryButton(this@SetupActivity, pal, "Open Battery management screen") {
+                if (!oem.openPowerManagementSettings(this@SetupActivity)) {
+                    oem.openSettings(this@SetupActivity)
+                }
+            }, top = 8)
             if (!confirmed) {
                 add(tv("Android doesn't let apps see these switches, so tell Klip when you've done them.", 12.5f, pal.dim), top = 10)
             }
             manualControls("autostart", false, primary = true)
+        }
+    }
+
+    private fun recentAppsLockCard(): View {
+        val anchored = TaskAnchor.hasRecentTask(this)
+        return item("recent_lock", "Lock in Recent Apps (Padlock)",
+            if (anchored) "Card active in Recent Apps. Make sure it is padlocked." else "Open Recent Apps and lock Klip.",
+            stateOf("recent_lock", false), "OEM defense") {
+            block("Why this is vital on ${Oem.detect().title}",
+                "Vivo's memory cleaner sweeps closed apps unless they are padlocked in Recent Apps. " +
+                    "Background services without an active Recent Apps card are treated as orphaned daemons and terminated.")
+            add(sectionLabel(this@SetupActivity, pal, "How to padlock Klip"), top = 14, bottom = 8)
+            steps(listOf(
+                "Swipe up from the bottom of your screen and hold to open Recent Apps.",
+                "Find the Klip card preview.",
+                "Pull down slightly on the Klip card, or tap the three dots (⋮) / down arrow at the top.",
+                "Tap the Padlock icon (“Lock”). A small lock icon will appear on the card."
+            ))
+            add(secondaryButton(this@SetupActivity, pal, "Anchor Recent Apps card") {
+                TaskAnchor.tryBootstrapAnchor(this@SetupActivity, anchorOnly = false)
+                Toast.makeText(this@SetupActivity, "Klip card active. Open Recent Apps and tap the Padlock.", Toast.LENGTH_LONG).show()
+            }, top = 14)
+            manualControls("recent_lock", false, primary = true)
+        }
+    }
+
+    private fun notificationListenerCard(): View {
+        val granted = Setup.notificationListenerGranted(this)
+        return item("listener", "System keep-alive anchor",
+            if (granted) "Active: system_server protects Klip." else "Framework binding against aggressive task cleaners.",
+            stateOf("listener", granted), if (granted) "Active" else "Recommended") {
+            block("What it does",
+                "Android's system_server maintains a persistent framework binding to notification listeners. " +
+                    "Because smartwatches and system services rely on this, OEM cleaners (like Vivo's abe) " +
+                    "exempt apps with active listener bindings. If Klip is ever killed, system_server resurrects it automatically.")
+            block("What it can and can't see",
+                "Klip declares this purely as an architectural resurrection anchor. Klip DOES NOT read, process, store, or transmit any of your notifications.")
+            manualControls("listener", granted)
+            if (!granted) {
+                add(primaryButton(this@SetupActivity, pal, "Enable System Keep-Alive (Notification Access)") {
+                    KlipNotificationListenerService.openSettings(this@SetupActivity)
+                }, top = 14)
+            }
         }
     }
 

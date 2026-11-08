@@ -55,6 +55,7 @@ class Pairing(
     // ------------------------------------------------------------------------ the three ways in
 
     fun showAddSheet() {
+        KlipSyncService.burstDiscovery(activity, 60_000L)
         val s = open()
         s.title("Add a device", "Pick whichever suits the other device. It takes about ten seconds.")
         option(s, "Scan a code", "The other device shows a QR code. On a computer run  klip pair  to get one.") {
