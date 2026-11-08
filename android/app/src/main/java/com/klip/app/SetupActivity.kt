@@ -98,16 +98,10 @@ class SetupActivity : Activity() {
 
         if (Build.VERSION.SDK_INT >= 33) b.add(notificationsCard(), bottom = 12)
         b.add(batteryCard(), bottom = 12)
-        b.add(autostartCard(), bottom = 12)
-        if (Oem.detect().needsExtraSteps) {
-            b.add(recentAppsLockCard(), bottom = 26)
-        }
+        b.add(autostartCard(), bottom = 26)
 
         b.add(sectionLabel(this, pal, "OEM Defenses & Keep-Alive"), bottom = 10)
         b.add(notificationListenerCard(), bottom = 12)
-        if (!Oem.detect().needsExtraSteps) {
-            b.add(recentAppsLockCard(), bottom = 12)
-        }
 
         b.add(sectionLabel(this, pal, "Optional"), bottom = 10)
         b.add(tileCard(), bottom = 12)
@@ -262,29 +256,6 @@ class SetupActivity : Activity() {
                 add(tv("Android doesn't let apps see these switches, so tell Klip when you've done them.", 12.5f, pal.dim), top = 10)
             }
             manualControls("autostart", false, primary = true)
-        }
-    }
-
-    private fun recentAppsLockCard(): View {
-        val anchored = TaskAnchor.hasRecentTask(this)
-        return item("recent_lock", "Lock in Recent Apps (Padlock)",
-            if (anchored) "Card active in Recent Apps. Make sure it is padlocked." else "Open Recent Apps and lock Klip.",
-            stateOf("recent_lock", false), "OEM defense") {
-            block("Why this is vital on ${Oem.detect().title}",
-                "Vivo's memory cleaner sweeps closed apps unless they are padlocked in Recent Apps. " +
-                    "Background services without an active Recent Apps card are treated as orphaned daemons and terminated.")
-            add(sectionLabel(this@SetupActivity, pal, "How to padlock Klip"), top = 14, bottom = 8)
-            steps(listOf(
-                "Swipe up from the bottom of your screen and hold to open Recent Apps.",
-                "Find the Klip card preview.",
-                "Pull down slightly on the Klip card, or tap the three dots (⋮) / down arrow at the top.",
-                "Tap the Padlock icon (“Lock”). A small lock icon will appear on the card."
-            ))
-            add(secondaryButton(this@SetupActivity, pal, "Anchor Recent Apps card") {
-                TaskAnchor.tryBootstrapAnchor(this@SetupActivity, anchorOnly = false)
-                Toast.makeText(this@SetupActivity, "Klip card active. Open Recent Apps and tap the Padlock.", Toast.LENGTH_LONG).show()
-            }, top = 14)
-            manualControls("recent_lock", false, primary = true)
         }
     }
 

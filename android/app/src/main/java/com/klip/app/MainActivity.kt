@@ -49,8 +49,6 @@ class MainActivity : Activity() {
     companion object {
         const val REQ_SCAN = 7
         const val REQ_FOLDER = 8
-        const val EXTRA_FROM_BOOT = "com.klip.app.EXTRA_FROM_BOOT"
-        const val EXTRA_ANCHOR_ONLY = "com.klip.app.EXTRA_ANCHOR_ONLY"
     }
 
     private val scope = MainScope()
@@ -80,23 +78,6 @@ class MainActivity : Activity() {
         }, onLinked = { scope.launch { refresh() } })
         build()
         KlipSyncService.start(this)
-
-        if (intent?.getBooleanExtra(EXTRA_ANCHOR_ONLY, false) == true) {
-            if (Build.VERSION.SDK_INT >= 34) {
-                overrideActivityTransition(OVERRIDE_TRANSITION_OPEN, 0, 0)
-                overrideActivityTransition(OVERRIDE_TRANSITION_CLOSE, 0, 0)
-            } else {
-                @Suppress("DEPRECATION")
-                overridePendingTransition(0, 0)
-            }
-            moveTaskToBack(true)
-        } else if (intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true) {
-            android.widget.Toast.makeText(
-                this,
-                "Klip is running. Lock it in Recent Apps (pull down card → Padlock) to prevent background closing.",
-                android.widget.Toast.LENGTH_LONG
-            ).show()
-        }
     }
 
     // ------------------------------------------------------------------------------------ layout

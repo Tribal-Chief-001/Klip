@@ -23,9 +23,6 @@ object Setup {
     fun notificationListenerGranted(c: Context): Boolean =
         KlipNotificationListenerService.isEnabled(c)
 
-    fun recentTaskAnchored(c: Context): Boolean =
-        TaskAnchor.hasRecentTask(c)
-
     /**
      * Android cannot tell an app everything: phone makers (Vivo, Xiaomi, ...) keep their own switches that
      * never show up in the standard checks. So every item can also be marked done by the person.

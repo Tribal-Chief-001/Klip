@@ -7,15 +7,14 @@ import android.util.Log
 
 /**
  * Boot & system event receiver:
- * 1. Resumes KlipSyncService on boot, package update, and user unlock.
+ * 1. Resumes KlipSyncService on boot and package update.
  * 2. Primes the dual-watchdog (JobScheduler + AlarmManager).
- * 3. Bootstraps a task anchor into Recent Apps so users can padlock Klip across reboots.
+ * 3. Rebinds notification listener if enabled.
  */
 class BootReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "BootReceiver"
-        @Volatile private var bootstrappedAfterBoot = false
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -24,25 +23,8 @@ class BootReceiver : BroadcastReceiver() {
         when (action) {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED -> {
-                bootstrappedAfterBoot = false
                 Watchdog.schedule(context)
                 KlipSyncService.start(context)
-                // Establish Recent Apps task card so the user can lock/padlock it
-                TaskAnchor.tryBootstrapAnchor(context, anchorOnly = true)
-                KlipNotificationListenerService.requestRebindIfEnabled(context)
-            }
-            Intent.ACTION_USER_PRESENT -> {
-                // Fired when the user unlocks the screen
-                Watchdog.schedule(context)
-                if (!KlipSyncService.running) {
-                    Log.i(TAG, "User present and KlipSyncService not running; starting service")
-                    KlipSyncService.start(context)
-                }
-                // Only attempt task bootstrap on the first unlock following a boot/restart
-                if (!bootstrappedAfterBoot && !TaskAnchor.hasRecentTask(context)) {
-                    bootstrappedAfterBoot = true
-                    TaskAnchor.tryBootstrapAnchor(context, anchorOnly = true)
-                }
                 KlipNotificationListenerService.requestRebindIfEnabled(context)
             }
         }
