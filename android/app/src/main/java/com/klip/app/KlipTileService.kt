@@ -1,5 +1,6 @@
 package com.klip.app
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Icon
@@ -40,6 +41,7 @@ class KlipTileService : TileService() {
         }
     }
 
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     override fun onClick() {
         super.onClick()
         val launch = Runnable {
@@ -54,13 +56,18 @@ class KlipTileService : TileService() {
                     )
                     startActivityAndCollapse(pi)
                 } else {
-                    @Suppress("DEPRECATION")
-                    startActivityAndCollapse(intent)
+                    legacyStartActivityAndCollapse(intent)
                 }
             } catch (e: Throwable) {
                 Log.e("KlipTileService", "Tile action failed: ${e.message}", e)
             }
         }
         if (isLocked) unlockAndRun(launch) else launch.run()
+    }
+
+    @Suppress("DEPRECATION")
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    private fun legacyStartActivityAndCollapse(intent: Intent) {
+        startActivityAndCollapse(intent)
     }
 }

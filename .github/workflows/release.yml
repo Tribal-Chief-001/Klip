@@ -45,8 +45,26 @@ jobs:
 
       - name: Package release artifact (Windows)
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
-          copy target\${{ matrix.target }}\release\klip.exe .\${{ matrix.artifact_name }}
+          New-Item -ItemType Directory -Force -Path target\release | Out-Null
+          Copy-Item target\${{ matrix.target }}\release\klip.exe target\release\klip.exe
+          Copy-Item target\${{ matrix.target }}\release\klip.exe .\${{ matrix.artifact_name }}
+
+      - name: Build Inno Setup Installer (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            choco install innosetup --no-progress
+            echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+            $env:Path += ";C:\Program Files (x86)\Inno Setup 6"
+          }
+          & iscc packaging/innosetup/klip.iss
+          $installer = (Get-ChildItem -Path target\installer\Klip-Setup-*.exe | Select-Object -First 1).FullName
+          $installerName = (Get-Item $installer).Name
+          $h = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLower()
+          "$h  $installerName" | Out-File -Encoding ascii "$installer.sha256"
 
       - name: Checksum (Unix)
         if: matrix.os != 'windows-latest'
@@ -59,7 +77,21 @@ jobs:
           $h = (Get-FileHash ${{ matrix.artifact_name }} -Algorithm SHA256).Hash.ToLower()
           "$h  ${{ matrix.artifact_name }}" | Out-File -Encoding ascii ${{ matrix.artifact_name }}.sha256
 
-      - name: Upload Release Asset
+      - name: Upload Release Asset (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.artifact_name }}
+            ${{ matrix.artifact_name }}.sha256
+            target/installer/Klip-Setup-*.exe
+            target/installer/Klip-Setup-*.exe.sha256
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Release Asset (Unix)
+        if: matrix.os != 'windows-latest'
         uses: softprops/action-gh-release@v2
         with:
           files: |

@@ -59,6 +59,14 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = false
+        // UniFFI generated bindings feature runtime reflection fallbacks for java.lang.ref.Cleaner
+        // which triggers false-positive NewApi warnings on minSdk 26.
+        disable += "NewApi"
+    }
 }
 
 dependencies {

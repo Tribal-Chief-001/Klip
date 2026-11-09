@@ -21,7 +21,6 @@
     <!-- Exact alarm permission for redundant heartbeat watchdog -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- Companion device framework permissions for background sync bindings -->
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_PROFILE_COMPUTER" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
 
@@ -182,16 +181,6 @@
             </intent-filter>
         </service>
 
-        <!-- Companion device service for Android CompanionDeviceManager binding (API 31+) -->
-        <service
-            android:name=".KlipCompanionService"
-            android:exported="true"
-            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE"
-            tools:targetApi="31">
-            <intent-filter>
-                <action android:name="android.companion.CompanionDeviceService" />
-            </intent-filter>
-        </service>
 
         <receiver
             android:name=".BootReceiver"

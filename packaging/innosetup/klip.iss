@@ -2,7 +2,9 @@
 ; Klip - End-to-end encrypted clipboard sync for Windows
 
 #define MyAppName "Klip"
+#ifndef MyAppVersion
 #define MyAppVersion "0.10.0"
+#endif
 #define MyAppPublisher "TribalChief"
 #define MyAppURL "https://github.com/Tribal-Chief-001/Klip"
 #define MyAppExeName "klip.exe"

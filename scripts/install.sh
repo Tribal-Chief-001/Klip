@@ -58,18 +58,37 @@ find_or_build_binary() {
             *)       error "Unsupported architecture: ${ARCH}. Prebuilt releases are currently available for x86_64."; exit 1 ;;
         esac
 
-        RELEASE_URL="https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-${TARGET}"
+        DOWNLOAD_URL="https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-${TARGET}"
+        RELEASES_API="https://api.github.com/repos/Tribal-Chief-001/Klip/releases"
 
-        if curl -fsSL "${RELEASE_URL}" -o "${KLIP_BIN}" 2>/dev/null; then
+        # Attempt dynamic discovery from GitHub Releases API (mirroring install.ps1)
+        if command -v curl >/dev/null 2>&1; then
+            API_RESP="$(curl -sSL -H "User-Agent: Klip-Installer" "${RELEASES_API}" 2>/dev/null || true)"
+            if [[ -n "${API_RESP}" ]]; then
+                DISCOVERED_URL="$(echo "${API_RESP}" | grep -o "https://[^\"]*${TARGET}[^\"]*" | head -n 1 || true)"
+                if [[ -n "${DISCOVERED_URL}" ]]; then
+                    DOWNLOAD_URL="${DISCOVERED_URL}"
+                fi
+            fi
+        fi
+
+        if curl -fsSL "${DOWNLOAD_URL}" -o "${KLIP_BIN}" 2>/dev/null; then
             chmod +x "${KLIP_BIN}"
             success "Downloaded prebuilt klip binary to ${KLIP_BIN}"
         else
-            warn "Could not download prebuilt binary from ${RELEASE_URL}. Falling back to cargo install..."
-            if command -v cargo >/dev/null 2>&1; then
-                cargo install --git https://github.com/Tribal-Chief-001/Klip klip-cli --bin klip --root "${HOME}/.local"
+            # Try latest release download redirect if API/direct tag was unavailable
+            LATEST_URL="https://github.com/Tribal-Chief-001/Klip/releases/latest/download/klip-${TARGET}"
+            if curl -fsSL "${LATEST_URL}" -o "${KLIP_BIN}" 2>/dev/null; then
+                chmod +x "${KLIP_BIN}"
+                success "Downloaded latest klip binary to ${KLIP_BIN}"
             else
-                error "Neither prebuilt binary nor cargo found. Please install Rust or download klip manually."
-                exit 1
+                warn "Could not download prebuilt binary from ${DOWNLOAD_URL}. Falling back to cargo install..."
+                if command -v cargo >/dev/null 2>&1; then
+                    cargo install --git https://github.com/Tribal-Chief-001/Klip klip-cli --bin klip --root "${HOME}/.local"
+                else
+                    error "Neither prebuilt binary nor cargo found. Please install Rust or download klip manually."
+                    exit 1
+                fi
             fi
         fi
     fi

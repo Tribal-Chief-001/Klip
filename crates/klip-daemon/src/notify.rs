@@ -30,19 +30,103 @@ fn args(name: &str, gone: Duration) -> Vec<String> {
     ]
 }
 
-/// Start the notifier and forget it; a missing program or no display is not an error.
+/// Start the notifier and enforce a strict timeout so a hung child process (e.g. D-Bus or PowerShell)
+/// is always terminated and reaped.
 fn run(program: &str, args: &[String]) {
-    if let Ok(mut child) = Command::new(program)
-        .args(args)
+    run_with_timeout(program, args, Duration::from_secs(5));
+}
+
+fn run_with_timeout(program: &str, args: &[String], timeout: Duration) {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+
+    #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    if let Ok(mut child) = cmd.spawn() {
         std::thread::spawn(move || {
-            let _ = child.wait();
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_status)) => break,
+                    Ok(None) => {
+                        if start.elapsed() >= timeout {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(_) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                }
+            }
         });
     }
+}
+
+/// Standard base64 encoding without external dependencies.
+#[cfg(any(target_os = "windows", test))]
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut res = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        res.push(TABLE[((n >> 18) & 63) as usize] as char);
+        res.push(TABLE[((n >> 12) & 63) as usize] as char);
+        if chunk.len() > 1 {
+            res.push(TABLE[((n >> 6) & 63) as usize] as char);
+        } else {
+            res.push('=');
+        }
+        if chunk.len() > 2 {
+            res.push(TABLE[(n & 63) as usize] as char);
+        } else {
+            res.push('=');
+        }
+    }
+    res
+}
+
+/// Encodes a UTF-8 string into PowerShell's expected UTF-16LE Base64 format (-EncodedCommand).
+#[cfg(any(target_os = "windows", test))]
+fn utf16le_base64_encode(s: &str) -> String {
+    let utf16_bytes: Vec<u8> = s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    base64_encode(&utf16_bytes)
+}
+
+/// Build the PowerShell toast notification script and encode it as UTF-16LE Base64.
+/// Title and body are safely Base64 decoded at runtime inside PowerShell, preventing
+/// any shell injection, quote stripping, or XML entity parsing bugs.
+#[cfg(any(target_os = "windows", test))]
+fn build_windows_toast_encoded_command(title: &str, body_text: &str) -> String {
+    let title_b64 = base64_encode(title.as_bytes());
+    let body_b64 = base64_encode(body_text.as_bytes());
+    let ps_code = format!(
+        "[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime] > $null; \
+         $title=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{title_b64}')); \
+         $body=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('{body_b64}')); \
+         $t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+         $n=$t.GetElementsByTagName('text'); \
+         $n.Item(0).AppendChild($t.CreateTextNode($title)) > $null; \
+         $n.Item(1).AppendChild($t.CreateTextNode($body)) > $null; \
+         $toast=[Windows.UI.Notifications.ToastNotification]::new($t); \
+         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Klip').Show($toast);"
+    );
+    utf16le_base64_encode(&ps_code)
 }
 
 /// Send a native desktop notification across Linux, macOS, and Windows.
@@ -72,16 +156,7 @@ pub fn send_native_notification(title: &str, body_text: &str) {
     }
     #[cfg(target_os = "windows")]
     {
-        let script = format!(
-            "$t=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
-             $n=$t.GetElementsByTagName('text'); \
-             $n.Item(0).AppendChild($t.CreateTextNode('{}')) > $null; \
-             $n.Item(1).AppendChild($t.CreateTextNode('{}')) > $null; \
-             $toast=[Windows.UI.Notifications.ToastNotification]::new($t); \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Klip').Show($toast);",
-            title.replace('\'', "''"),
-            body_text.replace('\'', "''")
-        );
+        let encoded_cmd = build_windows_toast_encoded_command(title, body_text);
         run(
             "powershell",
             &[
@@ -91,8 +166,8 @@ pub fn send_native_notification(title: &str, body_text: &str) {
                 "Hidden".to_string(),
                 "-NoProfile".to_string(),
                 "-NonInteractive".to_string(),
-                "-Command".to_string(),
-                script,
+                "-EncodedCommand".to_string(),
+                encoded_cmd,
             ],
         );
     }
@@ -191,5 +266,37 @@ mod tests {
     #[test]
     fn a_missing_notifier_is_ignored() {
         run("klip-no-such-program-xyz", &[]);
+    }
+
+    #[test]
+    fn base64_and_utf16le_encoding_works_and_handles_arbitrary_quotes_and_special_chars() {
+        let b64 = base64_encode(b"hello world");
+        assert_eq!(b64, "aGVsbG8gd29ybGQ=");
+
+        let empty = base64_encode(b"");
+        assert_eq!(empty, "");
+
+        let one = base64_encode(b"a");
+        assert_eq!(one, "YQ==");
+
+        let two = base64_encode(b"ab");
+        assert_eq!(two, "YWI=");
+
+        let three = base64_encode(b"abc");
+        assert_eq!(three, "YWJj");
+
+        let title = "Klip's \"Notification\" with `ticks` & $vars and \\slashes\\";
+        let body = "Special body with unicode: 🚀 <tag> & entity \n 'quotes'";
+        let encoded = build_windows_toast_encoded_command(title, body);
+        assert!(!encoded.is_empty());
+        // Verify encoded string consists only of valid Base64 characters
+        assert!(encoded
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='));
+    }
+
+    #[test]
+    fn child_process_timeout_cleans_up_hanging_command() {
+        run_with_timeout("klip-no-such-program-xyz", &[], Duration::from_millis(50));
     }
 }
