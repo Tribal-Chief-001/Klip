@@ -14,8 +14,8 @@ Time needed: about 10 minutes.
 ```powershell
 mkdir $env:USERPROFILE\Klip -Force
 cd $env:USERPROFILE\Klip
-Invoke-WebRequest https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-windows-x86_64.exe -OutFile klip.exe
-Invoke-WebRequest https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-windows-x86_64.exe.sha256 -OutFile klip.sha256
+Invoke-WebRequest https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-windows-x86_64.exe -OutFile klip.exe
+Invoke-WebRequest https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-windows-x86_64.exe.sha256 -OutFile klip.sha256
 ```
 
 3. Check the download is not damaged. These two lines must show the **same** text (letters may be upper or lower case):
@@ -34,7 +34,7 @@ $p = [Environment]::GetEnvironmentVariable("Path","User")
 
 Close PowerShell and open a new one.
 
-> **Newer version?** Replace `v0.10.0-alpha` with the newest tag from the [Releases page](https://github.com/Tribal-Chief-001/Klip/releases).
+> **Newer version?** Replace `v0.11.0-alpha` with the newest tag from the [Releases page](https://github.com/Tribal-Chief-001/Klip/releases).
 
 > **"Windows protected your PC" (SmartScreen)?** Klip is not signed with a paid certificate, so Windows may warn the first time. Click **More info → Run anyway**. Downloading with `Invoke-WebRequest` as above usually avoids the warning; a browser download usually triggers it. Only do this for the file from the real Releases page above.
 

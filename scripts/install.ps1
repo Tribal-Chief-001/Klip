@@ -67,7 +67,7 @@ if ($SourcePath -ne "" -and (Test-Path $SourcePath)) {
 
 if (-not $BinaryFound) {
     Write-Host "[INFO] Downloading latest Klip release binary from GitHub..." -ForegroundColor Cyan
-    $DownloadUrl = "https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-windows-x86_64.exe"
+    $DownloadUrl = "https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-windows-x86_64.exe"
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13

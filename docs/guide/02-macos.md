@@ -16,8 +16,8 @@ Time needed: about 10 minutes.
 ```bash
 mkdir -p ~/.local/bin
 cd ~/Downloads
-curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-macos-arm64
-curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.10.0-alpha/klip-macos-arm64.sha256
+curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-macos-arm64
+curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-macos-arm64.sha256
 shasum -a 256 -c klip-macos-arm64.sha256
 ```
 
@@ -33,7 +33,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 
 Close Terminal and open it again so the PATH change is read.
 
-> **Newer version?** Replace `v0.10.0-alpha` with the newest tag from the [Releases page](https://github.com/Tribal-Chief-001/Klip/releases).
+> **Newer version?** Replace `v0.11.0-alpha` with the newest tag from the [Releases page](https://github.com/Tribal-Chief-001/Klip/releases).
 
 **What is the `xattr` line?** Programs downloaded with a browser carry a "quarantine" mark and macOS refuses to run unsigned ones (the message says *"klip cannot be opened because the developer cannot be verified"*). Klip is not signed with an Apple developer certificate (that costs money every year). `curl` does not add the mark, and the `xattr` line removes it if it is there. If you downloaded it with a browser and still see the message: open **System Settings → Privacy & Security**, scroll down to the message about `klip`, and click **Open Anyway**.
 
