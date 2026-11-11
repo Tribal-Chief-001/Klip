@@ -1,8 +1,10 @@
 package com.klip.app
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 
 /**
@@ -22,7 +24,15 @@ class WatchdogReceiver : BroadcastReceiver() {
 
         if (!KlipSyncService.running) {
             Log.w(Watchdog.TAG, "KlipSyncService was not running; resurrecting via AlarmManager watchdog")
-            KlipSyncService.start(context)
+            try {
+                KlipSyncService.start(context)
+            } catch (e: Throwable) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                    Log.w(Watchdog.TAG, "AlarmManager watchdog cannot start KlipSyncService: background start not allowed (ForegroundServiceStartNotAllowedException): ${e.message}")
+                } else {
+                    Log.e(Watchdog.TAG, "AlarmManager watchdog failed to start KlipSyncService: ${e.message}", e)
+                }
+            }
         } else {
             Log.d(Watchdog.TAG, "Watchdog heartbeat pulse: KlipSyncService is healthy")
         }

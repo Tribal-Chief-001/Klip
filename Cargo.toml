@@ -29,6 +29,7 @@ tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "net", "time", 
 blake3 = "1.5"
 rand = "0.8"
 ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
+zeroize = { version = "1.8", features = ["derive", "zeroize_derive"] }
 
 # Serialization & Diff
 serde = { version = "1.0", features = ["derive"] }

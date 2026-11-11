@@ -1,5 +1,6 @@
 package com.klip.app
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -73,6 +74,10 @@ class KlipSyncService : Service() {
                     ctx.startService(intent)
                 }
             } catch (e: Throwable) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                    Log.w(TAG, "Cannot start foreground service from background: ${e.message}")
+                    throw e
+                }
                 Log.e(TAG, "Cannot start service: ${e.message}", e)
             }
         }
@@ -394,6 +399,22 @@ class KlipSyncService : Service() {
                 if (missing) postForeground(summary) else nm.notify(NOTIFICATION_ID, buildNotification(summary))
             }
         }
+    }
+
+    /**
+     * Android 15 (API 35+) foreground service timeout callback.
+     * Invoked when this foreground service exceeds execution limits under system policy.
+     * The service must immediately call stopSelf(), otherwise the OS throws
+     * ForegroundServiceDidNotStopInTimeException and terminates the process.
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "Foreground service timed out for startId=$startId, fgsType=$fgsType; stopping self")
+        stopSelf(startId)
+    }
+
+    override fun onTimeout(startId: Int) {
+        Log.w(TAG, "Foreground service timed out for startId=$startId; stopping self")
+        stopSelf(startId)
     }
 
     override fun onDestroy() {

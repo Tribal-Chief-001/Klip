@@ -673,26 +673,37 @@ mod android_context {
     use jni::objects::{JClass, JObject};
     use jni::JNIEnv;
     use std::ffi::c_void;
-    use std::sync::Once;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
 
     #[no_mangle]
     pub extern "system" fn Java_com_klip_app_KlipRuntime_installAndroidContext(
-        env: JNIEnv,
+        mut env: JNIEnv,
         _class: JClass,
         context: JObject,
     ) {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            let Ok(vm) = env.get_java_vm() else { return };
-            let Ok(global) = env.new_global_ref(&context) else {
-                return;
-            };
-            let vm_ptr = vm.get_java_vm_pointer() as *mut c_void;
-            let ctx_ptr = global.as_obj().as_raw() as *mut c_void;
-            // Both pointers must stay valid until the process exits.
-            std::mem::forget(global);
-            unsafe { ndk_context::initialize_android_context(vm_ptr, ctx_ptr) };
-        });
+        static INITIALIZED: AtomicBool = AtomicBool::new(false);
+        static LOCK: Mutex<()> = Mutex::new(());
+
+        if INITIALIZED.load(Ordering::Acquire) {
+            return;
+        }
+
+        let Ok(_guard) = LOCK.lock() else { return };
+        if INITIALIZED.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let Ok(vm) = env.get_java_vm() else { return };
+        let Ok(global) = env.new_global_ref(&context) else {
+            return;
+        };
+        let vm_ptr = vm.get_java_vm_pointer() as *mut c_void;
+        let ctx_ptr = global.as_obj().as_raw() as *mut c_void;
+        // Both pointers must stay valid until the process exits.
+        std::mem::forget(global);
+        unsafe { ndk_context::initialize_android_context(vm_ptr, ctx_ptr) };
+        INITIALIZED.store(true, Ordering::Release);
     }
 }
 

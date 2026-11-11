@@ -211,9 +211,32 @@ public final class ClipHelper {
     }
 
     private static Method find(String name) {
+        Method fallback = null;
         for (Method m : clipboard.getClass().getMethods()) {
-            if (m.getName().equals(name)) return m;
+            if (!m.getName().equals(name)) continue;
+            if ("getPrimaryClip".equals(name)) {
+                Class<?>[] types = m.getParameterTypes();
+                // Filter out primitive deviceId overloads on Android 14/15:
+                // Non-deviceId overloads take (String pkg, String tag, int userId), (String pkg, int userId), or (String pkg).
+                // Selecting an overload with primitive deviceId causes IllegalArgumentException on invocation.
+                int intCount = 0;
+                boolean allSupported = true;
+                for (Class<?> t : types) {
+                    if (t == int.class) {
+                        intCount++;
+                    } else if (t != String.class) {
+                        allSupported = false;
+                    }
+                }
+                if (allSupported && intCount <= 1 && types.length <= 3) {
+                    return m;
+                }
+                if (fallback == null) fallback = m;
+            } else {
+                return m;
+            }
         }
+        if (fallback != null) return fallback;
         throw new IllegalStateException("clipboard service has no " + name);
     }
 

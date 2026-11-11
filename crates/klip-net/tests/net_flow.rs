@@ -226,6 +226,8 @@ async fn host_can_decline_a_valid_request() {
     assert!(matches!(err, NetError::PairingRejected(_)), "{err}");
     assert!(host.node.peers().is_empty());
     assert!(phone.node.peers().is_empty());
+    // Ticket retention: declining does not burn the ticket for retry or legitimate attempt
+    assert!(host.node.pairing_open());
 }
 
 #[tokio::test]

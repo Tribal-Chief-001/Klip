@@ -1,6 +1,7 @@
 package com.klip.app
 
 import android.app.AlarmManager
+import android.app.ForegroundServiceStartNotAllowedException
 import android.app.PendingIntent
 import android.app.job.JobInfo
 import android.app.job.JobParameters
@@ -133,7 +134,15 @@ class WatchdogJobService : JobService() {
         if (Watchdog.enabled(this)) {
             if (!KlipSyncService.running) {
                 Log.i(Watchdog.TAG, "KlipSyncService was not running; starting from JobScheduler watchdog")
-                KlipSyncService.start(this)
+                try {
+                    KlipSyncService.start(this)
+                } catch (e: Throwable) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is ForegroundServiceStartNotAllowedException) {
+                        Log.w(Watchdog.TAG, "JobScheduler watchdog cannot start KlipSyncService: background start not allowed (ForegroundServiceStartNotAllowedException): ${e.message}")
+                    } else {
+                        Log.e(Watchdog.TAG, "JobScheduler watchdog failed to start KlipSyncService: ${e.message}", e)
+                    }
+                }
             }
             // Keep the AlarmManager watchdog armed as well
             Watchdog.scheduleAlarm(this, force = true)

@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.klip.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.klip.app"
@@ -74,7 +74,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
-    // UniFFI-generated Kotlin bindings load the Rust library through JNA.
-    implementation("net.java.dev.jna:jna:5.14.0@aar")
+    // UniFFI-generated Kotlin bindings load the Rust library through JNA (5.15.0+ supports 16 KB page-size).
+    implementation("net.java.dev.jna:jna:5.15.0@aar")
     testImplementation("junit:junit:4.13.2")
 }

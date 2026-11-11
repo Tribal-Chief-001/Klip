@@ -353,6 +353,22 @@ async fn rename_retrying(
     result
 }
 
+fn is_cross_device_error(err: &io::Error) -> bool {
+    if err.kind() == io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(libc::EXDEV) {
+        return true;
+    }
+    #[cfg(windows)]
+    if err.raw_os_error() == Some(17) {
+        // ERROR_NOT_SAME_DEVICE
+        return true;
+    }
+    false
+}
+
 impl PartialFile {
     pub fn create(dir: &Path, id: [u8; 16]) -> io::Result<Self> {
         ensure_dir(dir)?;
@@ -498,6 +514,16 @@ impl PartialFile {
             // On Windows a virus scanner or the indexer may hold the file for a moment: try again a few times.
             match rename_retrying(|| fs::rename(&path, &target), RENAME_RETRY_DELAYS).await {
                 Ok(()) => Ok(target),
+                Err(e) if is_cross_device_error(&e) => match fs::copy(&path, &target) {
+                    Ok(_) => {
+                        let _ = fs::remove_file(&path);
+                        Ok(target)
+                    }
+                    Err(copy_err) => {
+                        let _ = fs::remove_file(&target);
+                        Err(copy_err)
+                    }
+                },
                 Err(e) => {
                     let _ = fs::remove_file(&target);
                     Err(e)
@@ -876,6 +902,19 @@ impl TransferRegistry {
             .count()
     }
 
+    /// In-flight bytes committed to running incoming transfers that have not yet arrived on disk.
+    pub fn active_incoming_bytes(&self) -> u64 {
+        self.entries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                e.info.direction == TransferDirection::Receiving && is_running(e.info.state)
+            })
+            .map(|e| e.info.size.saturating_sub(e.info.done))
+            .sum()
+    }
+
     fn trim(entries: &mut Vec<Entry>) {
         let finished = entries.iter().filter(|e| !is_running(e.info.state)).count();
         let mut drop_first = finished.saturating_sub(KEEP_FINISHED);
@@ -939,13 +978,15 @@ fn refusal(
     }
     match free_space(&policy.dir) {
         Ok(free) => {
+            let committed = reg.active_incoming_bytes();
+            let effective_free = free.saturating_sub(committed);
             // A resumed file only needs room for the bytes still to come.
             let needed = header
                 .size
                 .saturating_sub(have)
                 .saturating_mul(policy.space_factor)
                 .saturating_add(policy.reserve_bytes);
-            (free < needed).then(|| {
+            (effective_free < needed).then(|| {
                 (
                     RejectCode::NoSpace,
                     "this device does not have enough free space for the file".to_string(),
@@ -1088,6 +1129,8 @@ where
         if part.file().seek(io::SeekFrom::Start(offset)).await.is_err() {
             offset = 0;
             let _ = part.restart().await;
+        } else {
+            reg.progress(id, offset);
         }
     }
     let mut progress = |n| reg.progress(id, n);
@@ -2656,5 +2699,69 @@ mod tests {
         fs::remove_file(part.path()).unwrap(); // the rename will have nothing to move
         assert!(part.commit("a.txt").await.is_err());
         assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
+    }
+
+    #[test]
+    fn active_incoming_bytes_tracks_unwritten_bytes() {
+        let reg = TransferRegistry::new();
+        assert_eq!(reg.active_incoming_bytes(), 0);
+
+        let _token1 = reg
+            .begin_incoming("peer1", [1; 16], "file1.bin", 1000, 10, 10)
+            .unwrap();
+        assert_eq!(reg.active_incoming_bytes(), 1000);
+
+        reg.progress([1; 16], 400);
+        assert_eq!(reg.active_incoming_bytes(), 600);
+
+        let _token2 = reg
+            .begin_incoming("peer2", [2; 16], "file2.bin", 500, 10, 10)
+            .unwrap();
+        assert_eq!(reg.active_incoming_bytes(), 1100);
+
+        reg.finish([1; 16], TransferState::Done, None, None);
+        assert_eq!(reg.active_incoming_bytes(), 500);
+
+        reg.finish([2; 16], TransferState::Failed, None, None);
+        assert_eq!(reg.active_incoming_bytes(), 0);
+    }
+
+    #[test]
+    fn in_flight_bytes_cause_refusal_when_space_would_be_exhausted() {
+        let dir = temp("inflight-refusal");
+        let p = policy(&dir);
+        let reg = TransferRegistry::new();
+        let free = free_space(&dir).unwrap();
+        // If an in-flight transfer claims all but 100 bytes:
+        let reserved = free.saturating_sub(100);
+        let _tok = reg
+            .begin_incoming("peer1", [99; 16], "huge.bin", reserved, 10, 10)
+            .unwrap();
+        let header = FileHeader {
+            version: 1,
+            id: [1; 16],
+            name: "test.bin".into(),
+            size: 1000,
+        };
+        let res = refusal(&header, 0, "peer2", &p, &reg);
+        assert!(matches!(res, Some((RejectCode::NoSpace, _))));
+    }
+
+    #[test]
+    fn cross_device_errors_are_recognized() {
+        assert!(is_cross_device_error(&io::Error::new(
+            io::ErrorKind::CrossesDevices,
+            "cross device"
+        )));
+        #[cfg(unix)]
+        assert!(is_cross_device_error(&io::Error::from_raw_os_error(
+            libc::EXDEV
+        )));
+        #[cfg(windows)]
+        assert!(is_cross_device_error(&io::Error::from_raw_os_error(17)));
+        assert!(!is_cross_device_error(&io::Error::new(
+            io::ErrorKind::NotFound,
+            "not found"
+        )));
     }
 }

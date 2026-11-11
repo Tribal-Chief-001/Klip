@@ -143,7 +143,18 @@ impl IpcServer {
                             Self::handle_client(stream, sync, shutdown).await;
                         });
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        if is_transient_accept_error(&e) {
+                            eprintln!("warning: transient error accepting IPC connection: {e}; retrying in 50ms");
+                            tokio::select! {
+                                _ = self.shutdown.wait() => break,
+                                _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                            }
+                            continue;
+                        }
+                        eprintln!("fatal error accepting IPC connection: {e}");
+                        break;
+                    }
                 }
             }
         }
@@ -560,6 +571,23 @@ fn get_process_rss_bytes() -> u64 {
     0
 }
 
+#[cfg(unix)]
+fn is_transient_accept_error(err: &std::io::Error) -> bool {
+    if matches!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::Interrupted
+    ) {
+        return true;
+    }
+    if let Some(code) = err.raw_os_error() {
+        return code == libc::EMFILE
+            || code == libc::ENFILE
+            || code == libc::ECONNABORTED
+            || code == libc::EINTR;
+    }
+    false
+}
+
 #[cfg(test)]
 mod framing_tests {
     use super::*;
@@ -618,5 +646,34 @@ mod framing_tests {
             deserialize_ipc_msg::<IpcResponse>(&got[4..]).unwrap(),
             IpcResponse::Resumed
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transient_accept_errors_are_classified_correctly() {
+        assert!(is_transient_accept_error(
+            &std::io::Error::from_raw_os_error(libc::EMFILE)
+        ));
+        assert!(is_transient_accept_error(
+            &std::io::Error::from_raw_os_error(libc::ENFILE)
+        ));
+        assert!(is_transient_accept_error(
+            &std::io::Error::from_raw_os_error(libc::ECONNABORTED)
+        ));
+        assert!(is_transient_accept_error(
+            &std::io::Error::from_raw_os_error(libc::EINTR)
+        ));
+        assert!(is_transient_accept_error(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "aborted"
+        )));
+        assert!(is_transient_accept_error(&std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "interrupted"
+        )));
+        assert!(!is_transient_accept_error(&std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied"
+        )));
     }
 }

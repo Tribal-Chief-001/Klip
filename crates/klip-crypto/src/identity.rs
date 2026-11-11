@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Keystore format version. v1 stored per-peer symmetric keys for the retired UDP protocol; those
 /// entries are meaningless (and untrustworthy) now and are dropped on load.
@@ -13,14 +14,14 @@ const KEYSTORE_VERSION: u32 = 2;
 /// Long-term device identity. The 32-byte seed is also the QUIC endpoint secret key, so the
 /// `node_id` equals the iroh endpoint id.
 pub struct DeviceIdentity {
-    seed: [u8; 32],
+    seed: Zeroizing<[u8; 32]>,
     pub node_id: NodeId,
 }
 
 impl DeviceIdentity {
     pub fn generate() -> Self {
-        let mut seed = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
+        let mut seed = Zeroizing::new([0u8; 32]);
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut *seed);
         Self::from_seed(&seed)
     }
 
@@ -28,7 +29,7 @@ impl DeviceIdentity {
         let signing_key = SigningKey::from_bytes(seed);
         let node_id = NodeId::new(signing_key.verifying_key().to_bytes());
         Self {
-            seed: *seed,
+            seed: Zeroizing::new(*seed),
             node_id,
         }
     }
@@ -38,6 +39,20 @@ impl DeviceIdentity {
         &self.seed
     }
 }
+
+impl Zeroize for DeviceIdentity {
+    fn zeroize(&mut self) {
+        self.seed.zeroize();
+    }
+}
+
+impl Drop for DeviceIdentity {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for DeviceIdentity {}
 
 /// A trusted (paired) device.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -73,6 +88,20 @@ pub struct KeyStore {
     pub peers: HashMap<String, PairedPeer>,
 }
 
+impl Zeroize for KeyStore {
+    fn zeroize(&mut self) {
+        self.identity_seed_hex.zeroize();
+    }
+}
+
+impl Drop for KeyStore {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for KeyStore {}
+
 impl KeyStore {
     pub fn new(device_name: String) -> (Self, DeviceIdentity) {
         let identity = DeviceIdentity::generate();
@@ -95,8 +124,9 @@ impl KeyStore {
             restrict_to_owner(p, 0o600);
             let data = fs::read_to_string(p).map_err(|e| e.to_string())?;
             let mut store: KeyStore = serde_json::from_str(&data).map_err(|e| e.to_string())?;
-            let seed = hex_decode(&store.identity_seed_hex)?;
+            let seed = Zeroizing::new(hex_decode(&store.identity_seed_hex)?);
             let arr: [u8; 32] = seed
+                .as_slice()
                 .try_into()
                 .map_err(|_| "Corrupted identity seed".to_string())?;
             let identity = DeviceIdentity::from_seed(&arr);
@@ -312,6 +342,19 @@ mod tests {
         let again = DeviceIdentity::from_seed(id.seed());
         assert_eq!(id.node_id, again.node_id);
         assert_ne!(id.node_id, DeviceIdentity::generate().node_id);
+    }
+
+    #[test]
+    fn test_zeroization_on_device_identity_and_keystore() {
+        let mut id = DeviceIdentity::generate();
+        assert_ne!(*id.seed(), [0u8; 32]);
+        id.zeroize();
+        assert_eq!(*id.seed(), [0u8; 32]);
+
+        let (mut ks, _) = KeyStore::new("test".to_string());
+        assert!(!ks.identity_seed_hex.is_empty());
+        ks.zeroize();
+        assert!(ks.identity_seed_hex.bytes().all(|b| b == 0));
     }
 
     #[test]

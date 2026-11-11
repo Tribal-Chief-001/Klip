@@ -184,6 +184,8 @@ impl ClipboardDriver for WindowsClipboardDriver {
             ClipContentType::HtmlContent => {
                 let raw_html = String::from_utf8_lossy(data);
                 let text = klip_diff::utf8_to_cf_html(&raw_html);
+                let cf_fp = compute_fingerprint(text.as_bytes(), &self.local_node);
+                self.echo_shield.record_injection(cf_fp);
                 self.with_retry(|cb| {
                     use arboard::SetExtWindows;
                     let mut op = cb.set();

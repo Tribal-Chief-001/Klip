@@ -105,7 +105,13 @@ impl HybridLogicalClock {
                 ahead_ms: remote.physical_time_ms - now,
             });
         }
-        Ok(self.recv_event(remote))
+        let local_wall_time = now;
+        let mut clamped_remote = *remote;
+        let max_local = self.physical_time_ms.max(local_wall_time);
+        if clamped_remote.physical_time_ms > max_local {
+            clamped_remote.physical_time_ms = max_local;
+        }
+        Ok(self.recv_event(&clamped_remote))
     }
 
     /// Advance clock on receiving a remote message's HLC.
@@ -193,10 +199,16 @@ mod tests {
             local, before,
             "a rejected timestamp must not move our clock"
         );
-        // A slightly-ahead peer (within tolerance) is accepted.
+        // A slightly-ahead peer (within tolerance) is accepted without dragging local physical clock.
         let mut near = HybridLogicalClock::new(NodeId::new([3u8; 32]));
         near.physical_time_ms += 5_000;
-        assert!(local.recv_event_bounded(&near, 60_000).is_ok());
+        let local_phys_before = local.physical_time_ms;
+        let res = local.recv_event_bounded(&near, 60_000).unwrap();
+        assert!(
+            res.physical_time_ms < near.physical_time_ms,
+            "fast remote clock must not drag local physical time forward"
+        );
+        assert!(res.physical_time_ms <= local_phys_before.max(current_time_ms()));
     }
 
     #[test]

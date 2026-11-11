@@ -22,13 +22,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Base time for a clip exchange plus time proportional to its size (assumes at least 64 KiB/s),
 /// so a 30 MB clip over a slow link is not killed after 10 s.
 const WRITE_TIMEOUT_BASE: Duration = Duration::from_secs(10);
-/// A clip up to this size is re-sent once on a fresh connection after a timeout (the cached
-/// connection may be dead: peer crashed, laptop slept, network changed). Larger clips are not
-/// re-sent automatically because that would double a big transfer.
-const RETRY_AFTER_TIMEOUT_MAX_BYTES: usize = 256 * 1024;
 const MIN_THROUGHPUT_BYTES_PER_SEC: u64 = 64 * 1024;
-/// A first attempt that fails faster than this was a dead cached connection and is retried once.
-const FAST_FAILURE: Duration = Duration::from_secs(3);
 /// Only a handful of unauthenticated pairing handshakes may run at the same time.
 const MAX_CONCURRENT_PAIR_HANDLERS: usize = 4;
 /// File connections that may be waiting for the application at once (the application limits transfers).
@@ -548,23 +542,17 @@ impl KlipNode {
 
     async fn send_to(&self, id: EndpointId, bytes: &[u8]) -> Result<(), NetError> {
         // A failed connection is never reused: drop it so the next attempt dials fresh. Retry once
-        // on a fresh connection when the failure was fast (a dead cached connection is refused at
-        // once) or when a small clip timed out (the cached connection was silently dead). A peer
-        // that answered "no" has given its final answer; connect failures are not retried at once.
+        // on a fresh connection when the cached connection fails (stream error, write timeout, or
+        // interface handoff), including for larger payloads, instead of dropping immediately.
+        // A peer that answered "no" has given its final answer; connect failures are not retried at once.
         // A duplicate delivery is harmless: the receiver answers "superseded" for a clip it has.
-        let started = Instant::now();
         match self.try_send(id, bytes, false).await {
             Ok(()) => Ok(()),
             Err(NetError::PeerRefused(why)) => Err(NetError::PeerRefused(why)),
             Err(e @ (NetError::UnknownPeer | NetError::Connect(_))) => Err(e),
-            Err(e) => {
+            Err(_) => {
                 self.drop_connection(&id);
-                let fast = started.elapsed() <= FAST_FAILURE;
-                if fast || bytes.len() <= RETRY_AFTER_TIMEOUT_MAX_BYTES {
-                    self.try_send(id, bytes, true).await
-                } else {
-                    Err(e)
-                }
+                self.try_send(id, bytes, true).await
             }
         }
     }
@@ -573,6 +561,7 @@ impl KlipNode {
     fn drop_connection(&self, id: &EndpointId) {
         if let Some(conn) = self.inner.conns.lock().unwrap().remove(id) {
             conn.close(CODE_DONE.into(), b"abandoned");
+            let _ = self.inner.events.try_send(NetEvent::PeerDisconnected(*id));
         }
     }
 
@@ -585,7 +574,7 @@ impl KlipNode {
         let conn = self.connection_to(id, force_new).await?;
         let limit = WRITE_TIMEOUT_BASE
             + Duration::from_secs(bytes.len() as u64 / MIN_THROUGHPUT_BYTES_PER_SEC);
-        timeout(limit, async {
+        let res = timeout(limit, async {
             let (mut tx, mut rx) = conn
                 .open_bi()
                 .await
@@ -615,8 +604,20 @@ impl KlipNode {
                 )),
             }
         })
-        .await
-        .map_err(|_| NetError::Stream("send timed out".into()))?
+        .await;
+
+        match res {
+            Ok(inner_res) => {
+                if let Err(NetError::Stream(_)) = &inner_res {
+                    self.drop_connection(&id);
+                }
+                inner_res
+            }
+            Err(_) => {
+                self.drop_connection(&id);
+                Err(NetError::Stream("send timed out".into()))
+            }
+        }
     }
 
     async fn connection_to(&self, id: EndpointId, force_new: bool) -> Result<Connection, NetError> {
@@ -674,6 +675,7 @@ impl KlipNode {
                     .collect();
                 let paired: Vec<EndpointId> = node.peers().into_iter().map(|p| p.id).collect();
                 retry.retain(|id, _| paired.contains(id));
+                let mut candidates = Vec::new();
                 for id in paired {
                     if live.contains(&id) {
                         retry.remove(&id);
@@ -682,16 +684,33 @@ impl KlipNode {
                     if matches!(retry.get(&id), Some((next, _)) if Instant::now() < *next) {
                         continue;
                     }
-                    match node.connection_to(id, true).await {
-                        Ok(_) => {
-                            retry.remove(&id);
-                        }
-                        Err(_) => {
-                            let delay = retry
-                                .get(&id)
-                                .map(|(_, d)| (*d * 2).min(RECONNECT_MAX))
-                                .unwrap_or(RECONNECT_MIN);
-                            retry.insert(id, (Instant::now() + delay, delay));
+                    candidates.push(id);
+                }
+
+                if !candidates.is_empty() {
+                    let mut dial_set = JoinSet::new();
+                    for id in candidates {
+                        let node = node.clone();
+                        dial_set.spawn(async move {
+                            let res = node.connection_to(id, true).await;
+                            (id, res.is_ok())
+                        });
+                    }
+
+                    while let Some(res) = tokio::select! {
+                        _ = node.endpoint.closed() => return,
+                        res = dial_set.join_next() => res,
+                    } {
+                        if let Ok((id, ok)) = res {
+                            if ok {
+                                retry.remove(&id);
+                            } else {
+                                let delay = retry
+                                    .get(&id)
+                                    .map(|(_, d)| (*d * 2).min(RECONNECT_MAX))
+                                    .unwrap_or(RECONNECT_MIN);
+                                retry.insert(id, (Instant::now() + delay, delay));
+                            }
                         }
                     }
                 }
@@ -936,6 +955,20 @@ impl KlipNode {
     // ------------------------------------------------------------------- pairing (host loop)
 
     async fn handle_pair(&self, conn: Connection, remote: EndpointId) {
+        if !self.pairing_open() {
+            let reply = PairReply::Rejected {
+                reason: "no pairing in progress on the host".into(),
+            };
+            if let Ok(Ok((mut tx, _rx))) = timeout(PAIR_STREAM_TIMEOUT, conn.accept_bi()).await {
+                if let Ok(bytes) = postcard::to_stdvec(&reply) {
+                    let _ = tx.write_all(&bytes).await;
+                    let _ = tx.finish();
+                    let _ = timeout(Duration::from_secs(1), tx.stopped()).await;
+                }
+            }
+            conn.close(CODE_DONE.into(), b"pairing not open");
+            return;
+        }
         // Pairing connections come from *unauthenticated* devices: cap how many run at once, bound
         // the request size, and never wait forever. A stranger with no open window still gets a
         // clear "no pairing in progress" answer, which costs us one tiny read.
@@ -957,7 +990,7 @@ impl KlipNode {
             return;
         };
 
-        let reply = match self.consume_pairing_secret(&req.secret) {
+        let reply = match self.verify_pairing_secret(&req.secret) {
             Err(reason) => PairReply::Rejected { reason },
             Ok(()) => {
                 let name = sanitize_name(&req.device_name);
@@ -975,6 +1008,7 @@ impl KlipNode {
                 let accepted =
                     asked && matches!(timeout(PAIR_DECISION_TIMEOUT, decision).await, Ok(Ok(true)));
                 if accepted {
+                    self.close_pairing();
                     let rec = PeerRecord { id: remote, name };
                     self.inner.peers.lock().unwrap().insert(remote, rec.clone());
                     let _ = self.inner.events.send(NetEvent::Paired(rec)).await;
@@ -997,8 +1031,8 @@ impl KlipNode {
         conn.close(CODE_DONE.into(), b"done");
     }
 
-    /// Validate and consume the one-time secret. Wrong secrets count towards a lockout.
-    fn consume_pairing_secret(&self, presented: &[u8; 16]) -> Result<(), String> {
+    /// Validate the one-time secret. The pairing session is retained until affirmative acceptance.
+    fn verify_pairing_secret(&self, presented: &[u8; 16]) -> Result<(), String> {
         let mut guard = self.inner.pairing.lock().unwrap();
         let Some(window) = guard.as_mut() else {
             return Err("no pairing in progress on the host".into());
@@ -1010,7 +1044,6 @@ impl KlipNode {
         // A wrong secret does not close the window: the secret is 128 bits (not guessable), and a
         // lockout would let any stranger who knows the device id cancel a pairing in progress.
         if window.secret.ct_eq(presented).into() {
-            *guard = None; // single use
             Ok(())
         } else {
             Err("invalid pairing code".into())
