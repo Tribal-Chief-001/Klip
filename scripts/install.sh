@@ -58,7 +58,7 @@ find_or_build_binary() {
             *)       error "Unsupported architecture: ${ARCH}. Prebuilt releases are currently available for x86_64."; exit 1 ;;
         esac
 
-        DOWNLOAD_URL="https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-${TARGET}"
+        DOWNLOAD_URL="https://github.com/Tribal-Chief-001/Klip/releases/download/v0.12.0-alpha/klip-${TARGET}"
         RELEASES_API="https://api.github.com/repos/Tribal-Chief-001/Klip/releases"
 
         # Attempt dynamic discovery from GitHub Releases API (mirroring install.ps1)

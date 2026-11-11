@@ -13,8 +13,8 @@ Open a terminal and paste these lines one block at a time.
 ```bash
 mkdir -p ~/.local/bin
 cd ~/Downloads
-curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-linux-x86_64
-curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-linux-x86_64.sha256
+curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.12.0-alpha/klip-linux-x86_64
+curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.12.0-alpha/klip-linux-x86_64.sha256
 ```
 
 Check that the download is not damaged (it must print `OK`):
@@ -29,7 +29,7 @@ Install it:
 install -Dm755 klip-linux-x86_64 ~/.local/bin/klip
 ```
 
-> **Newer version?** `v0.11.0-alpha` is the version these lines name. Look at the [Releases page](https://github.com/Tribal-Chief-001/Klip/releases) and replace it with the newest tag. (The `/latest/` link does not work yet, because every release is still marked "pre-release".)
+> **Newer version?** `v0.12.0-alpha` is the version these lines name. Look at the [Releases page](https://github.com/Tribal-Chief-001/Klip/releases) and replace it with the newest tag. (The `/latest/` link does not work yet, because every release is still marked "pre-release".)
 
 Make sure `~/.local/bin` is in your PATH: type `klip` — if the terminal says "command not found", run
 

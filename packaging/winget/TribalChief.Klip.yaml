@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.6.0.schema.json
 PackageIdentifier: TribalChief.Klip
-PackageVersion: 0.11.0
+PackageVersion: 0.12.0
 PackageName: Klip
 Publisher: TribalChief
 PublisherUrl: https://github.com/Tribal-Chief-001
@@ -25,7 +25,7 @@ Tags:
 Installers:
   - Architecture: x64
     InstallerType: inno
-    InstallerUrl: https://github.com/Tribal-Chief-001/Klip/releases/latest/download/Klip-Setup-0.11.0.exe
+    InstallerUrl: https://github.com/Tribal-Chief-001/Klip/releases/latest/download/Klip-Setup-0.12.0.exe
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000 # To be replaced on release publish
     Scope: user
 ManifestType: singleton

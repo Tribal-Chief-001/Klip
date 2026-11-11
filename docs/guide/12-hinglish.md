@@ -23,7 +23,7 @@ Klip kya hai? Ek device pe copy karo, doosre pe paste karo. Files aur folders bh
 **Linux**
 ```bash
 mkdir -p ~/.local/bin && cd ~/Downloads
-curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-linux-x86_64
+curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.12.0-alpha/klip-linux-x86_64
 install -Dm755 klip-linux-x86_64 ~/.local/bin/klip
 klip start && klip status
 ```
@@ -32,7 +32,7 @@ Auto-start: `klip install-service` phir `systemctl --user enable --now klip.serv
 **Mac (sirf Apple chip M1/M2/…)**
 ```bash
 mkdir -p ~/.local/bin && cd ~/Downloads
-curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-macos-arm64
+curl -L -O https://github.com/Tribal-Chief-001/Klip/releases/download/v0.12.0-alpha/klip-macos-arm64
 install -m755 klip-macos-arm64 ~/.local/bin/klip
 xattr -d com.apple.quarantine ~/.local/bin/klip
 klip start && klip status
@@ -42,12 +42,12 @@ klip start && klip status
 **Windows (PowerShell)**
 ```powershell
 mkdir $env:USERPROFILE\Klip -Force; cd $env:USERPROFILE\Klip
-Invoke-WebRequest https://github.com/Tribal-Chief-001/Klip/releases/download/v0.11.0-alpha/klip-windows-x86_64.exe -OutFile klip.exe
+Invoke-WebRequest https://github.com/Tribal-Chief-001/Klip/releases/download/v0.12.0-alpha/klip-windows-x86_64.exe -OutFile klip.exe
 .\klip.exe start; .\klip.exe status
 ```
 SmartScreen bole to **More info → Run anyway**. Firewall poochhe to **Private networks → Allow**. Poori detail (PATH, auto-start): [Windows guide](03-windows.md).
 
-(Naya version aaya ho to Releases page se latest tag lo; `v0.11.0-alpha` ki jagah wahi likho.)
+(Naya version aaya ho to Releases page se latest tag lo; `v0.12.0-alpha` ki jagah wahi likho.)
 
 ## Link karna (ek baar)
 

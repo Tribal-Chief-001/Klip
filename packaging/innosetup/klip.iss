@@ -3,7 +3,7 @@
 
 #define MyAppName "Klip"
 #ifndef MyAppVersion
-#define MyAppVersion "0.11.0"
+#define MyAppVersion "0.12.0"
 #endif
 #define MyAppPublisher "TribalChief"
 #define MyAppURL "https://github.com/Tribal-Chief-001/Klip"
